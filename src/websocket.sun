@@ -4,6 +4,55 @@ public module sun_serve {
   using std;
 
   extern "C" function ssl_sha1(data: raw_ptr<u8>, len: i64, out: raw_ptr<u8>) raw_ptr<u8> as "SHA1";
+  extern "C" function zlib_version() raw_ptr<u8> as "zlibVersion";
+  extern "C" function zlib_deflate_init(stream: ref ZStream, level: i32, method: i32, window_bits: i32, memory_level: i32, strategy: i32, version: raw_ptr<u8>, stream_size: i32) i32 as "deflateInit2_";
+  extern "C" function zlib_deflate_bound(stream: ref ZStream, source_len: u64) u64 as "deflateBound";
+  extern "C" function zlib_deflate(stream: ref ZStream, flush: i32) i32 as "deflate";
+  extern "C" function zlib_deflate_end(stream: ref ZStream) i32 as "deflateEnd";
+  extern "C" function zlib_inflate_init(stream: ref ZStream, window_bits: i32, version: raw_ptr<u8>, stream_size: i32) i32 as "inflateInit2_";
+  extern "C" function zlib_inflate(stream: ref ZStream, flush: i32) i32 as "inflate";
+  extern "C" function zlib_inflate_end(stream: ref ZStream) i32 as "inflateEnd";
+
+  const Z_OK: i32 = 0;
+  const Z_SYNC_FLUSH: i32 = 2;
+  const Z_DEFLATED: i32 = 8;
+  const Z_STREAM_SIZE: i32 = 112;
+
+  // The public zlib stream layout on 64-bit Linux.
+  class ZStream {
+    var next_in: raw_ptr<u8>;
+    var avail_in: u32;
+    var total_in: u64;
+    var next_out: raw_ptr<u8>;
+    var avail_out: u32;
+    var total_out: u64;
+    var message: raw_ptr<u8>;
+    var state: raw_ptr<u8>;
+    var allocate: raw_ptr<u8>;
+    var free: raw_ptr<u8>;
+    var opaque: raw_ptr<u8>;
+    var data_type: i32;
+    var adler: u64;
+    var reserved: u64;
+
+    // Initialize a stream for zlib to populate.
+    init() {
+      this.next_in = null;
+      this.avail_in = 0;
+      this.total_in = 0;
+      this.next_out = null;
+      this.avail_out = 0;
+      this.total_out = 0;
+      this.message = null;
+      this.state = null;
+      this.allocate = null;
+      this.free = null;
+      this.opaque = null;
+      this.data_type = 0;
+      this.adler = 0;
+      this.reserved = 0;
+    }
+  }
 
   public enum WebSocketMessageKind { Text, Binary }
   public enum WebSocketSendResult { Queued, Closed, Invalid, Overloaded }
@@ -78,6 +127,8 @@ public module sun_serve {
     var active: bool;
     var generation: i64;
     var max_bytes: i64;
+    var compression: bool;
+    var wake_fd: i32;
     var queue: ByteBuffer;
 
     // Build an inactive mailbox.
@@ -85,14 +136,18 @@ public module sun_serve {
       this.active = false;
       this.generation = 0;
       this.max_bytes = 0;
+      this.compression = false;
+      this.wake_fd = 0;
       this.queue = ByteBuffer(alloc, 256);
     }
 
     // Begin a new session and invalidate handles from an earlier one.
-    method activate(max_bytes: i64) i64 {
+    method activate(max_bytes: i64, compression: bool, wake_fd: i32) i64 {
       this.generation = this.generation + 1;
       this.active = true;
       this.max_bytes = max_bytes;
+      this.compression = compression;
+      this.wake_fd = wake_fd;
       this.queue.clear();
       return this.generation;
     }
@@ -122,26 +177,39 @@ public module sun_serve {
       if (not this.active) {
         return WebSocketSendResult.Closed;
       }
+      var compressed = ByteBuffer(HeapAllocator(), 16);
+      var wire_data: raw_ptr<u8> = data;
+      var wire_len: i64 = len;
+      var compressed_message: bool = this.compression and (opcode == 1 or opcode == 2);
+      if (compressed_message) {
+        if (not websocket_deflate(data, len, compressed)) {
+          return WebSocketSendResult.Invalid;
+        }
+        wire_data = compressed.readable_ptr();
+        wire_len = compressed.readable_len();
+      }
       var overhead: i64 = 2;
-      if (len >= 126 and len <= 65535) {
+      if (wire_len >= 126 and wire_len <= 65535) {
         overhead = 4;
       }
-      if (len > 65535) {
+      if (wire_len > 65535) {
         overhead = 10;
       }
-      if (this.queue.readable_len() + overhead + len > this.max_bytes) {
+      if (this.queue.readable_len() + overhead + wire_len > this.max_bytes) {
         this.active = false;
         this.queue.clear();
         var close_bytes = ContiguousBuffer<u8>(HeapAllocator(), 2);
         close_bytes.set_unchecked(0, 3);
         close_bytes.set_unchecked(1, 245);
         websocket_append_frame(this.queue, _convert<u8>(8), close_bytes.raw_data(), _convert<i64>(2));
+        websocket_wake(this.wake_fd);
         return WebSocketSendResult.Overloaded;
       }
-      websocket_append_frame(this.queue, opcode, data, len);
+      websocket_append_frame_flags(this.queue, opcode, compressed_message, wire_data, wire_len);
       if (opcode == 8) {
         this.active = false;
       }
+      websocket_wake(this.wake_fd);
       return WebSocketSendResult.Queued;
     }
   }
@@ -202,9 +270,89 @@ public module sun_serve {
     }
   }
 
+  // Notify the owning worker that a handle queued output.
+  function websocket_wake(fd: i32) void {
+    if (fd <= 0) {
+      return;
+    }
+    var one: u64 = 1;
+    unsafe { sys_write_u64(fd, _address_of<u64>(one), 8); };
+  }
+
+  // Compress one message as a raw RFC 7692 DEFLATE block.
+  function websocket_deflate(data: raw_ptr<u8>, len: i64, out: ref ByteBuffer) bool {
+    if (len < 0 or len > 4294967295) {
+      return false;
+    }
+    var stream = ZStream();
+    if (unsafe { zlib_deflate_init(stream, -1, Z_DEFLATED, -15, 8, 0, zlib_version(), Z_STREAM_SIZE); } != Z_OK) {
+      return false;
+    }
+    var bound: u64 = unsafe { zlib_deflate_bound(stream, _convert<u64>(len)); } + 8;
+    if (bound > 4294967295) {
+      unsafe { zlib_deflate_end(stream); };
+      return false;
+    }
+    out.reserve(_convert<i64>(bound));
+    stream.next_in = data;
+    stream.avail_in = _convert<u32>(len);
+    stream.next_out = out.writable_ptr();
+    stream.avail_out = _convert<u32>(bound);
+    var result: i32 = unsafe { zlib_deflate(stream, Z_SYNC_FLUSH); };
+    var produced: i64 = _convert<i64>(stream.total_out);
+    unsafe { zlib_deflate_end(stream); };
+    if (result != Z_OK or stream.avail_in != 0 or produced < 4) {
+      return false;
+    }
+    out.commit(produced - 4);
+    return true;
+  }
+
+  // Inflate one RFC 7692 message, returning malformed or oversized status.
+  function websocket_inflate(alloc: const ref HeapAllocator, data: raw_ptr<u8>, len: i64, max_bytes: i64, out: ref ByteBuffer) i32 {
+    if (len < 0 or len > 4294967291 or max_bytes < 0 or max_bytes >= 4294967295) {
+      return 1;
+    }
+    var input = ByteBuffer(alloc, len + 4);
+    input.append_bytes(data, len);
+    input.append_byte(0);
+    input.append_byte(0);
+    input.append_byte(255);
+    input.append_byte(255);
+    out.reserve(max_bytes + 1);
+    var stream = ZStream();
+    if (unsafe { zlib_inflate_init(stream, -15, zlib_version(), Z_STREAM_SIZE); } != Z_OK) {
+      return 1;
+    }
+    stream.next_in = input.readable_ptr();
+    stream.avail_in = _convert<u32>(input.readable_len());
+    stream.next_out = out.writable_ptr();
+    stream.avail_out = _convert<u32>(max_bytes + 1);
+    var result: i32 = unsafe { zlib_inflate(stream, Z_SYNC_FLUSH); };
+    var produced: i64 = _convert<i64>(stream.total_out);
+    unsafe { zlib_inflate_end(stream); };
+    if (produced > max_bytes) {
+      return 2;
+    }
+    if (result != Z_OK or stream.avail_in != 0) {
+      return 1;
+    }
+    out.commit(produced);
+    return 0;
+  }
+
   // Append one final unmasked server frame.
   function websocket_append_frame(out: ref ByteBuffer, opcode: u8, data: raw_ptr<u8>, len: i64) void {
-    out.append_byte(128 | opcode);
+    websocket_append_frame_flags(out, opcode, false, data, len);
+  }
+
+  // Append one final server frame with an optional RSV1 compression flag.
+  function websocket_append_frame_flags(out: ref ByteBuffer, opcode: u8, compressed: bool, data: raw_ptr<u8>, len: i64) void {
+    var first: u8 = 128 | opcode;
+    if (compressed) {
+      first = first | 64;
+    }
+    out.append_byte(first);
     if (len < 126) {
       out.append_byte(_convert<u8>(len));
     } else if (len <= 65535) {
@@ -218,6 +366,24 @@ public module sun_serve {
       }
     }
     out.append_bytes(data, len);
+  }
+
+  // Validate a received close payload and return its failure close code.
+  function websocket_close_payload_status(data: raw_ptr<u8>, len: i64) i32 {
+    if (len == 0) {
+      return 0;
+    }
+    if (len == 1) {
+      return 1002;
+    }
+    var code: i32 = _convert<i32>(unsafe { _load<u8>(data, 0); }) * 256 + _convert<i32>(unsafe { _load<u8>(data, 1); });
+    if (not websocket_valid_close_code(code)) {
+      return 1002;
+    }
+    if (len > 2 and not websocket_valid_utf8(unsafe { _ptr_offset(data, 2); }, len - 2)) {
+      return 1007;
+    }
+    return 0;
   }
 
   // Report whether an application may put a status code on the wire.
@@ -275,6 +441,40 @@ public module sun_serve {
       i = i + need + 1;
     }
     return true;
+  }
+
+  // Report whether an extension list contains a permessage-deflate offer.
+  function websocket_offers_deflate(value: ref String) bool {
+    var pos: i64 = 0;
+    while (pos < value.length()) {
+      while (pos < value.length() and (value.at(pos) == b' ' or value.at(pos) == b'\t' or value.at(pos) == b',')) {
+        pos = pos + 1;
+      }
+      var start: i64 = pos;
+      while (pos < value.length() and value.at(pos) != b';' and value.at(pos) != b',') {
+        pos = pos + 1;
+      }
+      var end: i64 = pos;
+      while (end > start and (value.at(end - 1) == b' ' or value.at(end - 1) == b'\t')) {
+        end = end - 1;
+      }
+      var token: static_ptr<u8> = "permessage-deflate";
+      if (end - start == token.length()) {
+        var equal: bool = true;
+        for (var i: i64 = 0; i < token.length(); i = i + 1) {
+          if (lower_ascii(value.at(start + i)) != unsafe { _load<u8>(token.raw(), i); }) {
+            equal = false;
+          }
+        }
+        if (equal) {
+          return true;
+        }
+      }
+      while (pos < value.length() and value.at(pos) != b',') {
+        pos = pos + 1;
+      }
+    }
+    return false;
   }
 
   // Validate the canonical base64 shape of a 16-byte WebSocket nonce.

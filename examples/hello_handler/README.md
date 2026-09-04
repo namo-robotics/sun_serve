@@ -11,7 +11,7 @@ only serves files, this one answers requests itself with a handler class:
 | `WS /ws` | echoes complete text and binary WebSocket messages |
 | anything else | 404 |
 
-`WebSocketHandle` clones can also queue bounded asynchronous sends from other threads.
+`WebSocketHandle` clones can queue bounded asynchronous sends from other threads. The server negotiates `permessage-deflate` by default without client or server context takeover.
 
 The handler keeps its request counter as a plain field. Each worker thread
 owns its own handler instance, so per-handler state needs no locking.

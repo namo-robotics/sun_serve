@@ -13,3 +13,4 @@ fi
 build/sun_serve_lib_test
 build/sun_serve_test
 build/hello_handler_test
+scripts/test-nghttp.sh

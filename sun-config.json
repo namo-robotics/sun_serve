@@ -1,6 +1,11 @@
 {
-  "sun_path": ["build"],
-  "path_variables": { "SUN_SERVE_SRC": "src" },
+  "sun_path": [
+    "build"
+  ],
+  "path_variables": {
+    "SUN_SERVE_SRC": "src",
+    "ZLIB_LIB": "/opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib"
+  },
   "root": true,
   "entrypoints": [
     {

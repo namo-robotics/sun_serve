@@ -12,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # curl and certificates fetch the compiler below; the openssl tool mints the
 # certificates the TLS tests use and acts as their client.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl make openssl \
+    ca-certificates curl make nghttp2-client openssl \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install the rolling Sun compiler together with its matching stdlib and TLS

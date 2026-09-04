@@ -16,6 +16,7 @@ public module sun_serve {
   const H2_END_STREAM: u8 = 1;
   const H2_ACK: u8 = 1;
   const H2_END_HEADERS: u8 = 4;
+  const H2_DEFAULT_FRAME_SIZE: i64 = 16384;
 
   // One decoded HTTP/2 header field.
   public class H2Header {
@@ -31,6 +32,75 @@ public module sun_serve {
     init(name: String, value: String) {
       this.name = name;
       this.value = value;
+    }
+  }
+
+  // Buffered request state for one active HTTP/2 stream.
+  class H2RequestStream {
+    var active: bool;
+    var id: u32;
+    var headers: Vec<H2Header>;
+    var body: ByteBuffer;
+    var alloc: HeapAllocator;
+
+    // Build an unused stream slot.
+    init(allocator: const ref HeapAllocator) {
+      this.alloc = allocator.copy();
+      this.active = false;
+      this.id = 0;
+      this.headers = Vec<H2Header>(allocator, 16);
+      this.body = ByteBuffer(allocator, 256);
+    }
+
+    // Populate a slot from a decoded header block.
+    method begin(id: u32, source: ref Vec<H2Header>) void {
+      this.active = true;
+      this.id = id;
+      this.headers.clear();
+      this.body.clear();
+      for (var i: i64 = 0; i < source.size(); i = i + 1) {
+        this.headers.push(source.get_unchecked(i).clone(this.alloc));
+      }
+    }
+
+    // Release buffered state for reuse.
+    method reset() void {
+      this.active = false;
+      this.id = 0;
+      this.headers.clear();
+      this.body.clear();
+    }
+  }
+
+  // Flow-controlled response data for one HTTP/2 stream.
+  class H2ResponseStream {
+    var active: bool;
+    var id: u32;
+    var window: i64;
+    var data: ByteBuffer;
+
+    // Build an unused response slot.
+    init(allocator: const ref HeapAllocator) {
+      this.active = false;
+      this.id = 0;
+      this.window = 0;
+      this.data = ByteBuffer(allocator, 256);
+    }
+
+    // Start buffering response data for a stream.
+    method begin(id: u32, window: i64) void {
+      this.active = true;
+      this.id = id;
+      this.window = window;
+      this.data.clear();
+    }
+
+    // Release the response slot for reuse.
+    method reset() void {
+      this.active = false;
+      this.id = 0;
+      this.window = 0;
+      this.data.clear();
     }
   }
 
@@ -78,7 +148,7 @@ public module sun_serve {
       return true;
     }
 
-    // Add a newest-first dynamic entry.
+    // Add an entry after older entries; lookup indexes from the end.
     method add(name: ref String, value: ref String) void {
       var size: i64 = name.length() + value.length() + 32;
       if (size > this.maximum) {
@@ -94,10 +164,13 @@ public module sun_serve {
     // Remove oldest entries until the table fits.
     method evict() void {
       while (this.bytes > this.maximum and this.entries.size() > 0) {
-        var last: i64 = this.entries.size() - 1;
-        var old_size: i64 = this.entries.get_unchecked(last).name.length() + this.entries.get_unchecked(last).value.length() + 32;
+        var old_size: i64 = this.entries.get_unchecked(0).name.length() + this.entries.get_unchecked(0).value.length() + 32;
+        var remaining = Vec<H2Header>(this.alloc, this.entries.size() - 1);
+        for (var i: i64 = 1; i < this.entries.size(); i = i + 1) {
+          remaining.push(this.entries.get_unchecked(i).clone(this.alloc));
+        }
+        this.entries = remaining;
         this.bytes = this.bytes - old_size;
-        this.entries.pop();
       }
     }
   }
@@ -173,6 +246,39 @@ public module sun_serve {
       return false;
     }
     if (protocol_seen and (not scheme_seen or not authority_seen)) {
+      return false;
+    }
+    return true;
+  }
+
+  // Decode an unpadded base64url HTTP2-Settings header value.
+  function h2_decode_settings_header(value: ref String, out: ref ByteBuffer) bool {
+    var bits: u32 = 0;
+    var bit_count: i32 = 0;
+    for (var i: i64 = 0; i < value.length(); i = i + 1) {
+      var c: u8 = value.at(i);
+      var digit: i32 = -1;
+      if (c >= b'A' and c <= b'Z') {
+        digit = _convert<i32>(c - b'A');
+      } else if (c >= b'a' and c <= b'z') {
+        digit = _convert<i32>(c - b'a') + 26;
+      } else if (c >= b'0' and c <= b'9') {
+        digit = _convert<i32>(c - b'0') + 52;
+      } else if (c == b'-') {
+        digit = 62;
+      } else if (c == b'_') {
+        digit = 63;
+      } else {
+        return false;
+      }
+      bits = (bits << 6) | _convert<u32>(digit);
+      bit_count = bit_count + 6;
+      if (bit_count >= 8) {
+        bit_count = bit_count - 8;
+        out.append_byte(_convert<u8>((bits >> bit_count) & 255));
+      }
+    }
+    if (bit_count >= 6 or (bit_count > 0 and (bits & ((1 << bit_count) - 1)) != 0)) {
       return false;
     }
     return true;

@@ -50,15 +50,29 @@ public module sun_serve {
     var h2_header_block: ByteBuffer;
     var h2_continuation_stream: u32;
     var h2_header_end_stream: bool;
+    var h2_streams: Vec<H2RequestStream>;
+    var h2_open_streams: i64;
+    var h2_buffered_bytes: i64;
+    var h2_last_client_stream: u32;
+    var h2_peer_frame_size: i64;
+    var h2_peer_initial_window: i64;
+    var h2_send_window: i64;
+    var h2_responses: Vec<H2ResponseStream>;
     var h2_enable_connect: bool;
     var h2_ws_stream: u32;
     var h2_ws_buf: ByteBuffer;
+    var h2_ws_out: ByteBuffer;
+    var h2_ws_send_window: i64;
+    var h2_ws_end_pending: bool;
     var ws_mailbox: Shared<WebSocketMailbox>;
     var ws_generation: i64;
     var ws_upgrading: bool;
     var h2_upgrading: bool;
     var ws_fragmenting: bool;
+    var ws_fragment_compressed: bool;
     var ws_fragment_opcode: u8;
+    var ws_compression: bool;
+    var worker_wake_fd: i32;
     var ws_closing: bool;
     var keep_alive: bool;
     var send_body: bool;
@@ -95,15 +109,29 @@ public module sun_serve {
       this.h2_header_block = ByteBuffer(allocator, 512);
       this.h2_continuation_stream = 0;
       this.h2_header_end_stream = false;
+      this.h2_streams = Vec<H2RequestStream>(allocator, 16);
+      this.h2_open_streams = 0;
+      this.h2_buffered_bytes = 0;
+      this.h2_last_client_stream = 0;
+      this.h2_peer_frame_size = H2_DEFAULT_FRAME_SIZE;
+      this.h2_peer_initial_window = 65535;
+      this.h2_send_window = 65535;
+      this.h2_responses = Vec<H2ResponseStream>(allocator, 16);
       this.h2_enable_connect = false;
       this.h2_ws_stream = 0;
       this.h2_ws_buf = ByteBuffer(allocator, 256);
+      this.h2_ws_out = ByteBuffer(allocator, 256);
+      this.h2_ws_send_window = 0;
+      this.h2_ws_end_pending = false;
       this.ws_mailbox = Shared<WebSocketMailbox>(allocator, WebSocketMailbox(allocator));
       this.ws_generation = 0;
       this.ws_upgrading = false;
       this.h2_upgrading = false;
       this.ws_fragmenting = false;
+      this.ws_fragment_compressed = false;
       this.ws_fragment_opcode = 0;
+      this.ws_compression = false;
+      this.worker_wake_fd = 0;
       this.ws_closing = false;
       this.keep_alive = false;
       this.send_body = true;
@@ -121,12 +149,13 @@ public module sun_serve {
 
     // Take over an accepted socket. For TLS the handshake starts on the first
     // event. Returns false if a TLS session could not be created.
-    public method open(fd: i32, tls: bool, acceptor: ref TlsAcceptor, now_ms: i64, timeouts: const ref Timeouts) bool {
+    public method open(fd: i32, tls: bool, acceptor: ref TlsAcceptor, now_ms: i64, timeouts: const ref Timeouts, wake_fd: i32) bool {
       if (not this.transport.open(fd, tls, acceptor)) {
         return false;
       }
       this.interest = 0;
       this.want_ = EPOLLIN;
+      this.worker_wake_fd = wake_fd;
       this.served = 0;
       this.peer_closed = false;
       this.proto = Protocol.Http1;
@@ -141,12 +170,29 @@ public module sun_serve {
       this.h2_header_block.clear();
       this.h2_continuation_stream = 0;
       this.h2_header_end_stream = false;
+      for (var stream_slot: i64 = 0; stream_slot < this.h2_streams.size(); stream_slot = stream_slot + 1) {
+        this.h2_streams.get_unchecked(stream_slot).reset();
+      }
+      this.h2_open_streams = 0;
+      this.h2_buffered_bytes = 0;
+      this.h2_last_client_stream = 0;
+      this.h2_peer_frame_size = H2_DEFAULT_FRAME_SIZE;
+      this.h2_peer_initial_window = 65535;
+      this.h2_send_window = 65535;
+      for (var response_slot: i64 = 0; response_slot < this.h2_responses.size(); response_slot = response_slot + 1) {
+        this.h2_responses.get_unchecked(response_slot).reset();
+      }
       this.h2_enable_connect = false;
       this.h2_ws_stream = 0;
       this.h2_ws_buf.clear();
+      this.h2_ws_out.clear();
+      this.h2_ws_send_window = 0;
+      this.h2_ws_end_pending = false;
       this.ws_upgrading = false;
       this.h2_upgrading = false;
       this.ws_fragmenting = false;
+      this.ws_fragment_compressed = false;
+      this.ws_compression = false;
       this.ws_closing = false;
       if (tls) {
         this.state = ConnState.Handshaking;
@@ -160,9 +206,9 @@ public module sun_serve {
     }
 
     // Activate a new WebSocket generation.
-    method activate_websocket(max_bytes: i64) i64 {
+    method activate_websocket(max_bytes: i64, compression: bool) i64 {
       var guard = this.ws_mailbox.lock();
-      return guard.get().activate(max_bytes);
+      return guard.get().activate(max_bytes, compression, this.worker_wake_fd);
     }
 
     // Drain asynchronous frames into the connection write buffer.
@@ -216,7 +262,7 @@ public module sun_serve {
 
     // Report whether this connection needs asynchronous WebSocket polling.
     public const method is_websocket() bool {
-      return this.state == ConnState.WebSocket;
+      return this.state == ConnState.WebSocket or (this.state == ConnState.Http2 and this.h2_ws_stream != 0);
     }
 
     // Report whether the connection is sending a response.
@@ -266,12 +312,12 @@ public module sun_serve {
           ws_code.set_unchecked(0, 3);
           ws_code.set_unchecked(1, 233);
           websocket_append_frame(websocket, _convert<u8>(8), ws_code.raw_data(), 2);
-          h2_frame(this.wbuf, websocket.readable_len(), H2_DATA, _convert<u8>(0), this.h2_ws_stream);
-          this.wbuf.append_bytes(websocket.readable_ptr(), websocket.readable_len());
+          this.h2_ws_out.append_bytes(websocket.readable_ptr(), websocket.readable_len());
+          this.h2_ws_end_pending = true;
           this.deactivate_websocket();
         }
         h2_frame(this.wbuf, 8, H2_GOAWAY, _convert<u8>(0), 0);
-        h2_append_u32(this.wbuf, this.h2_stream);
+        h2_append_u32(this.wbuf, this.h2_last_client_stream);
         h2_append_u32(this.wbuf, 0);
         this.want_ = EPOLLIN | EPOLLOUT | EPOLLRDHUP;
       }
@@ -518,15 +564,13 @@ public module sun_serve {
         if (this.h2_ws_stream != 0) {
           var websocket_frames = ByteBuffer(this.alloc, 256);
           var websocket_active: bool = this.drain_websocket_to(websocket_frames);
-          if (websocket_frames.readable_len() > 0) {
-            h2_frame(this.wbuf, websocket_frames.readable_len(), H2_DATA, _convert<u8>(0), this.h2_ws_stream);
-            this.wbuf.append_bytes(websocket_frames.readable_ptr(), websocket_frames.readable_len());
+          this.h2_ws_out.append_bytes(websocket_frames.readable_ptr(), websocket_frames.readable_len());
+          if (not websocket_active) {
+            this.h2_ws_end_pending = true;
           }
-          if (not websocket_active and websocket_frames.readable_len() == 0) {
-            h2_frame(this.wbuf, 0, H2_DATA, H2_END_STREAM, this.h2_ws_stream);
-            this.h2_ws_stream = 0;
-          }
+          this.flush_h2_websocket_data();
         }
+        this.flush_h2_response_data();
         if (this.wbuf.readable_len() > 0) {
           var wr: i64 = this.flush_wbuf();
           if (wr != 0) {
@@ -559,11 +603,11 @@ public module sun_serve {
         }
         var base: raw_ptr<u8> = this.rbuf.readable_ptr();
         var frame_len: i64 = (_convert<i64>(unsafe { _load<u8>(base, 0); }) << 16) | (_convert<i64>(unsafe { _load<u8>(base, 1); }) << 8) | _convert<i64>(unsafe { _load<u8>(base, 2); });
-        if (frame_len > 16777215 or this.rbuf.readable_len() < 9 + frame_len) {
-          if (frame_len > 16777215) {
-            this.close();
-            return;
-          }
+        if (frame_len > H2_DEFAULT_FRAME_SIZE) {
+          this.close();
+          return;
+        }
+        if (this.rbuf.readable_len() < 9 + frame_len) {
           if (not this.fill_rbuf()) {
             return;
           }
@@ -586,7 +630,32 @@ public module sun_serve {
             for (var setting: i64 = 0; setting < frame_len; setting = setting + 6) {
               var identifier: i32 = _convert<i32>(unsafe { _load<u8>(payload, setting); }) * 256 + _convert<i32>(unsafe { _load<u8>(payload, setting + 1); });
               var setting_value: u32 = h2_u32(payload, setting + 2);
-              if (identifier == 8) {
+              if (identifier == 2 and setting_value > 1) {
+                this.close();
+                return;
+              } else if (identifier == 4) {
+                if (setting_value > 2147483647) {
+                  this.close();
+                  return;
+                }
+                var window_delta: i64 = _convert<i64>(setting_value) - this.h2_peer_initial_window;
+                this.h2_peer_initial_window = _convert<i64>(setting_value);
+                if (this.h2_ws_stream != 0) {
+                  this.h2_ws_send_window = this.h2_ws_send_window + window_delta;
+                }
+                for (var response_index: i64 = 0; response_index < this.h2_responses.size(); response_index = response_index + 1) {
+                  var pending_response: ref H2ResponseStream = this.h2_responses.get_unchecked(response_index);
+                  if (pending_response.active) {
+                    pending_response.window = pending_response.window + window_delta;
+                  }
+                }
+              } else if (identifier == 5) {
+                if (setting_value < 16384 or setting_value > 16777215) {
+                  this.close();
+                  return;
+                }
+                this.h2_peer_frame_size = _convert<i64>(setting_value);
+              } else if (identifier == 8) {
                 if (setting_value > 1) {
                   this.close();
                   return;
@@ -645,11 +714,7 @@ public module sun_serve {
               this.close();
               return;
             }
-            this.h2_stream = stream;
-            this.h2_headers_ready = true;
-            if (this.h2_header_end_stream or this.h2_is_extended_connect()) {
-              this.handle_h2_request(handler, date, log, cfg, now_ms);
-            }
+            this.accept_h2_headers(stream, this.h2_header_end_stream, handler, date, log, cfg, now_ms, draining);
           }
         } else if (kind == H2_CONTINUATION) {
           if (stream == 0 or stream != this.h2_continuation_stream) {
@@ -663,11 +728,7 @@ public module sun_serve {
               this.close();
               return;
             }
-            this.h2_stream = stream;
-            this.h2_headers_ready = true;
-            if (this.h2_header_end_stream or this.h2_is_extended_connect()) {
-              this.handle_h2_request(handler, date, log, cfg, now_ms);
-            }
+            this.accept_h2_headers(stream, this.h2_header_end_stream, handler, date, log, cfg, now_ms, draining);
           }
         } else if (kind == H2_DATA) {
           if (stream == 0) {
@@ -700,17 +761,21 @@ public module sun_serve {
               this.h2_ws_stream = 0;
             }
           } else {
-            if (not this.h2_headers_ready or stream != this.h2_stream) {
-              this.close();
-              return;
-            }
-            if (this.body_buf.readable_len() + data_len > cfg.limits.max_h2_buffered_bytes or this.body_buf.readable_len() + data_len > cfg.limits.max_body_bytes) {
-              this.close();
-              return;
-            }
-            this.body_buf.append_bytes(data_payload, data_len);
-            if ((flags & H2_END_STREAM) != 0) {
-              this.handle_h2_request(handler, date, log, cfg, now_ms);
+            var stream_index: i64 = this.find_h2_request_stream(stream);
+            if (stream_index < 0) {
+              this.h2_send_rst(stream, 5);
+            } else {
+              var stream_body_len: i64 = this.h2_streams.get_unchecked(stream_index).body.readable_len();
+              if (stream_body_len + data_len > cfg.limits.max_body_bytes or this.h2_buffered_bytes + data_len > cfg.limits.max_h2_buffered_bytes) {
+                this.h2_send_rst(stream, 11);
+                this.reset_h2_request_stream(stream_index);
+              } else {
+                this.h2_streams.get_unchecked(stream_index).body.append_bytes(data_payload, data_len);
+                this.h2_buffered_bytes = this.h2_buffered_bytes + data_len;
+                if ((flags & H2_END_STREAM) != 0) {
+                  this.dispatch_h2_request_stream(stream_index, handler, date, log, cfg, now_ms);
+                }
+              }
             }
           }
           if (frame_len > 0) {
@@ -719,7 +784,67 @@ public module sun_serve {
             h2_frame(this.wbuf, 4, H2_WINDOW_UPDATE, _convert<u8>(0), stream);
             h2_append_u32(this.wbuf, _convert<u32>(frame_len));
           }
+        } else if (kind == H2_PRIORITY) {
+          if (stream == 0 or frame_len != 5) {
+            this.close();
+            return;
+          }
+        } else if (kind == H2_WINDOW_UPDATE) {
+          var increment: i64 = 0;
+          if (frame_len == 4) {
+            increment = _convert<i64>(h2_u32(payload, 0) & 2147483647);
+          }
+          if (increment == 0) {
+            this.close();
+            return;
+          }
+          if (stream == 0) {
+            if (this.h2_send_window + increment > 2147483647) {
+              this.close();
+              return;
+            }
+            this.h2_send_window = this.h2_send_window + increment;
+          } else if (stream == this.h2_ws_stream) {
+            if (this.h2_ws_send_window + increment > 2147483647) {
+              this.close();
+              return;
+            }
+            this.h2_ws_send_window = this.h2_ws_send_window + increment;
+          } else {
+            var response_index: i64 = this.find_h2_response_stream(stream);
+            if (response_index >= 0) {
+              var next_window: i64 = this.h2_responses.get_unchecked(response_index).window + increment;
+              if (next_window > 2147483647) {
+                this.close();
+                return;
+              }
+              this.h2_responses.get_unchecked(response_index).window = next_window;
+            }
+          }
+        } else if (kind == H2_RST_STREAM) {
+          if (stream == 0 or frame_len != 4) {
+            this.close();
+            return;
+          }
+          var reset_index: i64 = this.find_h2_request_stream(stream);
+          if (reset_index >= 0) {
+            this.reset_h2_request_stream(reset_index);
+          }
+          var reset_response: i64 = this.find_h2_response_stream(stream);
+          if (reset_response >= 0) {
+            this.h2_responses.get_unchecked(reset_response).reset();
+          }
+          if (stream == this.h2_ws_stream) {
+            this.deactivate_websocket();
+            this.h2_ws_stream = 0;
+            this.h2_ws_out.clear();
+            this.h2_ws_end_pending = false;
+          }
         } else if (kind == H2_GOAWAY) {
+          if (stream != 0 or frame_len < 8) {
+            this.close();
+            return;
+          }
           this.close();
           return;
         } else if (kind == H2_PUSH_PROMISE) {
@@ -730,6 +855,237 @@ public module sun_serve {
         this.rbuf.compact();
         this.deadline_ms = now_ms + cfg.timeouts.keep_alive_ms;
       }
+    }
+
+    // Find queued response data for a stream.
+    method find_h2_response_stream(id: u32) i64 {
+      for (var i: i64 = 0; i < this.h2_responses.size(); i = i + 1) {
+        var pending: ref H2ResponseStream = this.h2_responses.get_unchecked(i);
+        if (pending.active and pending.id == id) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    // Allocate a response-data slot with the peer's current stream window.
+    method open_h2_response_stream(id: u32) i64 {
+      for (var i: i64 = 0; i < this.h2_responses.size(); i = i + 1) {
+        if (not this.h2_responses.get_unchecked(i).active) {
+          this.h2_responses.get_unchecked(i).begin(id, this.h2_peer_initial_window);
+          return i;
+        }
+      }
+      this.h2_responses.push(H2ResponseStream(this.alloc));
+      var added: i64 = this.h2_responses.size() - 1;
+      this.h2_responses.get_unchecked(added).begin(id, this.h2_peer_initial_window);
+      return added;
+    }
+
+    // Split a serialized response into immediate HEADERS and queued DATA.
+    method queue_h2_response(date: ref DateCache, stream: u32, server_header: bool, send_body: bool) void {
+      var encoded = ByteBuffer(this.alloc, 1024);
+      this.response.serialize_h2(encoded, date.value(), stream, server_header, send_body);
+      var response_index: i64 = -1;
+      while (encoded.readable_len() >= 9) {
+        var base: raw_ptr<u8> = encoded.readable_ptr();
+        var length: i64 = (_convert<i64>(unsafe { _load<u8>(base, 0); }) << 16) | (_convert<i64>(unsafe { _load<u8>(base, 1); }) << 8) | _convert<i64>(unsafe { _load<u8>(base, 2); });
+        var kind: u8 = unsafe { _load<u8>(base, 3); };
+        if (encoded.readable_len() < 9 + length) {
+          return;
+        }
+        if (kind == H2_DATA) {
+          if (response_index < 0) {
+            response_index = this.open_h2_response_stream(stream);
+          }
+          this.h2_responses.get_unchecked(response_index).data.append_bytes(unsafe { _ptr_offset(base, 9); }, length);
+        } else if (kind == H2_HEADERS and length > this.h2_peer_frame_size) {
+          var original_flags: u8 = unsafe { _load<u8>(base, 4); };
+          var header_pos: i64 = 0;
+          var first_fragment: bool = true;
+          while (header_pos < length) {
+            var take: i64 = length - header_pos;
+            if (take > this.h2_peer_frame_size) {
+              take = this.h2_peer_frame_size;
+            }
+            var fragment_kind: u8 = H2_CONTINUATION;
+            var fragment_flags: u8 = 0;
+            if (first_fragment) {
+              fragment_kind = H2_HEADERS;
+              fragment_flags = original_flags & H2_END_STREAM;
+            }
+            if (header_pos + take == length) {
+              fragment_flags = fragment_flags | H2_END_HEADERS;
+            }
+            h2_frame(this.wbuf, take, fragment_kind, fragment_flags, stream);
+            this.wbuf.append_bytes(unsafe { _ptr_offset(base, 9 + header_pos); }, take);
+            header_pos = header_pos + take;
+            first_fragment = false;
+          }
+        } else {
+          this.wbuf.append_bytes(base, 9 + length);
+        }
+        encoded.consume(9 + length);
+      }
+    }
+
+    // Emit RFC 8441 bytes within the peer's HTTP/2 flow-control windows.
+    method flush_h2_websocket_data() void {
+      while (this.h2_ws_stream != 0 and this.h2_ws_send_window > 0 and this.h2_send_window > 0 and this.h2_ws_out.readable_len() > 0) {
+        var take: i64 = this.h2_ws_out.readable_len();
+        if (take > this.h2_peer_frame_size) {
+          take = this.h2_peer_frame_size;
+        }
+        if (take > this.h2_ws_send_window) {
+          take = this.h2_ws_send_window;
+        }
+        if (take > this.h2_send_window) {
+          take = this.h2_send_window;
+        }
+        h2_frame(this.wbuf, take, H2_DATA, _convert<u8>(0), this.h2_ws_stream);
+        this.wbuf.append_bytes(this.h2_ws_out.readable_ptr(), take);
+        this.h2_ws_out.consume(take);
+        this.h2_ws_send_window = this.h2_ws_send_window - take;
+        this.h2_send_window = this.h2_send_window - take;
+      }
+      if (this.h2_ws_stream != 0 and this.h2_ws_out.readable_len() == 0 and this.h2_ws_end_pending) {
+        h2_frame(this.wbuf, 0, H2_DATA, H2_END_STREAM, this.h2_ws_stream);
+        this.h2_ws_stream = 0;
+        this.h2_ws_end_pending = false;
+      }
+    }
+
+    // Emit queued DATA within the peer's connection and stream windows.
+    method flush_h2_response_data() void {
+      if (this.h2_send_window <= 0) {
+        return;
+      }
+      for (var i: i64 = 0; i < this.h2_responses.size(); i = i + 1) {
+        var pending: ref H2ResponseStream = this.h2_responses.get_unchecked(i);
+        while (pending.active and pending.window > 0 and this.h2_send_window > 0 and pending.data.readable_len() > 0) {
+          var take: i64 = pending.data.readable_len();
+          if (take > this.h2_peer_frame_size) {
+            take = this.h2_peer_frame_size;
+          }
+          if (take > pending.window) {
+            take = pending.window;
+          }
+          if (take > this.h2_send_window) {
+            take = this.h2_send_window;
+          }
+          var flags: u8 = 0;
+          if (take == pending.data.readable_len()) {
+            flags = H2_END_STREAM;
+          }
+          h2_frame(this.wbuf, take, H2_DATA, flags, pending.id);
+          this.wbuf.append_bytes(pending.data.readable_ptr(), take);
+          pending.data.consume(take);
+          pending.window = pending.window - take;
+          this.h2_send_window = this.h2_send_window - take;
+          if (pending.data.readable_len() == 0) {
+            pending.reset();
+          }
+        }
+      }
+    }
+
+    // Find an active buffered request stream.
+    method find_h2_request_stream(id: u32) i64 {
+      for (var i: i64 = 0; i < this.h2_streams.size(); i = i + 1) {
+        var pending: ref H2RequestStream = this.h2_streams.get_unchecked(i);
+        if (pending.active and pending.id == id) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    // Allocate a reusable request stream slot.
+    method open_h2_request_stream(id: u32, cfg: const ref Config) i64 {
+      if (this.find_h2_request_stream(id) >= 0 or this.h2_open_streams >= cfg.limits.max_h2_concurrent_streams) {
+        return -1;
+      }
+      for (var i: i64 = 0; i < this.h2_streams.size(); i = i + 1) {
+        if (not this.h2_streams.get_unchecked(i).active) {
+          this.h2_streams.get_unchecked(i).begin(id, this.h2_headers);
+          this.h2_open_streams = this.h2_open_streams + 1;
+          return i;
+        }
+      }
+      this.h2_streams.push(H2RequestStream(this.alloc));
+      var added: i64 = this.h2_streams.size() - 1;
+      this.h2_streams.get_unchecked(added).begin(id, this.h2_headers);
+      this.h2_open_streams = this.h2_open_streams + 1;
+      return added;
+    }
+
+    // Release one request stream and its aggregate body accounting.
+    method reset_h2_request_stream(index: i64) void {
+      if (index < 0 or index >= this.h2_streams.size()) {
+        return;
+      }
+      var pending: ref H2RequestStream = this.h2_streams.get_unchecked(index);
+      if (pending.active) {
+        this.h2_buffered_bytes = this.h2_buffered_bytes - pending.body.readable_len();
+        this.h2_open_streams = this.h2_open_streams - 1;
+        pending.reset();
+      }
+    }
+
+    // Send a stream-local HTTP/2 reset.
+    method h2_send_rst(stream: u32, error_code: u32) void {
+      h2_frame(this.wbuf, 4, H2_RST_STREAM, _convert<u8>(0), stream);
+      h2_append_u32(this.wbuf, error_code);
+    }
+
+    // Store a decoded request header block or dispatch a bodyless request.
+    method accept_h2_headers(stream: u32, end_stream: bool, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) void {
+      if (draining) {
+        this.h2_send_rst(stream, 7);
+        this.h2_headers.clear();
+        return;
+      }
+      if (stream <= this.h2_last_client_stream) {
+        this.h2_send_rst(stream, 5);
+        this.h2_headers.clear();
+        return;
+      }
+      if (not h2_valid_request_headers(this.h2_headers, cfg.limits)) {
+        this.h2_send_rst(stream, 1);
+        this.h2_headers.clear();
+        return;
+      }
+      this.h2_last_client_stream = stream;
+      this.h2_stream = stream;
+      if (this.h2_is_extended_connect()) {
+        this.handle_h2_request(handler, date, log, cfg, now_ms);
+        return;
+      }
+      var index: i64 = this.open_h2_request_stream(stream, cfg);
+      this.h2_headers.clear();
+      if (index < 0) {
+        this.h2_send_rst(stream, 7);
+        return;
+      }
+      if (end_stream) {
+        this.dispatch_h2_request_stream(index, handler, date, log, cfg, now_ms);
+      }
+    }
+
+    // Move one completed stream into the shared request view and invoke it.
+    method dispatch_h2_request_stream(index: i64, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64) void {
+      this.h2_headers.clear();
+      this.body_buf.clear();
+      if (true) {
+        var pending: ref H2RequestStream = this.h2_streams.get_unchecked(index);
+        this.h2_stream = pending.id;
+        for (var i: i64 = 0; i < pending.headers.size(); i = i + 1) {
+          this.h2_headers.push(pending.headers.get_unchecked(i).clone(this.alloc));
+        }
+        this.body_buf.append_bytes(pending.body.readable_ptr(), pending.body.readable_len());
+      }
+      this.reset_h2_request_stream(index);
+      this.handle_h2_request(handler, date, log, cfg, now_ms);
     }
 
     // Report whether the current headers request an extended CONNECT.
@@ -801,7 +1157,7 @@ public module sun_serve {
       }
       this.response.reset();
       handler.handle(this.request, this.response);
-      this.response.serialize_h2(this.wbuf, date.value(), this.h2_stream, cfg.server_header, not this.request.is_head());
+      this.queue_h2_response(date, this.h2_stream, cfg.server_header, not this.request.is_head());
       this.served = this.served + 1;
       this.started_ms = now_ms;
       this.bytes_sent = 0;
@@ -958,6 +1314,35 @@ public module sun_serve {
       if (not this.request.header_contains_token("connection", "upgrade") or not this.request.header_contains_token("connection", "http2-settings") or not this.request.has_header("http2-settings")) {
         return false;
       }
+      var absent_settings = String(this.alloc, "");
+      var encoded_settings: String = match this.request.header("http2-settings", this.alloc) {
+        Option.Some(value) => value,
+        Option.None => absent_settings
+      };
+      var settings_payload = ByteBuffer(this.alloc, 32);
+      if (not h2_decode_settings_header(encoded_settings, settings_payload) or settings_payload.readable_len() % 6 != 0) {
+        return false;
+      }
+      for (var setting: i64 = 0; setting < settings_payload.readable_len(); setting = setting + 6) {
+        var identifier: i32 = _convert<i32>(settings_payload.byte_at(setting)) * 256 + _convert<i32>(settings_payload.byte_at(setting + 1));
+        var setting_value: u32 = h2_u32(settings_payload.readable_ptr(), setting + 2);
+        if ((identifier == 2 or identifier == 8) and setting_value > 1) {
+          return false;
+        }
+        if (identifier == 4 and setting_value > 2147483647) {
+          return false;
+        }
+        if (identifier == 5 and (setting_value < 16384 or setting_value > 16777215)) {
+          return false;
+        }
+        if (identifier == 4) {
+          this.h2_peer_initial_window = _convert<i64>(setting_value);
+        } else if (identifier == 5) {
+          this.h2_peer_frame_size = _convert<i64>(setting_value);
+        } else if (identifier == 8) {
+          this.h2_enable_connect = setting_value == 1;
+        }
+      }
       this.response.reset();
       handler.handle(this.request, this.response);
       this.wbuf.append_literal("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n");
@@ -975,7 +1360,7 @@ public module sun_serve {
       this.wbuf.append_byte(0);
       this.wbuf.append_byte(0);
       this.wbuf.append_byte(1);
-      this.response.serialize_h2(this.wbuf, date.value(), 1, cfg.server_header, not this.request.is_head());
+      this.queue_h2_response(date, 1, cfg.server_header, not this.request.is_head());
       this.h2_upgrading = true;
       this.keep_alive = true;
       this.send_body = false;
@@ -992,9 +1377,20 @@ public module sun_serve {
       this.body_buf.clear();
       this.wbuf.clear();
       this.h2_upgrading = false;
+      this.h2_last_client_stream = 1;
       this.state = ConnState.Http2;
       this.want_ = EPOLLIN | EPOLLRDHUP;
       this.deadline_ms = this.deadline_ms + cfg.timeouts.keep_alive_ms;
+    }
+
+    // Report whether the client offered permessage-deflate.
+    method websocket_compression_offered() bool {
+      var absent = String(this.alloc, "");
+      var extensions: String = match this.request.header("sec-websocket-extensions", this.alloc) {
+        Option.Some(value) => value,
+        Option.None => absent
+      };
+      return extensions.contains("permessage-deflate");
     }
 
     // Validate and dispatch an HTTP/1.1 WebSocket opening handshake.
@@ -1024,8 +1420,10 @@ public module sun_serve {
       if (not websocket_valid_key(key)) {
         return false;
       }
-      var handshake = WebSocketHandshake(this.alloc, false);
+      var compression_available: bool = cfg.websocket_compression and this.websocket_compression_offered();
+      var handshake = WebSocketHandshake(this.alloc, compression_available);
       handler.handle_websocket(this.request, handshake);
+      handshake.compression = handshake.compression and compression_available;
       if (handshake.subprotocol.length() > 0 and not this.request.header_contains_token_string("sec-websocket-protocol", handshake.subprotocol)) {
         handshake.reject(400);
       }
@@ -1050,8 +1448,12 @@ public module sun_serve {
         this.wbuf.append_string(handshake.subprotocol);
         this.wbuf.append_literal("\r\n");
       }
+      if (handshake.compression) {
+        this.wbuf.append_literal("Sec-WebSocket-Extensions: permessage-deflate; server_no_context_takeover; client_no_context_takeover\r\n");
+      }
       this.wbuf.append_literal("\r\n");
-      this.ws_generation = this.activate_websocket(cfg.limits.max_body_bytes);
+      this.ws_compression = handshake.compression;
+      this.ws_generation = this.activate_websocket(cfg.limits.max_body_bytes, this.ws_compression);
       this.ws_upgrading = true;
       this.keep_alive = true;
       this.send_body = false;
@@ -1105,8 +1507,9 @@ public module sun_serve {
         var first: u8 = unsafe { _load<u8>(base, 0); };
         var second: u8 = unsafe { _load<u8>(base, 1); };
         var final_frame: bool = (first & 128) != 0;
+        var compressed_frame: bool = (first & 64) != 0;
         var opcode: u8 = first & 15;
-        if ((first & 112) != 0 or (second & 128) == 0) {
+        if ((first & 48) != 0 or (second & 128) == 0 or (compressed_frame and (not this.ws_compression or (opcode != 1 and opcode != 2)))) {
           this.websocket_protocol_error(handler, 1002);
           continue;
         }
@@ -1155,6 +1558,11 @@ public module sun_serve {
           decoded.append_byte(unsafe { _load<u8>(base, pos + n); } ^ unsafe { _load<u8>(mask, n % 4); });
         }
         if (opcode == 8) {
+          var close_status: i32 = websocket_close_payload_status(decoded.readable_ptr(), decoded.readable_len());
+          if (close_status != 0) {
+            this.websocket_protocol_error(handler, close_status);
+            continue;
+          }
           var code: i32 = 1000;
           if (length >= 2) {
             code = _convert<i32>(decoded.byte_at(0)) * 256 + _convert<i32>(decoded.byte_at(1));
@@ -1173,9 +1581,10 @@ public module sun_serve {
           this.body_buf.clear();
           this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
           this.ws_fragment_opcode = opcode;
+          this.ws_fragment_compressed = compressed_frame;
           this.ws_fragmenting = not final_frame;
           if (final_frame) {
-            this.deliver_websocket_message(handler);
+            this.deliver_websocket_message(handler, cfg);
           }
         } else if (opcode == 0) {
           if (not this.ws_fragmenting or this.body_buf.readable_len() + length > cfg.limits.max_body_bytes) {
@@ -1185,7 +1594,7 @@ public module sun_serve {
           this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
           if (final_frame) {
             this.ws_fragmenting = false;
-            this.deliver_websocket_message(handler);
+            this.deliver_websocket_message(handler, cfg);
           }
         } else {
           this.websocket_protocol_error(handler, 1002);
@@ -1198,15 +1607,17 @@ public module sun_serve {
 
     // Accept or reject an RFC 8441 extended CONNECT stream.
     method begin_h2_websocket(handler: ref IHandler, date: ref DateCache, cfg: const ref Config) void {
-      var handshake = WebSocketHandshake(this.alloc, false);
+      var compression_available: bool = cfg.websocket_compression and this.websocket_compression_offered();
+      var handshake = WebSocketHandshake(this.alloc, compression_available);
       if (this.h2_enable_connect and this.request.method_is("CONNECT")) {
         handler.handle_websocket(this.request, handshake);
       }
+      handshake.compression = handshake.compression and compression_available;
       if (not handshake.accepted) {
         this.response.reset();
         this.response.set_status(handshake.reject_status);
         this.response.set_body("WebSocket connect rejected\n");
-        this.response.serialize_h2(this.wbuf, date.value(), this.h2_stream, cfg.server_header, true);
+        this.queue_h2_response(date, this.h2_stream, cfg.server_header, true);
         return;
       }
       var block = ByteBuffer(this.alloc, 64);
@@ -1215,11 +1626,20 @@ public module sun_serve {
         var name = String(this.alloc, "sec-websocket-protocol");
         hpack_header(block, name, handshake.subprotocol);
       }
+      if (handshake.compression) {
+        var extension_name = String(this.alloc, "sec-websocket-extensions");
+        var extension_value = String(this.alloc, "permessage-deflate; server_no_context_takeover; client_no_context_takeover");
+        hpack_header(block, extension_name, extension_value);
+      }
       h2_frame(this.wbuf, block.readable_len(), H2_HEADERS, H2_END_HEADERS, this.h2_stream);
       this.wbuf.append_bytes(block.readable_ptr(), block.readable_len());
-      this.ws_generation = this.activate_websocket(cfg.limits.max_body_bytes);
+      this.ws_compression = handshake.compression;
+      this.ws_generation = this.activate_websocket(cfg.limits.max_body_bytes, this.ws_compression);
       this.h2_ws_stream = this.h2_stream;
       this.h2_ws_buf.clear();
+      this.h2_ws_out.clear();
+      this.h2_ws_send_window = this.h2_peer_initial_window;
+      this.h2_ws_end_pending = false;
       var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
       handler.websocket_open(socket);
     }
@@ -1232,10 +1652,11 @@ public module sun_serve {
         var first: u8 = unsafe { _load<u8>(base, 0); };
         var second: u8 = unsafe { _load<u8>(base, 1); };
         var final_frame: bool = (first & 128) != 0;
+        var compressed_frame: bool = (first & 64) != 0;
         var opcode: u8 = first & 15;
         var pos: i64 = 2;
         var length: i64 = _convert<i64>(second & 127);
-        if ((second & 128) == 0 or (first & 112) != 0) {
+        if ((second & 128) == 0 or (first & 48) != 0 or (compressed_frame and (not this.ws_compression or (opcode != 1 and opcode != 2)))) {
           this.h2_ws_stream = 0;
           return;
         }
@@ -1264,50 +1685,97 @@ public module sun_serve {
         for (var n: i64 = 0; n < length; n = n + 1) {
           decoded.append_byte(unsafe { _load<u8>(base, pos + n); } ^ unsafe { _load<u8>(mask, n % 4); });
         }
+        if ((opcode & 8) != 0 and (not final_frame or length > 125)) {
+          this.websocket_protocol_error(handler, 1002);
+          return;
+        }
         if (opcode == 9) {
           websocket_append_frame(replies, _convert<u8>(10), decoded.readable_ptr(), decoded.readable_len());
-        } else if (opcode == 8) {
+        } else if (opcode == 10) {} else if (opcode == 8) {
+          var close_status: i32 = websocket_close_payload_status(decoded.readable_ptr(), decoded.readable_len());
+          if (close_status != 0) {
+            this.websocket_protocol_error(handler, close_status);
+            return;
+          }
+          var code: i32 = 1000;
+          if (length >= 2) {
+            code = _convert<i32>(decoded.byte_at(0)) * 256 + _convert<i32>(decoded.byte_at(1));
+          }
+          var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
+          handler.websocket_close(socket, code);
           websocket_append_frame(replies, _convert<u8>(8), decoded.readable_ptr(), decoded.readable_len());
           this.deactivate_websocket();
         } else if (opcode == 1 or opcode == 2) {
+          if (this.ws_fragmenting) {
+            this.websocket_protocol_error(handler, 1002);
+            return;
+          }
           this.body_buf.clear();
           this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
           this.ws_fragment_opcode = opcode;
+          this.ws_fragment_compressed = compressed_frame;
           this.ws_fragmenting = not final_frame;
           if (final_frame) {
-            this.deliver_websocket_message(handler);
+            this.deliver_websocket_message(handler, cfg);
           }
-        } else if (opcode == 0 and this.ws_fragmenting) {
+        } else if (opcode == 0) {
+          if (not this.ws_fragmenting or this.body_buf.readable_len() + length > cfg.limits.max_body_bytes) {
+            this.websocket_protocol_error(handler, 1002);
+            return;
+          }
           this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
           if (final_frame) {
             this.ws_fragmenting = false;
-            this.deliver_websocket_message(handler);
+            this.deliver_websocket_message(handler, cfg);
           }
+        } else {
+          this.websocket_protocol_error(handler, 1002);
+          return;
         }
         this.h2_ws_buf.consume(pos + length);
         this.h2_ws_buf.compact();
       }
       if (replies.readable_len() > 0) {
-        h2_frame(this.wbuf, replies.readable_len(), H2_DATA, _convert<u8>(0), this.h2_ws_stream);
-        this.wbuf.append_bytes(replies.readable_ptr(), replies.readable_len());
+        this.h2_ws_out.append_bytes(replies.readable_ptr(), replies.readable_len());
+        this.flush_h2_websocket_data();
       }
     }
 
     // Deliver one assembled data message to the application.
-    method deliver_websocket_message(handler: ref IHandler) void {
-      if (this.ws_fragment_opcode == 1 and not websocket_valid_utf8(this.body_buf.readable_ptr(), this.body_buf.readable_len())) {
+    method deliver_websocket_message(handler: ref IHandler, cfg: const ref Config) void {
+      var inflated = ByteBuffer(this.alloc, 16);
+      var message_data: raw_ptr<u8> = this.body_buf.readable_ptr();
+      var message_len: i64 = this.body_buf.readable_len();
+      if (this.ws_fragment_compressed) {
+        var inflate_status: i32 = websocket_inflate(this.alloc, message_data, message_len, cfg.limits.max_body_bytes, inflated);
+        if (inflate_status != 0) {
+          if (inflate_status == 2) {
+            this.websocket_protocol_error(handler, 1009);
+          } else {
+            this.websocket_protocol_error(handler, 1002);
+          }
+          this.body_buf.clear();
+          this.ws_fragment_compressed = false;
+          return;
+        }
+        message_data = inflated.readable_ptr();
+        message_len = inflated.readable_len();
+      }
+      if (this.ws_fragment_opcode == 1 and not websocket_valid_utf8(message_data, message_len)) {
         this.websocket_protocol_error(handler, 1007);
         this.body_buf.clear();
+        this.ws_fragment_compressed = false;
         return;
       }
       var kind: WebSocketMessageKind = WebSocketMessageKind.Binary;
       if (this.ws_fragment_opcode == 1) {
         kind = WebSocketMessageKind.Text;
       }
-      var message = WebSocketMessage(kind, this.body_buf.readable_ptr(), this.body_buf.readable_len());
+      var message = WebSocketMessage(kind, message_data, message_len);
       var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
       handler.websocket_message(socket, message);
       this.body_buf.clear();
+      this.ws_fragment_compressed = false;
     }
 
     // Notify the application and start a protocol-error close.
@@ -1317,19 +1785,29 @@ public module sun_serve {
       var bytes = ContiguousBuffer<u8>(this.alloc, 2);
       bytes.set_unchecked(0, _convert<u8>((code >> 8) & 255));
       bytes.set_unchecked(1, _convert<u8>(code & 255));
-      websocket_append_frame(this.wbuf, _convert<u8>(8), bytes.raw_data(), 2);
-      this.ws_closing = true;
-      this.rbuf.clear();
+      if (this.h2_ws_stream != 0) {
+        var close_frame = ByteBuffer(this.alloc, 4);
+        websocket_append_frame(close_frame, _convert<u8>(8), bytes.raw_data(), 2);
+        this.h2_ws_out.append_bytes(close_frame.readable_ptr(), close_frame.readable_len());
+        this.h2_ws_end_pending = true;
+        this.flush_h2_websocket_data();
+        this.h2_ws_buf.clear();
+        this.deactivate_websocket();
+      } else {
+        websocket_append_frame(this.wbuf, _convert<u8>(8), bytes.raw_data(), 2);
+        this.ws_closing = true;
+        this.rbuf.clear();
+      }
     }
 
     // Run the handler and serialize its response into wbuf.
     method handle_request(handler: ref IHandler, date: ref DateCache, cfg: const ref Config, draining: bool) void {
       this.response.reset();
       this.keep_alive = this.request.keep_alive() and not draining;
-      if (this.try_h2c_upgrade(handler, date, cfg)) {
+      if (not draining and this.try_h2c_upgrade(handler, date, cfg)) {
         return;
       }
-      if (this.try_websocket_upgrade(handler, date, cfg)) {
+      if (not draining and this.try_websocket_upgrade(handler, date, cfg)) {
         return;
       }
       this.send_body = not this.request.is_head();

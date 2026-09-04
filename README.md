@@ -22,8 +22,8 @@ Supports **x86_64 Linux** only
   files, directory redirects, MIME types, `Cache-Control`, and traversal
   protection.
 - 🔒 **HTTPS included.** TLS 1.2+ with certificate and key from PEM files.
-- 🌐 **HTTP/1.1 and HTTP/2.** ALPN and h2c negotiation, HPACK, and HTTP/1.1 fallback.
-- 🔌 **WebSockets.** RFC 6455 Upgrade and RFC 8441 extended CONNECT with message callbacks and asynchronous send handles.
+- 🌐 **HTTP/1.1 and HTTP/2.** ALPN and h2c negotiation, HPACK, multiplexed streams, flow control, and HTTP/1.1 fallback.
+- 🔌 **WebSockets.** RFC 6455 Upgrade and RFC 8441 extended CONNECT with `permessage-deflate`, message callbacks, and asynchronous send handles.
 - 🛡️ **Hard to knock over.** Header and body size limits, per-state timeouts,
   request smuggling refused, and graceful shutdown on `SIGINT`/`SIGTERM`.
 - 📦 **A binary or a library.** Serve a directory with one static binary and no
@@ -114,7 +114,7 @@ this way: a handler class with per-worker state, query parameters, request
 bodies, and end-to-end tests that CI runs. The devcontainer uses host
 networking, so ports bound inside it are reachable from the host as is.
 
-WebSocket upgrades use `handle_websocket`; open, message, close, and error callbacks run on the owning worker. Cloneable `WebSocketHandle` values support bounded sends from other threads. The hello example exposes an echo endpoint at `/ws`.
+WebSocket upgrades use `handle_websocket`; open, message, close, and error callbacks run on the owning worker. Cloneable `WebSocketHandle` values support bounded sends from other threads and wake the owning worker immediately. `permessage-deflate` is enabled by default with client and server context takeover disabled; set `Config.websocket_compression` to `false` or pass `--no-websocket-compression` to opt out. The hello example exposes an echo endpoint at `/ws`.
 
 Request accessors (`path()`, `query_param()`, `header()`, `body_ptr()`, ...)
 are views into the connection's buffer and are valid only during `handle()`;

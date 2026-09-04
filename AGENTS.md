@@ -6,6 +6,11 @@ A file for guiding coding agents.
 
 - Never use git commands except readonly ones like `git status` and `git diff`.
 
+## Conventions
+
+- Strongly avoid use of raw pointers in sun files
+- Strongly avoid use of unsafe blocks
+
 ## Code Comments
 - All code comments should be concise, plain-english written for a general audience of software engineers.
 - Every public function, class, module, etc should have a concise, plain-english block comment describing what it does.

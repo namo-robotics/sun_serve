@@ -16,6 +16,10 @@ public module sun_serve {
   extern "C" function sys_accept4(fd: i32, addr: raw_ptr<u8>, len: raw_ptr<u8>, flags: i32) i32 as "accept4";
   extern "C" function sys_fcntl(fd: i32, command: i32, ...) i32 as "fcntl";
   extern "C" function sys_close(fd: i32) i32 as "close";
+  extern "C" function sys_eventfd(initial: u32, flags: i32) i32 as "eventfd";
+  extern "C" function sys_read(fd: i32, buf: raw_ptr<u8>, count: i64) i64 as "read";
+  extern "C" function sys_read_u64(fd: i32, buf: raw_ptr<u64>, count: i64) i64 as "read";
+  extern "C" function sys_write_u64(fd: i32, buf: raw_ptr<u64>, count: i64) i64 as "write";
   extern "C" function sys_write(fd: i32, buf: raw_ptr<u8>, count: i64) i64 as "write";
   extern "C" function sys_fstat(fd: i32, buf: raw_ptr<u8>) i32 as "fstat";
 
@@ -38,6 +42,8 @@ public module sun_serve {
   const EPOLL_CTL_DEL: i32 = 2;
   const EPOLL_CTL_MOD: i32 = 3;
   const EPOLL_CLOEXEC: i32 = 524288;
+  const EFD_NONBLOCK: i32 = 2048;
+  const EFD_CLOEXEC: i32 = 524288;
 
   const SOCK_NONBLOCK: i32 = 2048;
   const SOCK_CLOEXEC: i32 = 524288;

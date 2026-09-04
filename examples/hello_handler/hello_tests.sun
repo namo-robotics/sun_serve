@@ -62,6 +62,19 @@ module hello_handler {
       }
     }
 
+    // Append an HTTP/2 frame header to a binary test string.
+    function append_h2_frame(out: ref String, len: i64, kind: i32, flags: i32, stream: i32) void {
+      out.append_char(_convert<u8>((len >> 16) & 255));
+      out.append_char(_convert<u8>((len >> 8) & 255));
+      out.append_char(_convert<u8>(len & 255));
+      out.append_char(_convert<u8>(kind));
+      out.append_char(_convert<u8>(flags));
+      out.append_char(_convert<u8>((stream >> 24) & 127));
+      out.append_char(_convert<u8>((stream >> 16) & 255));
+      out.append_char(_convert<u8>((stream >> 8) & 255));
+      out.append_char(_convert<u8>(stream & 255));
+    }
+
     // The body is everything after the blank line that ends the head.
     function body_of(alloc: ref HeapAllocator, reply: const ref String) String {
       var start: i64 = find_header_end(reply) + 4;
@@ -156,6 +169,117 @@ module hello_handler {
         text.append_char(echoed.get_unchecked(ti));
       }
       std.test.assert(text.equals_literal("hello"), "message echoed");
+      stream.close();
+    }
+
+    test_function http2_websocket_and_http_share_connection() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc);
+      var stream = TcpStream();
+      stream.connect_local(ts.port);
+      var tv = Timeval(2);
+      unsafe { __setsockopt(stream.get_fd(), SOL_SOCKET, SO_RCVTIMEO, _address_of<Timeval>(tv), 16); };
+      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      append_h2_frame(wire, 6, 4, _convert<u8>(0), 0);
+      wire.append_char(0);
+      wire.append_char(8);
+      wire.append_char(0);
+      wire.append_char(0);
+      wire.append_char(0);
+      wire.append_char(1);
+      append_h2_frame(wire, 39, 1, 4, 1);
+      wire.append_char(2);
+      wire.append_char(7);
+      wire.append("CONNECT");
+      wire.append_char(0);
+      wire.append_char(9);
+      wire.append(":protocol");
+      wire.append_char(9);
+      wire.append("websocket");
+      wire.append_char(134);
+      wire.append_char(4);
+      wire.append_char(3);
+      wire.append("/ws");
+      wire.append_char(1);
+      wire.append_char(1);
+      wire.append_char(b'a');
+      append_h2_frame(wire, 11, 0, _convert<u8>(0), 1);
+      wire.append_char(129);
+      wire.append_char(133);
+      wire.append_char(1);
+      wire.append_char(2);
+      wire.append_char(3);
+      wire.append_char(4);
+      wire.append_char(105);
+      wire.append_char(103);
+      wire.append_char(111);
+      wire.append_char(104);
+      wire.append_char(110);
+      append_h2_frame(wire, 7, 1, 5, 3);
+      wire.append_char(130);
+      wire.append_char(134);
+      wire.append_char(4);
+      wire.append_char(3);
+      wire.append("/hi");
+      stream.send_string(wire);
+      var received = String(alloc, "");
+      var chunk = ContiguousBuffer<u8>(alloc, 4096);
+      while (not received.contains("hello, world") or not received.contains("hello")) {
+        var got: i64 = stream.recv(chunk);
+        if (got <= 0) {
+          break;
+        }
+        for (var i: i64 = 0; i < got; i = i + 1) {
+          received.append_char(chunk.get_unchecked(i));
+        }
+      }
+      std.test.assert(received.contains("hello"), "WebSocket stream echoed");
+      std.test.assert(received.contains("hello, world"), "HTTP stream completed");
+      stream.close();
+    }
+
+    test_function websocket_permessage_deflate_echo() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc);
+      var stream = TcpStream();
+      stream.connect_local(ts.port);
+      var tv = Timeval(2);
+      unsafe { __setsockopt(stream.get_fd(), SOL_SOCKET, SO_RCVTIMEO, _address_of<Timeval>(tv), 16); };
+      stream.send_str("GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n");
+      var reply = ContiguousBuffer<u8>(alloc, 4096);
+      var got: i64 = stream.recv(reply);
+      var head = String(alloc, "");
+      for (var hi: i64 = 0; hi < got; hi = hi + 1) {
+        head.append_char(reply.get_unchecked(hi));
+      }
+      std.test.assert(head.contains("permessage-deflate; server_no_context_takeover; client_no_context_takeover"), "compression negotiated");
+      var compressed = ContiguousBuffer<u8>(alloc, 7);
+      compressed.set_unchecked(0, 202);
+      compressed.set_unchecked(1, 72);
+      compressed.set_unchecked(2, 205);
+      compressed.set_unchecked(3, 201);
+      compressed.set_unchecked(4, 201);
+      compressed.set_unchecked(5, 7);
+      compressed.set_unchecked(6, 0);
+      var frame = ContiguousBuffer<u8>(alloc, 13);
+      frame.set_unchecked(0, 193);
+      frame.set_unchecked(1, 135);
+      frame.set_unchecked(2, 1);
+      frame.set_unchecked(3, 2);
+      frame.set_unchecked(4, 3);
+      frame.set_unchecked(5, 4);
+      for (var i: i64 = 0; i < 7; i = i + 1) {
+        frame.set_unchecked(6 + i, compressed.get_unchecked(i) ^ frame.get_unchecked(2 + (i % 4)));
+      }
+      stream.send_bytes(frame.raw_data(), 13);
+      var echoed = ContiguousBuffer<u8>(alloc, 32);
+      var echoed_len: i64 = stream.recv(echoed);
+      std.test.assert_eq(echoed_len, 9);
+      std.test.assert_eq(echoed.get_unchecked(0), 193);
+      std.test.assert_eq(echoed.get_unchecked(1), 7);
+      for (var j: i64 = 0; j < 7; j = j + 1) {
+        std.test.assert_eq(echoed.get_unchecked(2 + j), compressed.get_unchecked(j));
+      }
       stream.close();
     }
 

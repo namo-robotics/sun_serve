@@ -47,7 +47,7 @@ module sun_serve_cli {
 
   // The usage text.
   public function usage() static_ptr<u8> {
-    return "usage: sun_serve [options]\n\nServe a directory over HTTP/1.1 and HTTP/2, with TLS when a certificate is given.\n\n  --root DIR                directory to serve (default: current directory)\n  --listen HOST:PORT        plain HTTP listener; repeatable (default 0.0.0.0:8080\n                            when no --tls-listen is given)\n  --tls-listen HOST:PORT    HTTPS listener; repeatable; needs --cert and --key\n  --cert FILE               PEM certificate chain for TLS listeners\n  --key FILE                PEM private key for TLS listeners\n  --workers N               worker threads (default: online CPUs)\n  --log-level LEVEL         error, warn, info, or debug (default: info)\n  --no-access-log           do not write one line per request to stdout\n  --no-http2                disable HTTP/2 negotiation and cleartext detection\n  --max-body BYTES          largest request body, with optional k or m suffix\n  --max-header BYTES        largest request head, with optional k or m suffix\n  --keep-alive-timeout SEC  idle time before a keep-alive connection closes\n  --index NAME              directory index file (default: index.html)\n  --cache-control VALUE     Cache-Control header to send with files\n  --backlog N               listen backlog\n  --version                 print the version and exit\n  --help                    print this text and exit\n\nHOST may be an IPv4 address, localhost, or * for every interface.\n";
+    return "usage: sun_serve [options]\n\nServe a directory over HTTP/1.1 and HTTP/2, with TLS when a certificate is given.\n\n  --root DIR                directory to serve (default: current directory)\n  --listen HOST:PORT        plain HTTP listener; repeatable (default 0.0.0.0:8080\n                            when no --tls-listen is given)\n  --tls-listen HOST:PORT    HTTPS listener; repeatable; needs --cert and --key\n  --cert FILE               PEM certificate chain for TLS listeners\n  --key FILE                PEM private key for TLS listeners\n  --workers N               worker threads (default: online CPUs)\n  --log-level LEVEL         error, warn, info, or debug (default: info)\n  --no-access-log           do not write one line per request to stdout\n  --no-http2                disable HTTP/2 negotiation and cleartext detection\n  --no-websocket-compression disable permessage-deflate negotiation\n  --max-body BYTES          largest request body, with optional k or m suffix\n  --max-header BYTES        largest request head, with optional k or m suffix\n  --keep-alive-timeout SEC  idle time before a keep-alive connection closes\n  --index NAME              directory index file (default: index.html)\n  --cache-control VALUE     Cache-Control header to send with files\n  --backlog N               listen backlog\n  --version                 print the version and exit\n  --help                    print this text and exit\n\nHOST may be an IPv4 address, localhost, or * for every interface.\n";
   }
 
   // Parse a byte count with an optional k or m suffix.
@@ -168,6 +168,10 @@ module sun_serve_cli {
       }
       if (flag.equals_literal("--no-http2")) {
         cli.config.http2 = false;
+        continue;
+      }
+      if (flag.equals_literal("--no-websocket-compression")) {
+        cli.config.websocket_compression = false;
         continue;
       }
       if (not takes_value(flag)) {
@@ -396,4 +400,5 @@ manifest {
   ]
   test_files: ["cli_tests.sun"]
   libraries: ["stdlib.moon", "tls.moon"]
+  archives: ["$ZLIB_LIB/libz.a"]
 }

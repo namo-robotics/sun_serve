@@ -47,4 +47,5 @@ manifest {
     "../tests/server_tls_tests.sun"
   ]
   libraries: ["stdlib.moon", "tls.moon"]
+  archives: ["$ZLIB_LIB/libz.a"]
 }

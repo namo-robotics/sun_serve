@@ -13,6 +13,7 @@ public module sun_serve {
     public var status: i32;
     var header_lines: ByteBuffer;  // extra headers, each already "Name: value\r\n"
     var body: ByteBuffer;
+    var chunk_payload: ByteBuffer;
     var content_type_: String;
     var has_content_type: bool;
     var file: File;
@@ -29,6 +30,7 @@ public module sun_serve {
       this.status = 200;
       this.header_lines = ByteBuffer(allocator, 256);
       this.body = ByteBuffer(allocator, 1024);
+      this.chunk_payload = ByteBuffer(allocator, 1024);
       this.content_type_ = String(allocator, "");
       this.has_content_type = false;
       this.file = File();
@@ -44,6 +46,7 @@ public module sun_serve {
       this.status = 200;
       this.header_lines.clear();
       this.body.clear();
+      this.chunk_payload.clear();
       this.content_type_.clear();
       this.has_content_type = false;
       if (this.has_file) {
@@ -156,6 +159,7 @@ public module sun_serve {
         return;
       }
       this.chunked = true;
+      this.chunk_payload.append_bytes(data, len);
       this.body.append_hex_u64(_convert<u64>(len));
       this.body.append_literal("\r\n");
       this.body.append_bytes(data, len);
@@ -253,6 +257,14 @@ public module sun_serve {
       return this.body.readable_len() + this.file_remaining;
     }
 
+    // Total unframed body length for HTTP/2.
+    const method h2_declared_length() i64 {
+      if (this.chunked) {
+        return this.chunk_payload.readable_len() + this.file_remaining;
+      }
+      return this.declared_length();
+    }
+
     // Write the status line and headers into out. head_only is set for HEAD
     // requests, which still declare the length of the body they omit.
     public method serialize_head(out: ref ByteBuffer, date: ref String, keep_alive: bool, server_header: bool) void {
@@ -339,11 +351,11 @@ public module sun_serve {
         name.clear();
         name.append("content-length");
         var length = String(this.alloc, "");
-        length.append(this.declared_length());
+        length.append(this.h2_declared_length());
         hpack_header(block, name, length);
       }
       var flags: u8 = H2_END_HEADERS;
-      if (not send_body or status_has_no_body(this.status) or this.declared_length() == 0) {
+      if (not send_body or status_has_no_body(this.status) or this.h2_declared_length() == 0) {
         flags = flags | H2_END_STREAM;
       }
       h2_frame(out, block.readable_len(), H2_HEADERS, flags, stream);
@@ -351,8 +363,12 @@ public module sun_serve {
       if ((flags & H2_END_STREAM) != 0) {
         return;
       }
-      var payload = ByteBuffer(this.alloc, this.declared_length());
-      payload.append_bytes(this.body.readable_ptr(), this.body.readable_len());
+      var payload = ByteBuffer(this.alloc, this.h2_declared_length());
+      if (this.chunked) {
+        payload.append_bytes(this.chunk_payload.readable_ptr(), this.chunk_payload.readable_len());
+      } else {
+        payload.append_bytes(this.body.readable_ptr(), this.body.readable_len());
+      }
       while (this.has_file_body()) {
         if (this.read_file_chunk(payload, 65536) == 0) {
           break;

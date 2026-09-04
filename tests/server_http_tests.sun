@@ -105,6 +105,38 @@ public module sun_serve {
       c.close();
     }
 
+    test_function http2_interleaves_request_bodies() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      append_h2_test_frame(wire, 0, H2_SETTINGS, _convert<u8>(0), 0);
+      for (var stream: u32 = 1; stream <= 3; stream = stream + 2) {
+        append_h2_test_frame(wire, 12, H2_HEADERS, H2_END_HEADERS, stream);
+        wire.append_char(131);  // :method POST
+        wire.append_char(134);  // :scheme http
+        wire.append_char(4);  // literal :path
+        wire.append_char(5);
+        wire.append("/echo");
+        wire.append_char(1);  // literal :authority
+        wire.append_char(1);
+        wire.append_char(b'a');
+      }
+      append_h2_test_frame(wire, 2, H2_DATA, _convert<u8>(0), 1);
+      wire.append("ab");
+      append_h2_test_frame(wire, 2, H2_DATA, _convert<u8>(0), 3);
+      wire.append("xy");
+      append_h2_test_frame(wire, 2, H2_DATA, H2_END_STREAM, 1);
+      wire.append("cd");
+      append_h2_test_frame(wire, 1, H2_DATA, H2_END_STREAM, 3);
+      wire.append("z");
+      c.send_string(wire);
+      var reply: String = c.read_until("xyz");
+      std.test.assert(reply.contains("abcd"), "first interleaved response");
+      std.test.assert(reply.contains("xyz"), "second interleaved response");
+      c.close();
+    }
+
     test_function single_get() {
       var alloc = make_heap_allocator();
       var ts = TestServer(alloc, 2, 5000);

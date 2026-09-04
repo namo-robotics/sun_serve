@@ -2,7 +2,7 @@
 //
 // Each worker owns an epoll instance, its own listening sockets, a table of
 // connections, and its own handler. Nothing here is shared with other workers
-// except the stop flag, so the loop never takes a lock.
+// except the stop flag and WebSocket mailboxes.
 
 public module sun_serve {
   using std;
@@ -11,6 +11,7 @@ public module sun_serve {
   // Tokens at or above this value identify listeners; below it, connection
   // slots.
   const LISTENER_TOKEN_BASE: u64 = 1099511627776;
+  const WORKER_WAKE_TOKEN: u64 = 1099511627775;
 
   // How many connections one readiness event on a listener may accept before
   // yielding to other work.
@@ -40,6 +41,7 @@ public module sun_serve {
     var args: WorkerArgs;
     var alloc: HeapAllocator;
     var epoll: Epoll;
+    var wake_fd: i32;
     var conns: Vec<Connection>;
     var free: Vec<i64>;
     var live: i64;
@@ -60,6 +62,10 @@ public module sun_serve {
       this.epoch = now();
       var layout: EpollLayout = probe_epoll_layout(alloc);
       this.epoll = Epoll(alloc, layout, 256);
+      this.wake_fd = unsafe { sys_eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC); };
+      if (this.wake_fd < 0) {
+        throw Error(last_errno(), "eventfd failed");
+      }
       this.conns = Vec<Connection>(alloc, 64);
       this.free = Vec<i64>(alloc, 64);
       this.live = 0;
@@ -70,6 +76,12 @@ public module sun_serve {
       this.args = args;
     }
 
+    // Close the worker wake descriptor.
+    deinit() {
+      close_fd(this.wake_fd);
+      this.wake_fd = 0;
+    }
+
     // Milliseconds since the worker started.
     method now_ms() i64 {
       return this.epoch.elapsed().as_millis();
@@ -78,6 +90,12 @@ public module sun_serve {
     // Serve until the stop flag is raised and the connections have drained.
     // Returns the process exit status the worker would like.
     public method run() i32 {
+      try {
+        this.epoll.add(this.wake_fd, EPOLLIN, WORKER_WAKE_TOKEN);
+      } catch (e: IError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      }
       for (var i: i64 = 0; i < this.args.listeners.size(); i = i + 1) {
         var l: ref ListenerSocket = this.args.listeners.get_unchecked(i);
         try {
@@ -101,16 +119,13 @@ public module sun_serve {
         for (var i: i64 = 0; i < n; i = i + 1) {
           var token: u64 = this.epoll.event_token(i);
           var mask: u32 = this.epoll.event_mask(i);
-          if (token >= LISTENER_TOKEN_BASE) {
+          if (token == WORKER_WAKE_TOKEN) {
+            this.drain_wake();
+            this.drive_websockets(now_ms);
+          } else if (token >= LISTENER_TOKEN_BASE) {
             this.accept_ready(_convert<i64>(token - LISTENER_TOKEN_BASE), now_ms);
           } else {
             this.connection_ready(_convert<i64>(token), mask, now_ms);
-          }
-        }
-        for (var slot: i64 = 0; slot < this.conns.size(); slot = slot + 1) {
-          var pending: ref Connection = this.conns.get_unchecked(slot);
-          if (pending.is_open() and pending.is_websocket()) {
-            this.connection_ready(slot, 0, now_ms);
           }
         }
         this.check_stop(now_ms);
@@ -124,6 +139,22 @@ public module sun_serve {
         }
       }
       return 0;
+    }
+
+    // Clear accumulated worker wake notifications.
+    method drain_wake() void {
+      var value: u64 = 0;
+      while (unsafe { sys_read_u64(this.wake_fd, _address_of<u64>(value), 8); } > 0) {}
+    }
+
+    // Drain asynchronous output for every WebSocket owned by this worker.
+    method drive_websockets(now_ms: i64) void {
+      for (var slot: i64 = 0; slot < this.conns.size(); slot = slot + 1) {
+        var pending: ref Connection = this.conns.get_unchecked(slot);
+        if (pending.is_open() and pending.is_websocket()) {
+          this.connection_ready(slot, 0, now_ms);
+        }
+      }
     }
 
     // Accept a batch of pending connections on one listener.
@@ -175,7 +206,7 @@ public module sun_serve {
     // Returns false (with the socket closed) when that fails.
     method open_slot(slot: i64, fd: i32, tls: bool, now_ms: i64) bool {
       var conn: ref Connection = this.conns.get_unchecked(slot);
-      if (not conn.open(fd, tls, this.args.tls, now_ms, this.args.config.timeouts)) {
+      if (not conn.open(fd, tls, this.args.tls, now_ms, this.args.config.timeouts, this.wake_fd)) {
         this.log.log(LogLevel.Warn, "could not start TLS session");
         close_fd(fd);
         return false;
