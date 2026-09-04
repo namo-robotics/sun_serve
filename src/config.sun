@@ -29,26 +29,22 @@ public module sun_serve {
   public class TlsSpec {
     public var cert_path: String;
     public var key_path: String;
-    public var alpn_h2: bool;  // advertise HTTP/2 over ALPN (not implemented yet)
 
     // Point at PEM files on disk.
     init(alloc: const ref HeapAllocator, cert_path: const ref String, key_path: const ref String) {
       this.cert_path = cert_path.clone(alloc);
       this.key_path = key_path.clone(alloc);
-      this.alpn_h2 = false;
     }
 
     // No files yet; Config starts with this.
     init(alloc: const ref HeapAllocator) {
       this.cert_path = String(alloc, "");
       this.key_path = String(alloc, "");
-      this.alpn_h2 = false;
     }
 
     // An independent copy.
     public const method clone(alloc: const ref HeapAllocator) TlsSpec {
       var copy = TlsSpec(alloc, this.cert_path, this.key_path);
-      copy.alpn_h2 = this.alpn_h2;
       return copy;
     }
   }
@@ -60,6 +56,8 @@ public module sun_serve {
     public var max_headers: i64;
     public var max_connections_per_worker: i64;
     public var max_pipelined: i64;  // requests served per readiness event on one connection
+    public var max_h2_concurrent_streams: i64;
+    public var max_h2_buffered_bytes: i64;
 
     // Sensible defaults for a general-purpose server.
     init() {
@@ -68,6 +66,8 @@ public module sun_serve {
       this.max_headers = 100;
       this.max_connections_per_worker = 8192;
       this.max_pipelined = 16;
+      this.max_h2_concurrent_streams = 100;
+      this.max_h2_buffered_bytes = this.max_body_bytes;
     }
 
     // An independent copy.
@@ -78,6 +78,8 @@ public module sun_serve {
       copy.max_headers = this.max_headers;
       copy.max_connections_per_worker = this.max_connections_per_worker;
       copy.max_pipelined = this.max_pipelined;
+      copy.max_h2_concurrent_streams = this.max_h2_concurrent_streams;
+      copy.max_h2_buffered_bytes = this.max_h2_buffered_bytes;
       return copy;
     }
   }
@@ -127,6 +129,8 @@ public module sun_serve {
     public var log_level: LogLevel;
     public var access_log: bool;
     public var server_header: bool;  // send a Server header
+    public var http2: bool;
+    public var websocket_compression: bool;
     var alloc: HeapAllocator;
 
     // Start from defaults with no listeners.
@@ -141,6 +145,8 @@ public module sun_serve {
       this.log_level = LogLevel.Info;
       this.access_log = true;
       this.server_header = true;
+      this.http2 = true;
+      this.websocket_compression = true;
     }
 
     // Add a plain HTTP listener.
@@ -183,6 +189,8 @@ public module sun_serve {
       copy.log_level = this.log_level;
       copy.access_log = this.access_log;
       copy.server_header = this.server_header;
+      copy.http2 = this.http2;
+      copy.websocket_compression = this.websocket_compression;
       return copy;
     }
   }

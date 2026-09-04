@@ -8,7 +8,10 @@ only serves files, this one answers requests itself with a handler class:
 | `GET /hi?name=NAME` | greets `NAME`, or `world` without a name |
 | `POST /echo` | sends the request body back; other methods get 405 |
 | `GET /stats` | how many requests the worker that answered has handled |
+| `WS /ws` | echoes complete text and binary WebSocket messages |
 | anything else | 404 |
+
+`WebSocketHandle` clones can also queue bounded asynchronous sends from other threads.
 
 The handler keeps its request counter as a plain field. Each worker thread
 owns its own handler instance, so per-handler state needs no locking.
@@ -23,6 +26,7 @@ build/hello_handler &
 curl 'http://127.0.0.1:8080/hi?name=sun'
 curl -d 'ping' http://127.0.0.1:8080/echo
 curl http://127.0.0.1:8080/stats
+websocat ws://127.0.0.1:8080/ws
 ```
 
 ```sh

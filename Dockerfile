@@ -12,7 +12,7 @@ ENV DEBIAN_FRONTEND=noninteractive \
 # curl and certificates fetch the compiler below; the openssl tool mints the
 # certificates the TLS tests use and acts as their client.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl openssl \
+    ca-certificates curl make openssl \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Install the rolling Sun compiler together with its matching stdlib and TLS
@@ -40,7 +40,26 @@ RUN mkdir -p /opt/cross \
  && rm -f "$f"
 ENV PATH="/opt/cross/x86_64-linux-musl-cross/bin:${PATH}"
 
-# Default ports of the sun_serve command (HTTP, HTTPS) and the example. The
+ARG ZLIB_VERSION=1.3.2
+ARG ZLIB_SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
+
+# Build zlib with the same musl compiler Sun uses for static binaries.
+RUN curl -fSL --connect-timeout 10 --max-time 300 \
+      --retry 3 --retry-all-errors --retry-delay 2 \
+      -o /tmp/zlib.tar.gz \
+      "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" \
+ && echo "${ZLIB_SHA256}  /tmp/zlib.tar.gz" | sha256sum -c - \
+ && mkdir -p /tmp/zlib-src \
+ && tar xzf /tmp/zlib.tar.gz -C /tmp/zlib-src --strip-components=1 \
+ && cd /tmp/zlib-src \
+ && CC=x86_64-linux-musl-gcc ./configure --static \
+      --prefix=/opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl \
+ && make -j2 \
+ && make install \
+ && test -f /opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib/libz.a \
+ && rm -rf /tmp/zlib-src /tmp/zlib.tar.gz
+
+# Default ports of the sun_serve command (HTTP/h2c, HTTPS/h2) and the example. The
 # devcontainer runs with host networking, so these are reachable from the
 # host directly; plain `docker run` needs -p or --network=host.
 EXPOSE 8080 8443

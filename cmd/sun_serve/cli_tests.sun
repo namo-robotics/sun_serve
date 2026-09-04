@@ -32,6 +32,7 @@ module sun_serve_cli {
       std.test.assert_eq(cli.config.listen.size(), 1);
       std.test.assert_eq(cli.config.listen.get_unchecked(0).port, 8080);
       std.test.assert(not cli.config.listen.get_unchecked(0).tls, "plain by default");
+      std.test.assert(cli.config.http2, "HTTP/2 enabled by default");
       std.test.assert(cli.workers >= 1, "workers from cpu count");
       std.test.assert(cli.root.equals_literal("."), "root defaults to cwd");
     }
@@ -45,6 +46,14 @@ module sun_serve_cli {
       std.test.assert_eq(cli.config.listen.get_unchecked(0).addr.octet(0), 127);
       std.test.assert_eq(cli.workers, 3);
       std.test.assert(not cli.config.access_log, "access log off");
+    }
+
+    test_function http2_can_be_disabled() {
+      var alloc = make_heap_allocator();
+      var args = argv(alloc, "--no-http2", "", "", "");
+      var cli: Cli = parse_cli(alloc, args);
+      std.test.assert_eq(cli.error.length(), 0);
+      std.test.assert(not cli.config.http2, "HTTP/2 disabled");
     }
 
     test_function sizes_and_timeouts() {

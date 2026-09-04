@@ -109,6 +109,16 @@ public module sun_serve {
         return true;
       }
 
+      // Read until pending bytes contain a literal or the peer stops sending.
+      public method read_until(needle: static_ptr<u8>) String throws IError {
+        while (not this.pending.contains(needle)) {
+          if (not this.fill()) {
+            break;
+          }
+        }
+        return this.pending.clone(this.alloc);
+      }
+
       // Report whether the server closed the connection (a read returns
       // nothing within the timeout counts as still open).
       public method peer_closed() bool {

@@ -288,5 +288,89 @@ public module sun_serve {
       }
       out.append_literal("\r\n");
     }
+    // Serialize this response as HTTP/2 HEADERS and DATA frames.
+    public method serialize_h2(out: ref ByteBuffer, date: ref String, stream: u32, server_header: bool, send_body: bool) void {
+      if (this.chunked and not this.chunks_ended) {
+        this.end_chunks();
+      }
+      var block = ByteBuffer(this.alloc, 256);
+      hpack_status(block, this.status, this.alloc);
+      var name = String(this.alloc, "date");
+      hpack_header(block, name, date);
+      if (server_header) {
+        name.clear();
+        name.append("server");
+        var server = String(this.alloc, "sun_serve");
+        hpack_header(block, name, server);
+      }
+      if (this.has_content_type) {
+        name.clear();
+        name.append("content-type");
+        hpack_header(block, name, this.content_type_);
+      }
+      var header_pos: i64 = 0;
+      while (header_pos < this.header_lines.readable_len()) {
+        var colon: i64 = header_pos;
+        while (colon < this.header_lines.readable_len() and this.header_lines.byte_at(colon) != b':') {
+          colon = colon + 1;
+        }
+        var line_end: i64 = colon + 1;
+        while (line_end + 1 < this.header_lines.readable_len() and not (this.header_lines.byte_at(line_end) == 13 and this.header_lines.byte_at(line_end + 1) == 10)) {
+          line_end = line_end + 1;
+        }
+        if (colon < line_end) {
+          var extra_name = String(this.alloc, "");
+          for (var ni: i64 = header_pos; ni < colon; ni = ni + 1) {
+            extra_name.append_char(lower_ascii(this.header_lines.byte_at(ni)));
+          }
+          var value_start: i64 = colon + 1;
+          while (value_start < line_end and this.header_lines.byte_at(value_start) == 32) {
+            value_start = value_start + 1;
+          }
+          var extra_value = String(this.alloc, "");
+          for (var vi: i64 = value_start; vi < line_end; vi = vi + 1) {
+            extra_value.append_char(this.header_lines.byte_at(vi));
+          }
+          hpack_header(block, extra_name, extra_value);
+        }
+        header_pos = line_end + 2;
+      }
+      if (not status_has_no_body(this.status)) {
+        name.clear();
+        name.append("content-length");
+        var length = String(this.alloc, "");
+        length.append(this.declared_length());
+        hpack_header(block, name, length);
+      }
+      var flags: u8 = H2_END_HEADERS;
+      if (not send_body or status_has_no_body(this.status) or this.declared_length() == 0) {
+        flags = flags | H2_END_STREAM;
+      }
+      h2_frame(out, block.readable_len(), H2_HEADERS, flags, stream);
+      out.append_bytes(block.readable_ptr(), block.readable_len());
+      if ((flags & H2_END_STREAM) != 0) {
+        return;
+      }
+      var payload = ByteBuffer(this.alloc, this.declared_length());
+      payload.append_bytes(this.body.readable_ptr(), this.body.readable_len());
+      while (this.has_file_body()) {
+        if (this.read_file_chunk(payload, 65536) == 0) {
+          break;
+        }
+      }
+      while (payload.readable_len() > 0) {
+        var take: i64 = payload.readable_len();
+        if (take > 16384) {
+          take = 16384;
+        }
+        var data_flags: u8 = 0;
+        if (take == payload.readable_len()) {
+          data_flags = H2_END_STREAM;
+        }
+        h2_frame(out, take, H2_DATA, data_flags, stream);
+        out.append_bytes(payload.readable_ptr(), take);
+        payload.consume(take);
+      }
+    }
   }
 }

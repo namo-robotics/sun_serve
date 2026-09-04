@@ -28,12 +28,6 @@ self-contained piece of work; nothing here is scheduled.
     responses should hand the copy to the kernel.
   - TLS responses keep the user-space path unless kernel TLS is added later.
 
-- **HTTP/2**
-  - The ALPN seam and the config flag exist; the server refuses to start with
-    `h2` enabled.
-  - Needs a framing layer, HPACK, and stream multiplexing on top of the
-    existing connection state machine.
-
 - **TLS operations**
   - Reload certificate and key without a restart, so renewals do not drop
     connections.

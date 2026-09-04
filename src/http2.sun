@@ -1,0 +1,1017 @@
+// http2.sun - HTTP/2 framing and the HPACK wire representation
+
+public module sun_serve {
+  using std;
+
+  const H2_DATA: u8 = 0;
+  const H2_HEADERS: u8 = 1;
+  const H2_PRIORITY: u8 = 2;
+  const H2_RST_STREAM: u8 = 3;
+  const H2_SETTINGS: u8 = 4;
+  const H2_PUSH_PROMISE: u8 = 5;
+  const H2_PING: u8 = 6;
+  const H2_GOAWAY: u8 = 7;
+  const H2_WINDOW_UPDATE: u8 = 8;
+  const H2_CONTINUATION: u8 = 9;
+  const H2_END_STREAM: u8 = 1;
+  const H2_ACK: u8 = 1;
+  const H2_END_HEADERS: u8 = 4;
+
+  // One decoded HTTP/2 header field.
+  public class H2Header {
+    public var name: String;
+    public var value: String;
+
+    // Copy this header into another allocator.
+    public const method clone(alloc: const ref HeapAllocator) H2Header {
+      return H2Header(this.name.clone(alloc), this.value.clone(alloc));
+    }
+
+    // Own a decoded name and value.
+    init(name: String, value: String) {
+      this.name = name;
+      this.value = value;
+    }
+  }
+
+  // The HPACK dynamic table for one connection.
+  class HpackDecoder {
+    var entries: Vec<H2Header>;
+    var bytes: i64;
+    var maximum: i64;
+    var alloc: HeapAllocator;
+
+    // Start with the RFC default dynamic-table limit.
+    init(alloc: const ref HeapAllocator) {
+      this.alloc = alloc.copy();
+      this.entries = Vec<H2Header>(alloc, 16);
+      this.bytes = 0;
+      this.maximum = 4096;
+    }
+
+    // Empty the dynamic table for a new connection.
+    method reset() void {
+      this.entries.clear();
+      this.bytes = 0;
+      this.maximum = 4096;
+    }
+
+    // Apply a peer table-size update within the configured maximum.
+    method resize(size: i64) bool {
+      if (size < 0 or size > 4096) {
+        return false;
+      }
+      this.maximum = size;
+      this.evict();
+      return true;
+    }
+
+    // Resolve a dynamic index into owned strings.
+    method lookup(index: i64, name: ref String, value: ref String) bool {
+      var at: i64 = this.entries.size() - 1 - (index - 62);
+      if (at < 0 or at >= this.entries.size()) {
+        return false;
+      }
+      var field: ref H2Header = this.entries.get_unchecked(at);
+      name.append(field.name);
+      value.append(field.value);
+      return true;
+    }
+
+    // Add a newest-first dynamic entry.
+    method add(name: ref String, value: ref String) void {
+      var size: i64 = name.length() + value.length() + 32;
+      if (size > this.maximum) {
+        this.entries.clear();
+        this.bytes = 0;
+        return;
+      }
+      this.entries.push(H2Header(name.clone(this.alloc), value.clone(this.alloc)));
+      this.bytes = this.bytes + size;
+      this.evict();
+    }
+
+    // Remove oldest entries until the table fits.
+    method evict() void {
+      while (this.bytes > this.maximum and this.entries.size() > 0) {
+        var last: i64 = this.entries.size() - 1;
+        var old_size: i64 = this.entries.get_unchecked(last).name.length() + this.entries.get_unchecked(last).value.length() + 32;
+        this.bytes = this.bytes - old_size;
+        this.entries.pop();
+      }
+    }
+  }
+
+  // Read an unsigned big-endian HTTP/2 integer.
+  function h2_u32(data: raw_ptr<u8>, off: i64) u32 {
+    return (_convert<u32>(unsafe { _load<u8>(data, off); }) << 24) | (_convert<u32>(unsafe { _load<u8>(data, off + 1); }) << 16) | (_convert<u32>(unsafe { _load<u8>(data, off + 2); }) << 8) | _convert<u32>(unsafe { _load<u8>(data, off + 3); });
+  }
+
+  // Append an unsigned big-endian HTTP/2 integer.
+  function h2_append_u32(out: ref ByteBuffer, value: u32) void {
+    out.append_byte(_convert<u8>((value >> 24) & 255));
+    out.append_byte(_convert<u8>((value >> 16) & 255));
+    out.append_byte(_convert<u8>((value >> 8) & 255));
+    out.append_byte(_convert<u8>(value & 255));
+  }
+
+  // Validate HTTP/2 request-header syntax and decoded limits.
+  function h2_valid_request_headers(headers: ref Vec<H2Header>, limits: const ref Limits) bool {
+    if (headers.size() > limits.max_headers) {
+      return false;
+    }
+    var regular_seen: bool = false;
+    var method_seen: bool = false;
+    var path_seen: bool = false;
+    var scheme_seen: bool = false;
+    var authority_seen: bool = false;
+    var protocol_seen: bool = false;
+    var decoded_bytes: i64 = 0;
+    for (var i: i64 = 0; i < headers.size(); i = i + 1) {
+      var field: ref H2Header = headers.get_unchecked(i);
+      if (field.name.length() == 0) {
+        return false;
+      }
+      decoded_bytes = decoded_bytes + field.name.length() + field.value.length() + 32;
+      if (decoded_bytes > limits.max_header_bytes) {
+        return false;
+      }
+      for (var j: i64 = 0; j < field.name.length(); j = j + 1) {
+        var c: u8 = field.name.at(j);
+        if (c >= b'A' and c <= b'Z') {
+          return false;
+        }
+      }
+      if (field.name.starts_with(":")) {
+        if (regular_seen) {
+          return false;
+        }
+        if (field.name.equals_literal(":method") and not method_seen) {
+          method_seen = true;
+        } else if (field.name.equals_literal(":path") and not path_seen) {
+          path_seen = true;
+        } else if (field.name.equals_literal(":scheme") and not scheme_seen) {
+          scheme_seen = true;
+        } else if (field.name.equals_literal(":authority") and not authority_seen) {
+          authority_seen = true;
+        } else if (field.name.equals_literal(":protocol") and not protocol_seen) {
+          protocol_seen = true;
+        } else {
+          return false;
+        }
+      } else {
+        regular_seen = true;
+        if (field.name.equals_literal("connection") or field.name.equals_literal("proxy-connection") or field.name.equals_literal("keep-alive") or field.name.equals_literal("transfer-encoding") or field.name.equals_literal("upgrade")) {
+          return false;
+        }
+        if (field.name.equals_literal("te") and not field.value.equals_literal("trailers")) {
+          return false;
+        }
+      }
+    }
+    if (not method_seen or not path_seen) {
+      return false;
+    }
+    if (protocol_seen and (not scheme_seen or not authority_seen)) {
+      return false;
+    }
+    return true;
+  }
+
+  // Append an HTTP/2 frame header.
+  function h2_frame(out: ref ByteBuffer, len: i64, kind: u8, flags: u8, stream: u32) void {
+    out.append_byte(_convert<u8>((len >> 16) & 255));
+    out.append_byte(_convert<u8>((len >> 8) & 255));
+    out.append_byte(_convert<u8>(len & 255));
+    out.append_byte(kind);
+    out.append_byte(flags);
+    out.append_byte(_convert<u8>((stream >> 24) & 127));
+    out.append_byte(_convert<u8>((stream >> 16) & 255));
+    out.append_byte(_convert<u8>((stream >> 8) & 255));
+    out.append_byte(_convert<u8>(stream & 255));
+  }
+
+  // Decode an HPACK variable-length integer and advance pos.
+  function hpack_int(data: raw_ptr<u8>, len: i64, pos: ref i64, prefix: i32) i64 {
+    if (pos >= len) {
+      return -1;
+    }
+    var mask: i32 = (1 << prefix) - 1;
+    var first: i32 = _convert<i32>(unsafe { _load<u8>(data, pos); });
+    pos = pos + 1;
+    var value: i64 = _convert<i64>(first & mask);
+    if (value < _convert<i64>(mask)) {
+      return value;
+    }
+    var shift: i32 = 0;
+    while (pos < len and shift <= 56) {
+      var b: i32 = _convert<i32>(unsafe { _load<u8>(data, pos); });
+      pos = pos + 1;
+      value = value + (_convert<i64>(b & 127) << shift);
+      if ((b & 128) == 0) {
+        return value;
+      }
+      shift = shift + 7;
+    }
+    return -1;
+  }
+
+  // Return the HPACK static-table name for an index.
+  function hpack_static_name(index: i64) static_ptr<u8> {
+    return match index {
+      1 => ":authority",
+      2 => ":method",
+      3 => ":method",
+      4 => ":path",
+      5 => ":path",
+      6 => ":scheme",
+      7 => ":scheme",
+      8 => ":status",
+      9 => ":status",
+      10 => ":status",
+      11 => ":status",
+      12 => ":status",
+      13 => ":status",
+      14 => ":status",
+      15 => "accept-charset",
+      16 => "accept-encoding",
+      17 => "accept-language",
+      18 => "accept-ranges",
+      19 => "accept",
+      20 => "access-control-allow-origin",
+      21 => "age",
+      22 => "allow",
+      23 => "authorization",
+      24 => "cache-control",
+      25 => "content-disposition",
+      26 => "content-encoding",
+      27 => "content-language",
+      28 => "content-length",
+      29 => "content-location",
+      30 => "content-range",
+      31 => "content-type",
+      32 => "cookie",
+      33 => "date",
+      34 => "etag",
+      35 => "expect",
+      36 => "expires",
+      37 => "from",
+      38 => "host",
+      39 => "if-match",
+      40 => "if-modified-since",
+      41 => "if-none-match",
+      42 => "if-range",
+      43 => "if-unmodified-since",
+      44 => "last-modified",
+      45 => "link",
+      46 => "location",
+      47 => "max-forwards",
+      48 => "proxy-authenticate",
+      49 => "proxy-authorization",
+      50 => "range",
+      51 => "referer",
+      52 => "refresh",
+      53 => "retry-after",
+      54 => "server",
+      55 => "set-cookie",
+      56 => "strict-transport-security",
+      57 => "transfer-encoding",
+      58 => "user-agent",
+      59 => "vary",
+      60 => "via",
+      61 => "www-authenticate",
+      _ => ""
+    };
+  }
+
+  // Return the non-empty HPACK static-table value for an index.
+  function hpack_static_value(index: i64) static_ptr<u8> {
+    return match index {
+      2 => "GET",
+      3 => "POST",
+      4 => "/",
+      5 => "/index.html",
+      6 => "http",
+      7 => "https",
+      8 => "200",
+      9 => "204",
+      10 => "206",
+      11 => "304",
+      12 => "400",
+      13 => "404",
+      14 => "500",
+      16 => "gzip, deflate",
+      _ => ""
+    };
+  }
+
+  // Return the RFC HPACK Huffman code for one symbol.
+  function hpack_huffman_code(symbol: i32) u64 {
+    return match symbol {
+      0 => _convert<u64>(8184),
+      1 => _convert<u64>(8388568),
+      2 => _convert<u64>(268435426),
+      3 => _convert<u64>(268435427),
+      4 => _convert<u64>(268435428),
+      5 => _convert<u64>(268435429),
+      6 => _convert<u64>(268435430),
+      7 => _convert<u64>(268435431),
+      8 => _convert<u64>(268435432),
+      9 => _convert<u64>(16777194),
+      10 => _convert<u64>(1073741820),
+      11 => _convert<u64>(268435433),
+      12 => _convert<u64>(268435434),
+      13 => _convert<u64>(1073741821),
+      14 => _convert<u64>(268435435),
+      15 => _convert<u64>(268435436),
+      16 => _convert<u64>(268435437),
+      17 => _convert<u64>(268435438),
+      18 => _convert<u64>(268435439),
+      19 => _convert<u64>(268435440),
+      20 => _convert<u64>(268435441),
+      21 => _convert<u64>(268435442),
+      22 => _convert<u64>(1073741822),
+      23 => _convert<u64>(268435443),
+      24 => _convert<u64>(268435444),
+      25 => _convert<u64>(268435445),
+      26 => _convert<u64>(268435446),
+      27 => _convert<u64>(268435447),
+      28 => _convert<u64>(268435448),
+      29 => _convert<u64>(268435449),
+      30 => _convert<u64>(268435450),
+      31 => _convert<u64>(268435451),
+      32 => _convert<u64>(20),
+      33 => _convert<u64>(1016),
+      34 => _convert<u64>(1017),
+      35 => _convert<u64>(4090),
+      36 => _convert<u64>(8185),
+      37 => _convert<u64>(21),
+      38 => _convert<u64>(248),
+      39 => _convert<u64>(2042),
+      40 => _convert<u64>(1018),
+      41 => _convert<u64>(1019),
+      42 => _convert<u64>(249),
+      43 => _convert<u64>(2043),
+      44 => _convert<u64>(250),
+      45 => _convert<u64>(22),
+      46 => _convert<u64>(23),
+      47 => _convert<u64>(24),
+      48 => _convert<u64>(0),
+      49 => _convert<u64>(1),
+      50 => _convert<u64>(2),
+      51 => _convert<u64>(25),
+      52 => _convert<u64>(26),
+      53 => _convert<u64>(27),
+      54 => _convert<u64>(28),
+      55 => _convert<u64>(29),
+      56 => _convert<u64>(30),
+      57 => _convert<u64>(31),
+      58 => _convert<u64>(92),
+      59 => _convert<u64>(251),
+      60 => _convert<u64>(32764),
+      61 => _convert<u64>(32),
+      62 => _convert<u64>(4091),
+      63 => _convert<u64>(1020),
+      64 => _convert<u64>(8186),
+      65 => _convert<u64>(33),
+      66 => _convert<u64>(93),
+      67 => _convert<u64>(94),
+      68 => _convert<u64>(95),
+      69 => _convert<u64>(96),
+      70 => _convert<u64>(97),
+      71 => _convert<u64>(98),
+      72 => _convert<u64>(99),
+      73 => _convert<u64>(100),
+      74 => _convert<u64>(101),
+      75 => _convert<u64>(102),
+      76 => _convert<u64>(103),
+      77 => _convert<u64>(104),
+      78 => _convert<u64>(105),
+      79 => _convert<u64>(106),
+      80 => _convert<u64>(107),
+      81 => _convert<u64>(108),
+      82 => _convert<u64>(109),
+      83 => _convert<u64>(110),
+      84 => _convert<u64>(111),
+      85 => _convert<u64>(112),
+      86 => _convert<u64>(113),
+      87 => _convert<u64>(114),
+      88 => _convert<u64>(252),
+      89 => _convert<u64>(115),
+      90 => _convert<u64>(253),
+      91 => _convert<u64>(8187),
+      92 => _convert<u64>(524272),
+      93 => _convert<u64>(8188),
+      94 => _convert<u64>(16380),
+      95 => _convert<u64>(34),
+      96 => _convert<u64>(32765),
+      97 => _convert<u64>(3),
+      98 => _convert<u64>(35),
+      99 => _convert<u64>(4),
+      100 => _convert<u64>(36),
+      101 => _convert<u64>(5),
+      102 => _convert<u64>(37),
+      103 => _convert<u64>(38),
+      104 => _convert<u64>(39),
+      105 => _convert<u64>(6),
+      106 => _convert<u64>(116),
+      107 => _convert<u64>(117),
+      108 => _convert<u64>(40),
+      109 => _convert<u64>(41),
+      110 => _convert<u64>(42),
+      111 => _convert<u64>(7),
+      112 => _convert<u64>(43),
+      113 => _convert<u64>(118),
+      114 => _convert<u64>(44),
+      115 => _convert<u64>(8),
+      116 => _convert<u64>(9),
+      117 => _convert<u64>(45),
+      118 => _convert<u64>(119),
+      119 => _convert<u64>(120),
+      120 => _convert<u64>(121),
+      121 => _convert<u64>(122),
+      122 => _convert<u64>(123),
+      123 => _convert<u64>(32766),
+      124 => _convert<u64>(2044),
+      125 => _convert<u64>(16381),
+      126 => _convert<u64>(8189),
+      127 => _convert<u64>(268435452),
+      128 => _convert<u64>(1048550),
+      129 => _convert<u64>(4194258),
+      130 => _convert<u64>(1048551),
+      131 => _convert<u64>(1048552),
+      132 => _convert<u64>(4194259),
+      133 => _convert<u64>(4194260),
+      134 => _convert<u64>(4194261),
+      135 => _convert<u64>(8388569),
+      136 => _convert<u64>(4194262),
+      137 => _convert<u64>(8388570),
+      138 => _convert<u64>(8388571),
+      139 => _convert<u64>(8388572),
+      140 => _convert<u64>(8388573),
+      141 => _convert<u64>(8388574),
+      142 => _convert<u64>(16777195),
+      143 => _convert<u64>(8388575),
+      144 => _convert<u64>(16777196),
+      145 => _convert<u64>(16777197),
+      146 => _convert<u64>(4194263),
+      147 => _convert<u64>(8388576),
+      148 => _convert<u64>(16777198),
+      149 => _convert<u64>(8388577),
+      150 => _convert<u64>(8388578),
+      151 => _convert<u64>(8388579),
+      152 => _convert<u64>(8388580),
+      153 => _convert<u64>(2097116),
+      154 => _convert<u64>(4194264),
+      155 => _convert<u64>(8388581),
+      156 => _convert<u64>(4194265),
+      157 => _convert<u64>(8388582),
+      158 => _convert<u64>(8388583),
+      159 => _convert<u64>(16777199),
+      160 => _convert<u64>(4194266),
+      161 => _convert<u64>(2097117),
+      162 => _convert<u64>(1048553),
+      163 => _convert<u64>(4194267),
+      164 => _convert<u64>(4194268),
+      165 => _convert<u64>(8388584),
+      166 => _convert<u64>(8388585),
+      167 => _convert<u64>(2097118),
+      168 => _convert<u64>(8388586),
+      169 => _convert<u64>(4194269),
+      170 => _convert<u64>(4194270),
+      171 => _convert<u64>(16777200),
+      172 => _convert<u64>(2097119),
+      173 => _convert<u64>(4194271),
+      174 => _convert<u64>(8388587),
+      175 => _convert<u64>(8388588),
+      176 => _convert<u64>(2097120),
+      177 => _convert<u64>(2097121),
+      178 => _convert<u64>(4194272),
+      179 => _convert<u64>(2097122),
+      180 => _convert<u64>(8388589),
+      181 => _convert<u64>(4194273),
+      182 => _convert<u64>(8388590),
+      183 => _convert<u64>(8388591),
+      184 => _convert<u64>(1048554),
+      185 => _convert<u64>(4194274),
+      186 => _convert<u64>(4194275),
+      187 => _convert<u64>(4194276),
+      188 => _convert<u64>(8388592),
+      189 => _convert<u64>(4194277),
+      190 => _convert<u64>(4194278),
+      191 => _convert<u64>(8388593),
+      192 => _convert<u64>(67108832),
+      193 => _convert<u64>(67108833),
+      194 => _convert<u64>(1048555),
+      195 => _convert<u64>(524273),
+      196 => _convert<u64>(4194279),
+      197 => _convert<u64>(8388594),
+      198 => _convert<u64>(4194280),
+      199 => _convert<u64>(33554412),
+      200 => _convert<u64>(67108834),
+      201 => _convert<u64>(67108835),
+      202 => _convert<u64>(67108836),
+      203 => _convert<u64>(134217694),
+      204 => _convert<u64>(134217695),
+      205 => _convert<u64>(67108837),
+      206 => _convert<u64>(16777201),
+      207 => _convert<u64>(33554413),
+      208 => _convert<u64>(524274),
+      209 => _convert<u64>(2097123),
+      210 => _convert<u64>(67108838),
+      211 => _convert<u64>(134217696),
+      212 => _convert<u64>(134217697),
+      213 => _convert<u64>(67108839),
+      214 => _convert<u64>(134217698),
+      215 => _convert<u64>(16777202),
+      216 => _convert<u64>(2097124),
+      217 => _convert<u64>(2097125),
+      218 => _convert<u64>(67108840),
+      219 => _convert<u64>(67108841),
+      220 => _convert<u64>(268435453),
+      221 => _convert<u64>(134217699),
+      222 => _convert<u64>(134217700),
+      223 => _convert<u64>(134217701),
+      224 => _convert<u64>(1048556),
+      225 => _convert<u64>(16777203),
+      226 => _convert<u64>(1048557),
+      227 => _convert<u64>(2097126),
+      228 => _convert<u64>(4194281),
+      229 => _convert<u64>(2097127),
+      230 => _convert<u64>(2097128),
+      231 => _convert<u64>(8388595),
+      232 => _convert<u64>(4194282),
+      233 => _convert<u64>(4194283),
+      234 => _convert<u64>(33554414),
+      235 => _convert<u64>(33554415),
+      236 => _convert<u64>(16777204),
+      237 => _convert<u64>(16777205),
+      238 => _convert<u64>(67108842),
+      239 => _convert<u64>(8388596),
+      240 => _convert<u64>(67108843),
+      241 => _convert<u64>(134217702),
+      242 => _convert<u64>(67108844),
+      243 => _convert<u64>(67108845),
+      244 => _convert<u64>(134217703),
+      245 => _convert<u64>(134217704),
+      246 => _convert<u64>(134217705),
+      247 => _convert<u64>(134217706),
+      248 => _convert<u64>(134217707),
+      249 => _convert<u64>(268435454),
+      250 => _convert<u64>(134217708),
+      251 => _convert<u64>(134217709),
+      252 => _convert<u64>(134217710),
+      253 => _convert<u64>(134217711),
+      254 => _convert<u64>(134217712),
+      255 => _convert<u64>(67108846),
+      256 => _convert<u64>(1073741823),
+      _ => 0
+    };
+  }
+
+  // Return the RFC HPACK Huffman width for one symbol.
+  function hpack_huffman_width(symbol: i32) i32 {
+    return match symbol {
+      0 => 13,
+      1 => 23,
+      2 => 28,
+      3 => 28,
+      4 => 28,
+      5 => 28,
+      6 => 28,
+      7 => 28,
+      8 => 28,
+      9 => 24,
+      10 => 30,
+      11 => 28,
+      12 => 28,
+      13 => 30,
+      14 => 28,
+      15 => 28,
+      16 => 28,
+      17 => 28,
+      18 => 28,
+      19 => 28,
+      20 => 28,
+      21 => 28,
+      22 => 30,
+      23 => 28,
+      24 => 28,
+      25 => 28,
+      26 => 28,
+      27 => 28,
+      28 => 28,
+      29 => 28,
+      30 => 28,
+      31 => 28,
+      32 => 6,
+      33 => 10,
+      34 => 10,
+      35 => 12,
+      36 => 13,
+      37 => 6,
+      38 => 8,
+      39 => 11,
+      40 => 10,
+      41 => 10,
+      42 => 8,
+      43 => 11,
+      44 => 8,
+      45 => 6,
+      46 => 6,
+      47 => 6,
+      48 => 5,
+      49 => 5,
+      50 => 5,
+      51 => 6,
+      52 => 6,
+      53 => 6,
+      54 => 6,
+      55 => 6,
+      56 => 6,
+      57 => 6,
+      58 => 7,
+      59 => 8,
+      60 => 15,
+      61 => 6,
+      62 => 12,
+      63 => 10,
+      64 => 13,
+      65 => 6,
+      66 => 7,
+      67 => 7,
+      68 => 7,
+      69 => 7,
+      70 => 7,
+      71 => 7,
+      72 => 7,
+      73 => 7,
+      74 => 7,
+      75 => 7,
+      76 => 7,
+      77 => 7,
+      78 => 7,
+      79 => 7,
+      80 => 7,
+      81 => 7,
+      82 => 7,
+      83 => 7,
+      84 => 7,
+      85 => 7,
+      86 => 7,
+      87 => 7,
+      88 => 8,
+      89 => 7,
+      90 => 8,
+      91 => 13,
+      92 => 19,
+      93 => 13,
+      94 => 14,
+      95 => 6,
+      96 => 15,
+      97 => 5,
+      98 => 6,
+      99 => 5,
+      100 => 6,
+      101 => 5,
+      102 => 6,
+      103 => 6,
+      104 => 6,
+      105 => 5,
+      106 => 7,
+      107 => 7,
+      108 => 6,
+      109 => 6,
+      110 => 6,
+      111 => 5,
+      112 => 6,
+      113 => 7,
+      114 => 6,
+      115 => 5,
+      116 => 5,
+      117 => 6,
+      118 => 7,
+      119 => 7,
+      120 => 7,
+      121 => 7,
+      122 => 7,
+      123 => 15,
+      124 => 11,
+      125 => 14,
+      126 => 13,
+      127 => 28,
+      128 => 20,
+      129 => 22,
+      130 => 20,
+      131 => 20,
+      132 => 22,
+      133 => 22,
+      134 => 22,
+      135 => 23,
+      136 => 22,
+      137 => 23,
+      138 => 23,
+      139 => 23,
+      140 => 23,
+      141 => 23,
+      142 => 24,
+      143 => 23,
+      144 => 24,
+      145 => 24,
+      146 => 22,
+      147 => 23,
+      148 => 24,
+      149 => 23,
+      150 => 23,
+      151 => 23,
+      152 => 23,
+      153 => 21,
+      154 => 22,
+      155 => 23,
+      156 => 22,
+      157 => 23,
+      158 => 23,
+      159 => 24,
+      160 => 22,
+      161 => 21,
+      162 => 20,
+      163 => 22,
+      164 => 22,
+      165 => 23,
+      166 => 23,
+      167 => 21,
+      168 => 23,
+      169 => 22,
+      170 => 22,
+      171 => 24,
+      172 => 21,
+      173 => 22,
+      174 => 23,
+      175 => 23,
+      176 => 21,
+      177 => 21,
+      178 => 22,
+      179 => 21,
+      180 => 23,
+      181 => 22,
+      182 => 23,
+      183 => 23,
+      184 => 20,
+      185 => 22,
+      186 => 22,
+      187 => 22,
+      188 => 23,
+      189 => 22,
+      190 => 22,
+      191 => 23,
+      192 => 26,
+      193 => 26,
+      194 => 20,
+      195 => 19,
+      196 => 22,
+      197 => 23,
+      198 => 22,
+      199 => 25,
+      200 => 26,
+      201 => 26,
+      202 => 26,
+      203 => 27,
+      204 => 27,
+      205 => 26,
+      206 => 24,
+      207 => 25,
+      208 => 19,
+      209 => 21,
+      210 => 26,
+      211 => 27,
+      212 => 27,
+      213 => 26,
+      214 => 27,
+      215 => 24,
+      216 => 21,
+      217 => 21,
+      218 => 26,
+      219 => 26,
+      220 => 28,
+      221 => 27,
+      222 => 27,
+      223 => 27,
+      224 => 20,
+      225 => 24,
+      226 => 20,
+      227 => 21,
+      228 => 22,
+      229 => 21,
+      230 => 21,
+      231 => 23,
+      232 => 22,
+      233 => 22,
+      234 => 25,
+      235 => 25,
+      236 => 24,
+      237 => 24,
+      238 => 26,
+      239 => 23,
+      240 => 26,
+      241 => 27,
+      242 => 26,
+      243 => 26,
+      244 => 27,
+      245 => 27,
+      246 => 27,
+      247 => 27,
+      248 => 27,
+      249 => 28,
+      250 => 27,
+      251 => 27,
+      252 => 27,
+      253 => 27,
+      254 => 27,
+      255 => 26,
+      256 => 30,
+      _ => 0
+    };
+  }
+
+  // Decode one RFC HPACK Huffman string.
+  function hpack_huffman_decode(alloc: const ref HeapAllocator, data: raw_ptr<u8>, len: i64) Option<String> {
+    var out = String(alloc, "");
+    var bits: i32 = 0;
+    var acc: u64 = 0;
+    for (var i: i64 = 0; i < len; i = i + 1) {
+      acc = (acc << 8) | _convert<u64>(unsafe { _load<u8>(data, i); });
+      bits = bits + 8;
+      while (true) {
+        var found: i32 = -1;
+        var used: i32 = 0;
+        for (var symbol: i32 = 0; symbol <= 256; symbol = symbol + 1) {
+          var width: i32 = hpack_huffman_width(symbol);
+          if (width <= bits and (acc >> (bits - width)) == hpack_huffman_code(symbol)) {
+            found = symbol;
+            used = width;
+            break;
+          }
+        }
+        if (found < 0) {
+          break;
+        }
+        if (found == 256) {
+          return Option.None;
+        }
+        out.append_char(_convert<u8>(found));
+        bits = bits - used;
+        if (bits == 0) {
+          acc = 0;
+        } else {
+          acc = acc & ((_convert<u64>(1) << bits) - 1);
+        }
+      }
+    }
+    if (bits > 7) {
+      return Option.None;
+    }
+    if (bits > 0 and acc != ((_convert<u64>(1) << bits) - 1)) {
+      return Option.None;
+    }
+    return Option.Some(out);
+  }
+
+  // Decode an HPACK string and advance pos.
+  function hpack_string(alloc: const ref HeapAllocator, data: raw_ptr<u8>, len: i64, pos: ref i64) Option<String> {
+    if (pos >= len) {
+      return Option.None;
+    }
+    var huffman: bool = (unsafe { _load<u8>(data, pos); } & 128) != 0;
+    var n: i64 = hpack_int(data, len, pos, 7);
+    if (n < 0 or pos + n > len) {
+      return Option.None;
+    }
+    if (huffman) {
+      var decoded = hpack_huffman_decode(alloc, unsafe { _ptr_offset(data, pos); }, n);
+      pos = pos + n;
+      return decoded;
+    }
+    var out = String(alloc, "");
+    for (var i: i64 = 0; i < n; i = i + 1) {
+      out.append_char(unsafe { _load<u8>(data, pos + i); });
+    }
+    pos = pos + n;
+    return Option.Some(out);
+  }
+
+  // Decode one HPACK block. Dynamic references and Huffman strings are rejected.
+  function hpack_decode(alloc: const ref HeapAllocator, data: raw_ptr<u8>, len: i64, decoder: ref HpackDecoder, out: ref Vec<H2Header>) bool {
+    var pos: i64 = 0;
+    while (pos < len) {
+      var first: u8 = unsafe { _load<u8>(data, pos); };
+      if ((first & 224) == 32) {
+        var size: i64 = hpack_int(data, len, pos, 5);
+        if (not decoder.resize(size)) {
+          return false;
+        }
+        continue;
+      }
+      var indexed: bool = (first & 128) != 0;
+      var incremental: bool = (first & 64) != 0;
+      var prefix: i32 = 4;
+      if (indexed) {
+        prefix = 7;
+      } else if ((first & 64) != 0) {
+        prefix = 6;
+      }
+      var index: i64 = hpack_int(data, len, pos, prefix);
+      if (index < 0) {
+        return false;
+      }
+      var name = String(alloc, "");
+      if (index == 0) {
+        var decoded_name: Option<String> = hpack_string(alloc, data, len, pos);
+        match decoded_name {
+          Option.Some(v) => {
+            name.append(v);
+          },
+          Option.None => {
+            return false;
+          }
+        };
+      } else if (index <= 61) {
+        name.append(hpack_static_name(index));
+      }
+      var value = String(alloc, "");
+      if (index > 61 and not decoder.lookup(index, name, value)) {
+        return false;
+      }
+      if (indexed) {
+        if (index <= 61) {
+          value.append(hpack_static_value(index));
+        }
+      } else {
+        var decoded_value: Option<String> = hpack_string(alloc, data, len, pos);
+        match decoded_value {
+          Option.Some(v) => {
+            value.append(v);
+          },
+          Option.None => {
+            return false;
+          }
+        };
+      }
+      if (incremental) {
+        decoder.add(name, value);
+      }
+      out.push(H2Header(name, value));
+    }
+    return true;
+  }
+
+  // Encode an HPACK integer with the first-byte prefix already prepared.
+  function hpack_append_int(out: ref ByteBuffer, value: i64, prefix: i32, first: u8) void {
+    var mask: i64 = _convert<i64>((1 << prefix) - 1);
+    if (value < mask) {
+      out.append_byte(first | _convert<u8>(value));
+      return;
+    }
+    out.append_byte(first | _convert<u8>(mask));
+    var left: i64 = value - mask;
+    while (left >= 128) {
+      out.append_byte(_convert<u8>(left % 128) | 128);
+      left = left / 128;
+    }
+    out.append_byte(_convert<u8>(left));
+  }
+
+  // Encode a literal HPACK string without Huffman coding.
+  function hpack_append_string(out: ref ByteBuffer, value: ref String) void {
+    hpack_append_int(out, value.length(), 7, _convert<u8>(0));
+    out.append_bytes(value.c_str(), value.length());
+  }
+
+  // Encode one literal response header without indexing.
+  function hpack_header(out: ref ByteBuffer, name: ref String, value: ref String) void {
+    hpack_append_int(out, 0, 4, _convert<u8>(0));
+    hpack_append_string(out, name);
+    hpack_append_string(out, value);
+  }
+
+  // Encode a response status using the static table when possible.
+  function hpack_status(out: ref ByteBuffer, status: i32, alloc: const ref HeapAllocator) void {
+    var index: i64 = match status {
+      200 => 8,
+      204 => 9,
+      206 => 10,
+      304 => 11,
+      400 => 12,
+      404 => 13,
+      500 => 14,
+      _ => 0
+    };
+    if (index > 0) {
+      hpack_append_int(out, index, 7, _convert<u8>(128));
+      return;
+    }
+    hpack_append_int(out, 8, 4, _convert<u8>(0));
+    var text = String(alloc, "");
+    text.append(status);
+    hpack_append_string(out, text);
+  }
+}

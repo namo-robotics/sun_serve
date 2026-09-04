@@ -117,6 +117,48 @@ module hello_handler {
       std.test.assert(body.equals_literal("requests handled by this worker: 3\n"), "third request");
     }
 
+    test_function websocket_upgrade_and_echo() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc);
+      var stream = TcpStream();
+      stream.connect_local(ts.port);
+      var tv = Timeval(2);
+      unsafe { __setsockopt(stream.get_fd(), SOL_SOCKET, SO_RCVTIMEO, _address_of<Timeval>(tv), 16); };
+      stream.send_str("GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+      var reply = ContiguousBuffer<u8>(alloc, 4096);
+      var got: i64 = stream.recv(reply);
+      var head = String(alloc, "");
+      for (var hi: i64 = 0; hi < got; hi = hi + 1) {
+        head.append_char(reply.get_unchecked(hi));
+      }
+      std.test.assert(head.contains("101 Switching Protocols"), "upgrade accepted");
+      std.test.assert(head.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "accept key");
+      var frame = ContiguousBuffer<u8>(alloc, 11);
+      frame.set_unchecked(0, 129);
+      frame.set_unchecked(1, 133);
+      frame.set_unchecked(2, 1);
+      frame.set_unchecked(3, 2);
+      frame.set_unchecked(4, 3);
+      frame.set_unchecked(5, 4);
+      frame.set_unchecked(6, 105);
+      frame.set_unchecked(7, 103);
+      frame.set_unchecked(8, 111);
+      frame.set_unchecked(9, 104);
+      frame.set_unchecked(10, 110);
+      stream.send_bytes(frame.raw_data(), 11);
+      var echoed = ContiguousBuffer<u8>(alloc, 16);
+      var echoed_len: i64 = stream.recv(echoed);
+      std.test.assert_eq(echoed_len, 7);
+      std.test.assert_eq(echoed.get_unchecked(0), 129);
+      std.test.assert_eq(echoed.get_unchecked(1), 5);
+      var text = String(alloc, "");
+      for (var ti: i64 = 2; ti < 7; ti = ti + 1) {
+        text.append_char(echoed.get_unchecked(ti));
+      }
+      std.test.assert(text.equals_literal("hello"), "message echoed");
+      stream.close();
+    }
+
     test_function unknown_paths_are_404() {
       var alloc = make_heap_allocator();
       var ts = TestServer(alloc);

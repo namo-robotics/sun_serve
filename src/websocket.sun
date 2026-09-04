@@ -1,0 +1,327 @@
+// websocket.sun - Public WebSocket callbacks, handles, and wire helpers
+
+public module sun_serve {
+  using std;
+
+  extern "C" function ssl_sha1(data: raw_ptr<u8>, len: i64, out: raw_ptr<u8>) raw_ptr<u8> as "SHA1";
+
+  public enum WebSocketMessageKind { Text, Binary }
+  public enum WebSocketSendResult { Queued, Closed, Invalid, Overloaded }
+
+  // A complete decoded WebSocket application message.
+  public class WebSocketMessage {
+    public var kind: WebSocketMessageKind;
+    var data_: raw_ptr<u8>;
+    var len_: i64;
+
+    // View a message buffer for the duration of its callback.
+    init(kind: WebSocketMessageKind, data: raw_ptr<u8>, len: i64) {
+      this.kind = kind;
+      this.data_ = data;
+      this.len_ = len;
+    }
+
+    // The message bytes.
+    public const method data() raw_ptr<u8> {
+      return this.data_;
+    }
+
+    // The message byte count.
+    public const method length() i64 {
+      return this.len_;
+    }
+
+    // Copy the message into an owned string.
+    public const method text(alloc: const ref HeapAllocator) String {
+      return bytes_to_string(alloc, this.data_, 0, this.len_);
+    }
+  }
+
+  // The application decision for a valid WebSocket opening request.
+  public class WebSocketHandshake {
+    public var accepted: bool;
+    public var subprotocol: String;
+    public var compression: bool;
+    public var reject_status: i32;
+    var alloc: HeapAllocator;
+
+    // Start as a rejected handshake.
+    init(allocator: const ref HeapAllocator, compression: bool) {
+      this.alloc = allocator.copy();
+      this.accepted = false;
+      this.subprotocol = String(allocator, "");
+      this.compression = compression;
+      this.reject_status = 404;
+    }
+
+    // Accept without selecting a subprotocol.
+    public method accept() void {
+      this.accepted = true;
+    }
+
+    // Accept and select one protocol offered by the client.
+    public method accept_subprotocol(protocol: static_ptr<u8>) void {
+      this.accepted = true;
+      this.subprotocol.clear();
+      this.subprotocol.append(protocol);
+    }
+
+    // Reject with an HTTP status.
+    public method reject(status: i32) void {
+      this.accepted = false;
+      this.reject_status = status;
+    }
+  }
+
+  // State shared by the worker and every asynchronous handle clone.
+  class WebSocketMailbox {
+    var active: bool;
+    var generation: i64;
+    var max_bytes: i64;
+    var queue: ByteBuffer;
+
+    // Build an inactive mailbox.
+    init(alloc: const ref HeapAllocator) {
+      this.active = false;
+      this.generation = 0;
+      this.max_bytes = 0;
+      this.queue = ByteBuffer(alloc, 256);
+    }
+
+    // Begin a new session and invalidate handles from an earlier one.
+    method activate(max_bytes: i64) i64 {
+      this.generation = this.generation + 1;
+      this.active = true;
+      this.max_bytes = max_bytes;
+      this.queue.clear();
+      return this.generation;
+    }
+
+    // Invalidate the current session.
+    method deactivate(generation: i64) void {
+      if (generation == this.generation) {
+        this.active = false;
+      }
+    }
+
+    // Move queued frames into the worker write buffer.
+    method drain(generation: i64, out: ref ByteBuffer) bool {
+      if (generation != this.generation) {
+        return false;
+      }
+      out.append_bytes(this.queue.readable_ptr(), this.queue.readable_len());
+      this.queue.clear();
+      return this.active;
+    }
+
+    // Queue one unmasked server frame.
+    method enqueue(generation: i64, opcode: u8, data: raw_ptr<u8>, len: i64) WebSocketSendResult {
+      if (generation != this.generation) {
+        return WebSocketSendResult.Invalid;
+      }
+      if (not this.active) {
+        return WebSocketSendResult.Closed;
+      }
+      var overhead: i64 = 2;
+      if (len >= 126 and len <= 65535) {
+        overhead = 4;
+      }
+      if (len > 65535) {
+        overhead = 10;
+      }
+      if (this.queue.readable_len() + overhead + len > this.max_bytes) {
+        this.active = false;
+        this.queue.clear();
+        var close_bytes = ContiguousBuffer<u8>(HeapAllocator(), 2);
+        close_bytes.set_unchecked(0, 3);
+        close_bytes.set_unchecked(1, 245);
+        websocket_append_frame(this.queue, _convert<u8>(8), close_bytes.raw_data(), _convert<i64>(2));
+        return WebSocketSendResult.Overloaded;
+      }
+      websocket_append_frame(this.queue, opcode, data, len);
+      if (opcode == 8) {
+        this.active = false;
+      }
+      return WebSocketSendResult.Queued;
+    }
+  }
+
+  // A cloneable, thread-safe reference to one WebSocket session.
+  public class WebSocketHandle {
+    var mailbox: Shared<WebSocketMailbox>;
+    var generation: i64;
+
+    // Attach to one mailbox generation.
+    init(mailbox: Shared<WebSocketMailbox>, generation: i64) {
+      this.mailbox = mailbox;
+      this.generation = generation;
+    }
+
+    // Create another handle for another thread or owner.
+    public const method clone() WebSocketHandle {
+      return WebSocketHandle(this.mailbox.clone(), this.generation);
+    }
+
+    // Queue a UTF-8 text message.
+    public const method send_text(text: ref String) WebSocketSendResult {
+      if (not websocket_valid_utf8(text.c_str(), text.length())) {
+        return WebSocketSendResult.Invalid;
+      }
+      var guard = this.mailbox.lock();
+      return guard.get().enqueue(this.generation, _convert<u8>(1), text.c_str(), text.length());
+    }
+
+    // Queue a binary message.
+    public const method send_binary(data: raw_ptr<u8>, len: i64) WebSocketSendResult {
+      if (len < 0) {
+        return WebSocketSendResult.Invalid;
+      }
+      var guard = this.mailbox.lock();
+      return guard.get().enqueue(this.generation, _convert<u8>(2), data, len);
+    }
+
+    // Queue a ping control frame.
+    public const method ping(data: raw_ptr<u8>, len: i64) WebSocketSendResult {
+      if (len < 0 or len > 125) {
+        return WebSocketSendResult.Invalid;
+      }
+      var guard = this.mailbox.lock();
+      return guard.get().enqueue(this.generation, _convert<u8>(9), data, len);
+    }
+
+    // Start a normal close exchange.
+    public const method close(code: i32) WebSocketSendResult {
+      if (not websocket_valid_close_code(code)) {
+        return WebSocketSendResult.Invalid;
+      }
+      var bytes = ContiguousBuffer<u8>(HeapAllocator(), 2);
+      bytes.set_unchecked(0, _convert<u8>((code >> 8) & 255));
+      bytes.set_unchecked(1, _convert<u8>(code & 255));
+      var guard = this.mailbox.lock();
+      return guard.get().enqueue(this.generation, _convert<u8>(8), bytes.raw_data(), 2);
+    }
+  }
+
+  // Append one final unmasked server frame.
+  function websocket_append_frame(out: ref ByteBuffer, opcode: u8, data: raw_ptr<u8>, len: i64) void {
+    out.append_byte(128 | opcode);
+    if (len < 126) {
+      out.append_byte(_convert<u8>(len));
+    } else if (len <= 65535) {
+      out.append_byte(126);
+      out.append_byte(_convert<u8>((len >> 8) & 255));
+      out.append_byte(_convert<u8>(len & 255));
+    } else {
+      out.append_byte(127);
+      for (var shift: i32 = 56; shift >= 0; shift = shift - 8) {
+        out.append_byte(_convert<u8>((len >> shift) & 255));
+      }
+    }
+    out.append_bytes(data, len);
+  }
+
+  // Report whether an application may put a status code on the wire.
+  function websocket_valid_close_code(code: i32) bool {
+    if (code >= 3000 and code <= 4999) {
+      return true;
+    }
+    if (code < 1000 or code > 1014) {
+      return false;
+    }
+    return code != 1004 and code != 1005 and code != 1006;
+  }
+
+  // Report whether bytes are canonical UTF-8.
+  function websocket_valid_utf8(data: raw_ptr<u8>, len: i64) bool {
+    var i: i64 = 0;
+    while (i < len) {
+      var a: u8 = unsafe { _load<u8>(data, i); };
+      if (a < 128) {
+        i = i + 1;
+        continue;
+      }
+      var need: i64 = 0;
+      if (a >= 194 and a <= 223) {
+        need = 1;
+      } else if (a >= 224 and a <= 239) {
+        need = 2;
+      } else if (a >= 240 and a <= 244) {
+        need = 3;
+      } else {
+        return false;
+      }
+      if (i + need >= len) {
+        return false;
+      }
+      for (var j: i64 = 1; j <= need; j = j + 1) {
+        var c: u8 = unsafe { _load<u8>(data, i + j); };
+        if (c < 128 or c > 191) {
+          return false;
+        }
+      }
+      var b: u8 = unsafe { _load<u8>(data, i + 1); };
+      if (a == 224 and b < 160) {
+        return false;
+      }
+      if (a == 237 and b > 159) {
+        return false;
+      }
+      if (a == 240 and b < 144) {
+        return false;
+      }
+      if (a == 244 and b > 143) {
+        return false;
+      }
+      i = i + need + 1;
+    }
+    return true;
+  }
+
+  // Validate the canonical base64 shape of a 16-byte WebSocket nonce.
+  function websocket_valid_key(key: ref String) bool {
+    if (key.length() != 24 or key.at(22) != b'=' or key.at(23) != b'=') {
+      return false;
+    }
+    for (var i: i64 = 0; i < 22; i = i + 1) {
+      var c: u8 = key.at(i);
+      if (not ((c >= b'A' and c <= b'Z') or (c >= b'a' and c <= b'z') or (c >= b'0' and c <= b'9') or c == b'+' or c == b'/')) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Compute the RFC 6455 Sec-WebSocket-Accept value.
+  function websocket_accept(alloc: const ref HeapAllocator, key: ref String) String {
+    var source = String(alloc, "");
+    source.append(key);
+    source.append("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    var digest = ContiguousBuffer<u8>(alloc, 20);
+    unsafe { ssl_sha1(source.c_str(), source.length(), digest.raw_data()); };
+    var alphabet: static_ptr<u8> = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+    var out = String(alloc, "");
+    for (var i: i64 = 0; i < 20; i = i + 3) {
+      var left: i64 = 20 - i;
+      var n: i32 = _convert<i32>(digest.get_unchecked(i)) << 16;
+      if (left > 1) {
+        n = n | (_convert<i32>(digest.get_unchecked(i + 1)) << 8);
+      }
+      if (left > 2) {
+        n = n | _convert<i32>(digest.get_unchecked(i + 2));
+      }
+      out.append_char(unsafe { _load<u8>(alphabet.raw(), _convert<i64>((n >> 18) & 63)); });
+      out.append_char(unsafe { _load<u8>(alphabet.raw(), _convert<i64>((n >> 12) & 63)); });
+      if (left > 1) {
+        out.append_char(unsafe { _load<u8>(alphabet.raw(), _convert<i64>((n >> 6) & 63)); });
+      } else {
+        out.append_char(b'=');
+      }
+      if (left > 2) {
+        out.append_char(unsafe { _load<u8>(alphabet.raw(), _convert<i64>(n & 63)); });
+      } else {
+        out.append_char(b'=');
+      }
+    }
+    return out;
+  }
+}

@@ -45,10 +45,7 @@ public module sun_serve {
         if (not config.has_tls) {
           throw Error(-1, "TLS listeners need a certificate and key");
         }
-        if (config.tls.alpn_h2) {
-          throw Error(-1, "HTTP/2 is not implemented");
-        }
-        this.tls = TlsServerContext(allocator, config.tls);
+        this.tls = TlsServerContext(allocator, config.tls, config.http2);
       }
       this.config = config;
     }

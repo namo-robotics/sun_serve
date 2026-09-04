@@ -96,6 +96,19 @@ public module sun_serve {
     return true;
   }
 
+  // Compare bytes with a runtime ASCII string, ignoring case.
+  function bytes_equal_string_ci(base: raw_ptr<u8>, off: i64, len: i64, text: ref String) bool {
+    if (len != text.length()) {
+      return false;
+    }
+    for (var i: i64 = 0; i < len; i = i + 1) {
+      if (lower_ascii(unsafe { _load<u8>(base, off + i); }) != lower_ascii(text.at(i))) {
+        return false;
+      }
+    }
+    return true;
+  }
+
   // Report whether the bytes at base+off end with a lowercase literal,
   // ignoring case.
   function bytes_end_with_ci(base: raw_ptr<u8>, off: i64, len: i64, lit: static_ptr<u8>) bool {
@@ -322,6 +335,62 @@ public module sun_serve {
       }
       var h: const ref HeaderSpan = this.headers.get_unchecked(i);
       return Option.Some(bytes_to_string(allocator, this.base, h.value_off, h.value_len));
+    }
+
+    // Report whether a comma-separated header contains a token.
+    public const method header_contains_token(name: static_ptr<u8>, token: static_ptr<u8>) bool {
+      var index: i64 = this.find_header(name);
+      if (index < 0) {
+        return false;
+      }
+      var h: const ref HeaderSpan = this.headers.get_unchecked(index);
+      var start: i64 = 0;
+      while (start < h.value_len) {
+        while (start < h.value_len and (unsafe { _load<u8>(this.base, h.value_off + start); } == SP or unsafe { _load<u8>(this.base, h.value_off + start); } == b',')) {
+          start = start + 1;
+        }
+        var finish: i64 = start;
+        while (finish < h.value_len and unsafe { _load<u8>(this.base, h.value_off + finish); } != b',') {
+          finish = finish + 1;
+        }
+        var trimmed: i64 = finish;
+        while (trimmed > start and (unsafe { _load<u8>(this.base, h.value_off + trimmed - 1); } == SP or unsafe { _load<u8>(this.base, h.value_off + trimmed - 1); } == HT)) {
+          trimmed = trimmed - 1;
+        }
+        if (bytes_equal_ci(this.base, h.value_off + start, trimmed - start, token)) {
+          return true;
+        }
+        start = finish + 1;
+      }
+      return false;
+    }
+
+    // Report whether a token-valued header contains a runtime token.
+    public const method header_contains_token_string(name: static_ptr<u8>, token: ref String) bool {
+      var index: i64 = this.find_header(name);
+      if (index < 0) {
+        return false;
+      }
+      var h: const ref HeaderSpan = this.headers.get_unchecked(index);
+      var start: i64 = 0;
+      while (start < h.value_len) {
+        while (start < h.value_len and (unsafe { _load<u8>(this.base, h.value_off + start); } == SP or unsafe { _load<u8>(this.base, h.value_off + start); } == b',')) {
+          start = start + 1;
+        }
+        var finish: i64 = start;
+        while (finish < h.value_len and unsafe { _load<u8>(this.base, h.value_off + finish); } != b',') {
+          finish = finish + 1;
+        }
+        var trimmed: i64 = finish;
+        while (trimmed > start and unsafe { _load<u8>(this.base, h.value_off + trimmed - 1); } == SP) {
+          trimmed = trimmed - 1;
+        }
+        if (bytes_equal_string_ci(this.base, h.value_off + start, trimmed - start, token)) {
+          return true;
+        }
+        start = finish + 1;
+      }
+      return false;
     }
 
     // Report whether a header with this lowercase name was sent.

@@ -227,7 +227,7 @@ public module sun_serve {
       std.test.assert(out.contains("secure hello"), "TLS still served afterwards");
     }
 
-    test_function alpn_selects_http_1_1() {
+    test_function alpn_prefers_http_2() {
       var alloc = make_heap_allocator();
       if (not have_openssl(alloc)) {
         println("SKIP: openssl tool not available");
@@ -236,8 +236,7 @@ public module sun_serve {
       var ts = TlsServer(alloc, "alpn");
       var get = String(alloc, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
       var out: String = ts.s_client(alloc, get, true, "h2,http/1.1");
-      std.test.assert(out.contains("ALPN protocol: http/1.1"), "http/1.1 negotiated");
-      std.test.assert(out.contains("secure hello"), "response received");
+      std.test.assert(out.contains("ALPN protocol: h2"), "HTTP/2 negotiated");
     }
   }
 }

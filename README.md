@@ -22,8 +22,8 @@ Supports **x86_64 Linux** only
   files, directory redirects, MIME types, `Cache-Control`, and traversal
   protection.
 - 🔒 **HTTPS included.** TLS 1.2+ with certificate and key from PEM files.
-- 🌐 **Complete HTTP/1.1.** Keep-alive, pipelining, chunked bodies in both
-  directions, `Expect: 100-continue`, HEAD, and streamed file responses.
+- 🌐 **HTTP/1.1 and HTTP/2.** ALPN and h2c negotiation, HPACK, and HTTP/1.1 fallback.
+- 🔌 **WebSockets.** RFC 6455 Upgrade and RFC 8441 extended CONNECT with message callbacks and asynchronous send handles.
 - 🛡️ **Hard to knock over.** Header and body size limits, per-state timeouts,
   request smuggling refused, and graceful shutdown on `SIGINT`/`SIGTERM`.
 - 📦 **A binary or a library.** Serve a directory with one static binary and no
@@ -83,8 +83,8 @@ level, body and header limits, keep-alive timeout, index file, and
 
 ## Using the library
 
-Handlers implement one method and run on the worker thread that owns them.
-A server takes one handler per worker, so per-handler state needs no
+Handlers implement the unified HTTP and WebSocket interface and run on the worker thread that owns them.
+A server takes one unified HTTP and WebSocket handler per worker, so per-handler state needs no
 synchronization:
 
 ```sun
@@ -114,6 +114,8 @@ this way: a handler class with per-worker state, query parameters, request
 bodies, and end-to-end tests that CI runs. The devcontainer uses host
 networking, so ports bound inside it are reachable from the host as is.
 
+WebSocket upgrades use `handle_websocket`; open, message, close, and error callbacks run on the owning worker. Cloneable `WebSocketHandle` values support bounded sends from other threads. The hello example exposes an echo endpoint at `/ws`.
+
 Request accessors (`path()`, `query_param()`, `header()`, `body_ptr()`, ...)
 are views into the connection's buffer and are valid only during `handle()`;
 the `String`-returning variants copy. Responses take a status, headers, an
@@ -128,7 +130,7 @@ consuming it from another program currently trips two compiler issues
 
 ```
 src/            the library: sys_ffi (libc boundary), epoll, net, buffer,
-                http/ (parser, request, response, dates, MIME), tls/ (server
+                http/ (parser, request, response, dates, MIME), HTTP/2, HPACK, WebSocket, tls/ (server
                 OpenSSL bindings, context, session), connection (state
                 machine), worker (event loop), server, static_files
 cmd/sun_serve/  the command
@@ -178,7 +180,7 @@ suites through `sun-config.json`.
 
 - Linux x86_64. The installed Sun stdlib and TLS moons are x86_64-only, so
   the aarch64 cross build in the Dockerfile waits on per-target moons.
-- Not yet: `Range` requests, `sendfile`, directory listings, HTTP/2. See
+- Not yet: `Range` requests, `sendfile`, and directory listings. See
   [ROADMAP.md](ROADMAP.md) for the full list, in order of importance.
 - `SUN_FEEDBACK.md` lists the compiler and stdlib issues found while
   building this, with reproductions.

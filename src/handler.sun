@@ -11,6 +11,21 @@ public module sun_serve {
   public interface IHandler {
     // Fill resp for req. The request view is valid only during this call.
     public method handle(req: const ref Request, resp: ref Response) void;
+
+    // Decide whether to accept a validated WebSocket opening request.
+    public method handle_websocket(req: const ref Request, handshake: ref WebSocketHandshake) void;
+
+    // Observe a newly opened WebSocket session.
+    public method websocket_open(socket: const ref WebSocketHandle) void;
+
+    // Handle one complete text or binary message.
+    public method websocket_message(socket: const ref WebSocketHandle, message: const ref WebSocketMessage) void;
+
+    // Observe a completed WebSocket close exchange.
+    public method websocket_close(socket: const ref WebSocketHandle, code: i32) void;
+
+    // Observe a WebSocket protocol error before closure.
+    public method websocket_error(socket: const ref WebSocketHandle, code: i32) void;
   }
 
   // The signature of a plain-function handler.
@@ -29,6 +44,21 @@ public module sun_serve {
     public method handle(req: const ref Request, resp: ref Response) void {
       this.fn(req, resp);
     }
+
+    // Reject WebSocket upgrades for function handlers.
+    public method handle_websocket(req: const ref Request, handshake: ref WebSocketHandshake) void {}
+
+    // Ignore open events in this HTTP-only adapter.
+    public method websocket_open(socket: const ref WebSocketHandle) void {}
+
+    // Ignore messages in this HTTP-only adapter.
+    public method websocket_message(socket: const ref WebSocketHandle, message: const ref WebSocketMessage) void {}
+
+    // Ignore close events in this HTTP-only adapter.
+    public method websocket_close(socket: const ref WebSocketHandle, code: i32) void {}
+
+    // Ignore protocol errors in this HTTP-only adapter.
+    public method websocket_error(socket: const ref WebSocketHandle, code: i32) void {}
   }
 
   // Answers every request with 404. Useful as a placeholder.
@@ -42,6 +72,21 @@ public module sun_serve {
       resp.set_content_type("text/plain");
       resp.set_body("Not Found\n");
     }
+
+    // Reject WebSocket upgrades for the placeholder handler.
+    public method handle_websocket(req: const ref Request, handshake: ref WebSocketHandshake) void {}
+
+    // Ignore open events in the placeholder handler.
+    public method websocket_open(socket: const ref WebSocketHandle) void {}
+
+    // Ignore messages in this HTTP-only adapter.
+    public method websocket_message(socket: const ref WebSocketHandle, message: const ref WebSocketMessage) void {}
+
+    // Ignore close events in this HTTP-only adapter.
+    public method websocket_close(socket: const ref WebSocketHandle, code: i32) void {}
+
+    // Ignore protocol errors in this HTTP-only adapter.
+    public method websocket_error(socket: const ref WebSocketHandle, code: i32) void {}
   }
 
   // Build one FnHandler per worker, as a Server expects.

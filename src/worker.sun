@@ -107,6 +107,12 @@ public module sun_serve {
             this.connection_ready(_convert<i64>(token), mask, now_ms);
           }
         }
+        for (var slot: i64 = 0; slot < this.conns.size(); slot = slot + 1) {
+          var pending: ref Connection = this.conns.get_unchecked(slot);
+          if (pending.is_open() and pending.is_websocket()) {
+            this.connection_ready(slot, 0, now_ms);
+          }
+        }
         this.check_stop(now_ms);
         if (now_ms >= this.next_sweep) {
           this.sweep(now_ms);
@@ -273,6 +279,12 @@ public module sun_serve {
         var l: ref ListenerSocket = this.args.listeners.get_unchecked(i);
         this.epoll.remove(l.get_fd());
         l.close();
+      }
+      for (var i: i64 = 0; i < this.conns.size(); i = i + 1) {
+        var conn: ref Connection = this.conns.get_unchecked(i);
+        if (conn.is_open()) {
+          conn.begin_shutdown();
+        }
       }
       for (var i: i64 = 0; i < this.conns.size(); i = i + 1) {
         if (this.slot_idle(i)) {

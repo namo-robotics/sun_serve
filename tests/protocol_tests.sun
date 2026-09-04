@@ -1,0 +1,77 @@
+// protocol_tests.sun - Unit coverage for HTTP/2, HPACK, and WebSocket wire helpers
+
+public module sun_serve {
+  using std;
+
+  module protocol_tests {
+    using std;
+    using sun_serve;
+
+    test_function websocket_accept_matches_rfc() {
+      var alloc = make_heap_allocator();
+      var key = String(alloc, "dGhlIHNhbXBsZSBub25jZQ==");
+      var accept = websocket_accept(alloc, key);
+      std.test.assert(accept.equals_literal("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "RFC accept value");
+      std.test.assert(websocket_valid_key(key), "valid client nonce");
+    }
+
+    test_function websocket_frames_and_utf8() {
+      var alloc = make_heap_allocator();
+      var out = ByteBuffer(alloc, 16);
+      websocket_append_frame(out, _convert<u8>(1), "hello".raw(), 5);
+      std.test.assert_eq(out.readable_len(), 7);
+      std.test.assert_eq(out.byte_at(0), 129);
+      std.test.assert_eq(out.byte_at(1), 5);
+      std.test.assert(websocket_valid_utf8("hello".raw(), 5), "ASCII is UTF-8");
+      var bad = ContiguousBuffer<u8>(alloc, 2);
+      bad.set_unchecked(0, 192);
+      bad.set_unchecked(1, 128);
+      std.test.assert(not websocket_valid_utf8(bad.raw_data(), 2), "overlong UTF-8 rejected");
+    }
+
+    test_function hpack_huffman_and_dynamic_table() {
+      var alloc = make_heap_allocator();
+      var encoded = ContiguousBuffer<u8>(alloc, 12);
+      encoded.set_unchecked(0, 241);
+      encoded.set_unchecked(1, 227);
+      encoded.set_unchecked(2, 194);
+      encoded.set_unchecked(3, 229);
+      encoded.set_unchecked(4, 242);
+      encoded.set_unchecked(5, 58);
+      encoded.set_unchecked(6, 107);
+      encoded.set_unchecked(7, 160);
+      encoded.set_unchecked(8, 171);
+      encoded.set_unchecked(9, 144);
+      encoded.set_unchecked(10, 244);
+      encoded.set_unchecked(11, 255);
+      var decoded: Option<String> = hpack_huffman_decode(alloc, encoded.raw_data(), 12);
+      var fallback = String(alloc, "");
+      var text: String = match decoded {
+        Option.Some(v) => v,
+        Option.None => fallback
+      };
+      std.test.assert(text.equals_literal("www.example.com"), "RFC Huffman example");
+
+      var decoder = HpackDecoder(alloc);
+      var first = ContiguousBuffer<u8>(alloc, 11);
+      first.set_unchecked(0, 65);
+      first.set_unchecked(1, 9);
+      first.set_unchecked(2, 108);
+      first.set_unchecked(3, 111);
+      first.set_unchecked(4, 99);
+      first.set_unchecked(5, 97);
+      first.set_unchecked(6, 108);
+      first.set_unchecked(7, 104);
+      first.set_unchecked(8, 111);
+      first.set_unchecked(9, 115);
+      first.set_unchecked(10, 116);
+      var headers = Vec<H2Header>(alloc, 4);
+      std.test.assert(hpack_decode(alloc, first.raw_data(), 11, decoder, headers), "literal decoded");
+      headers.clear();
+      var indexed = ContiguousBuffer<u8>(alloc, 1);
+      indexed.set_unchecked(0, 190);
+      std.test.assert(hpack_decode(alloc, indexed.raw_data(), 1, decoder, headers), "dynamic index decoded");
+      std.test.assert(headers.get_unchecked(0).value.equals_literal("localhost"), "dynamic value");
+    }
+  }
+}

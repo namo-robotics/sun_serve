@@ -267,6 +267,21 @@ public module sun_serve {
       }
       resp.send_file(f, size);
     }
+
+    // Reject upgrades because this handler only serves files.
+    public method handle_websocket(req: const ref Request, handshake: ref WebSocketHandshake) void {}
+
+    // Ignore open events because files never upgrade.
+    public method websocket_open(socket: const ref WebSocketHandle) void {}
+
+    // Ignore message events because files never upgrade.
+    public method websocket_message(socket: const ref WebSocketHandle, message: const ref WebSocketMessage) void {}
+
+    // Ignore close events because files never upgrade.
+    public method websocket_close(socket: const ref WebSocketHandle, code: i32) void {}
+
+    // Ignore protocol errors because files never upgrade.
+    public method websocket_error(socket: const ref WebSocketHandle, code: i32) void {}
   }
 
   // Build one StaticFiles handler per worker, as a Server expects.

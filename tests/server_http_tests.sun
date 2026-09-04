@@ -72,6 +72,39 @@ public module sun_serve {
       }
     }
 
+    // Append a test frame header to a binary String.
+    function append_h2_test_frame(out: ref String, len: i64, kind: u8, flags: u8, stream: u32) void {
+      out.append_char(_convert<u8>((len >> 16) & 255));
+      out.append_char(_convert<u8>((len >> 8) & 255));
+      out.append_char(_convert<u8>(len & 255));
+      out.append_char(kind);
+      out.append_char(flags);
+      out.append_char(_convert<u8>((stream >> 24) & 127));
+      out.append_char(_convert<u8>((stream >> 16) & 255));
+      out.append_char(_convert<u8>((stream >> 8) & 255));
+      out.append_char(_convert<u8>(stream & 255));
+    }
+
+    test_function http2_prior_knowledge_and_continuation() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      append_h2_test_frame(wire, 0, H2_SETTINGS, _convert<u8>(0), 0);
+      append_h2_test_frame(wire, 3, H2_HEADERS, H2_END_STREAM, 1);
+      wire.append_char(130);  // :method GET
+      wire.append_char(134);  // :scheme http
+      wire.append_char(132);  // :path /
+      append_h2_test_frame(wire, 3, H2_CONTINUATION, H2_END_HEADERS, 1);
+      wire.append_char(1);  // literal :authority
+      wire.append_char(1);
+      wire.append_char(b'a');
+      c.send_string(wire);
+      var reply: String = c.read_until("hello");
+      std.test.assert(reply.contains("hello"), "HTTP/2 response body");
+      c.close();
+    }
+
     test_function single_get() {
       var alloc = make_heap_allocator();
       var ts = TestServer(alloc, 2, 5000);

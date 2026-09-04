@@ -9,10 +9,9 @@
 public module sun_serve {
   using std;
 
-  enum ConnState { Vacant, Handshaking, ReadingHead, ReadingBody, Writing, Closed }
+  enum ConnState { Vacant, Handshaking, ReadingHead, ReadingBody, Writing, WebSocket, Http2, Closed }
 
-  // The application protocol on a connection, chosen by ALPN after the TLS
-  // handshake. HTTP/2 is the seam for a future framing layer.
+  // The application protocol selected for a connection.
   public enum Protocol { Http1, Http2 }
 
   // How the request body is framed.
@@ -43,6 +42,24 @@ public module sun_serve {
     var wbuf: ByteBuffer;  // serialized response
     var request: Request;
     var response: Response;
+    var h2_headers: Vec<H2Header>;
+    var hpack_decoder: HpackDecoder;
+    var h2_stream: u32;
+    var h2_preface: bool;
+    var h2_headers_ready: bool;
+    var h2_header_block: ByteBuffer;
+    var h2_continuation_stream: u32;
+    var h2_header_end_stream: bool;
+    var h2_enable_connect: bool;
+    var h2_ws_stream: u32;
+    var h2_ws_buf: ByteBuffer;
+    var ws_mailbox: Shared<WebSocketMailbox>;
+    var ws_generation: i64;
+    var ws_upgrading: bool;
+    var h2_upgrading: bool;
+    var ws_fragmenting: bool;
+    var ws_fragment_opcode: u8;
+    var ws_closing: bool;
     var keep_alive: bool;
     var send_body: bool;
     var body_kind: i32;
@@ -70,6 +87,24 @@ public module sun_serve {
       this.wbuf = ByteBuffer(allocator, 16384);
       this.request = Request(allocator);
       this.response = Response(allocator);
+      this.h2_headers = Vec<H2Header>(allocator, 16);
+      this.hpack_decoder = HpackDecoder(allocator);
+      this.h2_stream = 0;
+      this.h2_preface = false;
+      this.h2_headers_ready = false;
+      this.h2_header_block = ByteBuffer(allocator, 512);
+      this.h2_continuation_stream = 0;
+      this.h2_header_end_stream = false;
+      this.h2_enable_connect = false;
+      this.h2_ws_stream = 0;
+      this.h2_ws_buf = ByteBuffer(allocator, 256);
+      this.ws_mailbox = Shared<WebSocketMailbox>(allocator, WebSocketMailbox(allocator));
+      this.ws_generation = 0;
+      this.ws_upgrading = false;
+      this.h2_upgrading = false;
+      this.ws_fragmenting = false;
+      this.ws_fragment_opcode = 0;
+      this.ws_closing = false;
       this.keep_alive = false;
       this.send_body = true;
       this.body_kind = BODY_NONE;
@@ -98,6 +133,21 @@ public module sun_serve {
       this.rbuf.clear();
       this.wbuf.clear();
       this.body_buf.clear();
+      this.h2_headers.clear();
+      this.hpack_decoder.reset();
+      this.h2_stream = 0;
+      this.h2_preface = false;
+      this.h2_headers_ready = false;
+      this.h2_header_block.clear();
+      this.h2_continuation_stream = 0;
+      this.h2_header_end_stream = false;
+      this.h2_enable_connect = false;
+      this.h2_ws_stream = 0;
+      this.h2_ws_buf.clear();
+      this.ws_upgrading = false;
+      this.h2_upgrading = false;
+      this.ws_fragmenting = false;
+      this.ws_closing = false;
       if (tls) {
         this.state = ConnState.Handshaking;
         this.deadline_ms = now_ms + timeouts.handshake_ms;
@@ -106,6 +156,30 @@ public module sun_serve {
         this.deadline_ms = now_ms + timeouts.header_ms;
       }
       this.started_ms = now_ms;
+      return true;
+    }
+
+    // Activate a new WebSocket generation.
+    method activate_websocket(max_bytes: i64) i64 {
+      var guard = this.ws_mailbox.lock();
+      return guard.get().activate(max_bytes);
+    }
+
+    // Drain asynchronous frames into the connection write buffer.
+    method drain_websocket() bool {
+      return this.drain_websocket_to(this.wbuf);
+    }
+
+    // Drain asynchronous frames into a selected protocol buffer.
+    method drain_websocket_to(out: ref ByteBuffer) bool {
+      var guard = this.ws_mailbox.lock();
+      return guard.get().drain(this.ws_generation, out);
+    }
+
+    // Invalidate handles for the current WebSocket generation.
+    method deactivate_websocket() bool {
+      var guard = this.ws_mailbox.lock();
+      guard.get().deactivate(this.ws_generation);
       return true;
     }
 
@@ -140,6 +214,11 @@ public module sun_serve {
       return this.state == ConnState.ReadingHead and this.rbuf.is_empty() and this.served > 0;
     }
 
+    // Report whether this connection needs asynchronous WebSocket polling.
+    public const method is_websocket() bool {
+      return this.state == ConnState.WebSocket;
+    }
+
     // Report whether the connection is sending a response.
     public const method is_writing() bool {
       return this.state == ConnState.Writing;
@@ -162,9 +241,40 @@ public module sun_serve {
       this.rbuf.clear();
       this.wbuf.clear();
       this.body_buf.clear();
+      this.deactivate_websocket();
+      this.h2_headers.clear();
+      this.h2_headers_ready = false;
       this.rbuf.shrink_to(IDLE_BUFFER_CAP);
       this.wbuf.shrink_to(IDLE_BUFFER_CAP);
       this.body_buf.shrink_to(16);
+    }
+
+    // Queue protocol-specific graceful shutdown notifications.
+    public method begin_shutdown() void {
+      if (this.state == ConnState.WebSocket) {
+        var code = ContiguousBuffer<u8>(HeapAllocator(), 2);
+        code.set_unchecked(0, 3);
+        code.set_unchecked(1, 233);
+        websocket_append_frame(this.wbuf, _convert<u8>(8), code.raw_data(), 2);
+        this.ws_closing = true;
+        this.deactivate_websocket();
+        this.want_ = EPOLLOUT;
+      } else if (this.state == ConnState.Http2) {
+        if (this.h2_ws_stream != 0) {
+          var websocket = ByteBuffer(this.alloc, 4);
+          var ws_code = ContiguousBuffer<u8>(HeapAllocator(), 2);
+          ws_code.set_unchecked(0, 3);
+          ws_code.set_unchecked(1, 233);
+          websocket_append_frame(websocket, _convert<u8>(8), ws_code.raw_data(), 2);
+          h2_frame(this.wbuf, websocket.readable_len(), H2_DATA, _convert<u8>(0), this.h2_ws_stream);
+          this.wbuf.append_bytes(websocket.readable_ptr(), websocket.readable_len());
+          this.deactivate_websocket();
+        }
+        h2_frame(this.wbuf, 8, H2_GOAWAY, _convert<u8>(0), 0);
+        h2_append_u32(this.wbuf, this.h2_stream);
+        h2_append_u32(this.wbuf, 0);
+        this.want_ = EPOLLIN | EPOLLOUT | EPOLLRDHUP;
+      }
     }
 
     // Run the state machine for a readiness event. peer_hup says the peer
@@ -192,8 +302,12 @@ public module sun_serve {
               this.close();
               return;
             }
-            this.state = ConnState.ReadingHead;
-            this.deadline_ms = now_ms + cfg.timeouts.header_ms;
+            if (this.proto == Protocol.Http2) {
+              this.start_http2(now_ms, cfg);
+            } else {
+              this.state = ConnState.ReadingHead;
+              this.deadline_ms = now_ms + cfg.timeouts.header_ms;
+            }
             continue;
           }
           if (not this.wait_for(r)) {
@@ -201,7 +315,28 @@ public module sun_serve {
           }
           return;
         }
+        if (this.state == ConnState.WebSocket) {
+          this.drive_websocket(handler, cfg);
+          return;
+        }
+        if (this.state == ConnState.Http2) {
+          this.drive_http2(handler, date, log, cfg, now_ms, draining);
+          return;
+        }
         if (this.state == ConnState.ReadingHead) {
+          if (cfg.http2 and not this.transport.is_tls() and this.rbuf.readable_len() > 0) {
+            var preface: i32 = this.h2_preface_status();
+            if (preface > 0) {
+              this.start_http2(now_ms, cfg);
+              continue;
+            }
+            if (preface == 0) {
+              if (not this.fill_rbuf()) {
+                return;
+              }
+              continue;
+            }
+          }
           if (this.rbuf.readable_len() > 0) {
             var st: ParseStatus = this.request.parse_head(this.rbuf.readable_ptr(), this.rbuf.readable_len(), cfg.limits);
             if (st == ParseStatus.Complete) {
@@ -255,6 +390,14 @@ public module sun_serve {
           if (w == 0) {
             this.served = this.served + 1;
             this.log_access(log, now_ms);
+            if (this.ws_upgrading) {
+              this.finish_websocket_upgrade(handler, cfg);
+              continue;
+            }
+            if (this.h2_upgrading) {
+              this.finish_h2c_upgrade(cfg);
+              continue;
+            }
             if (not this.keep_alive or this.peer_closed) {
               this.close();
               return;
@@ -286,14 +429,13 @@ public module sun_serve {
       return false;
     }
 
-    // After a TLS handshake, adopt the negotiated protocol. Only HTTP/1.1 is
-    // implemented; a client that insisted on another protocol is refused.
+    // After a TLS handshake, adopt the negotiated application protocol.
     method select_protocol() bool {
       var name = String(this.alloc, "");
       if (this.transport.alpn(name)) {
         if (name.equals_literal("h2")) {
           this.proto = Protocol.Http2;
-          return false;
+          return true;
         }
       }
       this.proto = Protocol.Http1;
@@ -327,6 +469,349 @@ public module sun_serve {
         this.close();
       }
       return false;
+    }
+
+    // Compare buffered cleartext bytes with the HTTP/2 client preface.
+    method h2_preface_status() i32 {
+      var preface: static_ptr<u8> = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+      var have: i64 = this.rbuf.readable_len();
+      var check: i64 = have;
+      if (check > preface.length()) {
+        check = preface.length();
+      }
+      for (var i: i64 = 0; i < check; i = i + 1) {
+        if (this.rbuf.byte_at(i) != unsafe { _load<u8>(preface.raw(), i); }) {
+          return -1;
+        }
+      }
+      if (have < preface.length()) {
+        return 0;
+      }
+      return 1;
+    }
+
+    // Enter HTTP/2 and queue the server settings.
+    method start_http2(now_ms: i64, cfg: const ref Config) void {
+      this.proto = Protocol.Http2;
+      this.state = ConnState.Http2;
+      this.h2_preface = true;
+      this.h2_headers_ready = false;
+      this.h2_headers.clear();
+      this.body_buf.clear();
+      this.deadline_ms = now_ms + cfg.timeouts.keep_alive_ms;
+      h2_frame(this.wbuf, 12, H2_SETTINGS, _convert<u8>(0), 0);
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(3);
+      h2_append_u32(this.wbuf, _convert<u32>(cfg.limits.max_h2_concurrent_streams));
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(8);
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(1);
+      this.want_ = EPOLLIN | EPOLLOUT | EPOLLRDHUP;
+    }
+
+    // Process HTTP/2 frames until the transport would block.
+    method drive_http2(handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) void {
+      while (true) {
+        if (this.h2_ws_stream != 0) {
+          var websocket_frames = ByteBuffer(this.alloc, 256);
+          var websocket_active: bool = this.drain_websocket_to(websocket_frames);
+          if (websocket_frames.readable_len() > 0) {
+            h2_frame(this.wbuf, websocket_frames.readable_len(), H2_DATA, _convert<u8>(0), this.h2_ws_stream);
+            this.wbuf.append_bytes(websocket_frames.readable_ptr(), websocket_frames.readable_len());
+          }
+          if (not websocket_active and websocket_frames.readable_len() == 0) {
+            h2_frame(this.wbuf, 0, H2_DATA, H2_END_STREAM, this.h2_ws_stream);
+            this.h2_ws_stream = 0;
+          }
+        }
+        if (this.wbuf.readable_len() > 0) {
+          var wr: i64 = this.flush_wbuf();
+          if (wr != 0) {
+            if (not this.wait_for(wr)) {
+              this.close();
+            }
+            return;
+          }
+          this.want_ = EPOLLIN | EPOLLRDHUP;
+        }
+        if (this.h2_preface) {
+          if (this.rbuf.readable_len() < 24) {
+            if (not this.fill_rbuf()) {
+              return;
+            }
+            continue;
+          }
+          if (this.h2_preface_status() <= 0) {
+            this.close();
+            return;
+          }
+          this.rbuf.consume(24);
+          this.h2_preface = false;
+        }
+        if (this.rbuf.readable_len() < 9) {
+          if (not this.fill_rbuf()) {
+            return;
+          }
+          continue;
+        }
+        var base: raw_ptr<u8> = this.rbuf.readable_ptr();
+        var frame_len: i64 = (_convert<i64>(unsafe { _load<u8>(base, 0); }) << 16) | (_convert<i64>(unsafe { _load<u8>(base, 1); }) << 8) | _convert<i64>(unsafe { _load<u8>(base, 2); });
+        if (frame_len > 16777215 or this.rbuf.readable_len() < 9 + frame_len) {
+          if (frame_len > 16777215) {
+            this.close();
+            return;
+          }
+          if (not this.fill_rbuf()) {
+            return;
+          }
+          continue;
+        }
+        var kind: u8 = unsafe { _load<u8>(base, 3); };
+        var flags: u8 = unsafe { _load<u8>(base, 4); };
+        var stream: u32 = h2_u32(base, 5) & 2147483647;
+        var payload: raw_ptr<u8> = unsafe { _ptr_offset(base, 9); };
+        if (this.h2_continuation_stream != 0 and kind != H2_CONTINUATION) {
+          this.close();
+          return;
+        }
+        if (kind == H2_SETTINGS) {
+          if (stream != 0 or ((flags & H2_ACK) != 0 and frame_len != 0) or ((flags & H2_ACK) == 0 and frame_len % 6 != 0)) {
+            this.close();
+            return;
+          }
+          if ((flags & H2_ACK) == 0) {
+            for (var setting: i64 = 0; setting < frame_len; setting = setting + 6) {
+              var identifier: i32 = _convert<i32>(unsafe { _load<u8>(payload, setting); }) * 256 + _convert<i32>(unsafe { _load<u8>(payload, setting + 1); });
+              var setting_value: u32 = h2_u32(payload, setting + 2);
+              if (identifier == 8) {
+                if (setting_value > 1) {
+                  this.close();
+                  return;
+                }
+                this.h2_enable_connect = setting_value == 1;
+              }
+            }
+            h2_frame(this.wbuf, 0, H2_SETTINGS, H2_ACK, 0);
+          }
+        } else if (kind == H2_PING) {
+          if (stream != 0 or frame_len != 8) {
+            this.close();
+            return;
+          }
+          if ((flags & H2_ACK) == 0) {
+            h2_frame(this.wbuf, 8, H2_PING, H2_ACK, 0);
+            this.wbuf.append_bytes(payload, 8);
+          }
+        } else if (kind == H2_HEADERS) {
+          if (stream == 0 or (stream & 1) == 0) {
+            this.close();
+            return;
+          }
+          var fragment_pos: i64 = 0;
+          var fragment_len: i64 = frame_len;
+          if ((flags & 8) != 0) {
+            if (fragment_len < 1) {
+              this.close();
+              return;
+            }
+            var padding: i64 = _convert<i64>(unsafe { _load<u8>(payload, 0); });
+            fragment_pos = 1;
+            fragment_len = fragment_len - 1 - padding;
+            if (fragment_len < 0) {
+              this.close();
+              return;
+            }
+          }
+          if ((flags & 32) != 0) {
+            if (fragment_len < 5) {
+              this.close();
+              return;
+            }
+            fragment_pos = fragment_pos + 5;
+            fragment_len = fragment_len - 5;
+          }
+          this.h2_headers.clear();
+          this.body_buf.clear();
+          this.h2_header_block.clear();
+          this.h2_header_block.append_bytes(unsafe { _ptr_offset(payload, fragment_pos); }, fragment_len);
+          this.h2_header_end_stream = (flags & H2_END_STREAM) != 0;
+          if ((flags & H2_END_HEADERS) == 0) {
+            this.h2_continuation_stream = stream;
+          } else {
+            if (not hpack_decode(this.alloc, this.h2_header_block.readable_ptr(), this.h2_header_block.readable_len(), this.hpack_decoder, this.h2_headers)) {
+              this.close();
+              return;
+            }
+            this.h2_stream = stream;
+            this.h2_headers_ready = true;
+            if (this.h2_header_end_stream or this.h2_is_extended_connect()) {
+              this.handle_h2_request(handler, date, log, cfg, now_ms);
+            }
+          }
+        } else if (kind == H2_CONTINUATION) {
+          if (stream == 0 or stream != this.h2_continuation_stream) {
+            this.close();
+            return;
+          }
+          this.h2_header_block.append_bytes(payload, frame_len);
+          if ((flags & H2_END_HEADERS) != 0) {
+            this.h2_continuation_stream = 0;
+            if (not hpack_decode(this.alloc, this.h2_header_block.readable_ptr(), this.h2_header_block.readable_len(), this.hpack_decoder, this.h2_headers)) {
+              this.close();
+              return;
+            }
+            this.h2_stream = stream;
+            this.h2_headers_ready = true;
+            if (this.h2_header_end_stream or this.h2_is_extended_connect()) {
+              this.handle_h2_request(handler, date, log, cfg, now_ms);
+            }
+          }
+        } else if (kind == H2_DATA) {
+          if (stream == 0) {
+            this.close();
+            return;
+          }
+          var data_pos: i64 = 0;
+          var data_len: i64 = frame_len;
+          if ((flags & 8) != 0) {
+            if (data_len < 1) {
+              this.close();
+              return;
+            }
+            var data_padding: i64 = _convert<i64>(unsafe { _load<u8>(payload, 0); });
+            data_pos = 1;
+            data_len = data_len - 1 - data_padding;
+            if (data_len < 0) {
+              this.close();
+              return;
+            }
+          }
+          var data_payload: raw_ptr<u8> = unsafe { _ptr_offset(payload, data_pos); };
+          if (stream == this.h2_ws_stream and stream != 0) {
+            this.h2_ws_buf.append_bytes(data_payload, data_len);
+            this.process_h2_websocket(handler, cfg);
+            if ((flags & H2_END_STREAM) != 0) {
+              var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
+              handler.websocket_close(socket, 1000);
+              this.deactivate_websocket();
+              this.h2_ws_stream = 0;
+            }
+          } else {
+            if (not this.h2_headers_ready or stream != this.h2_stream) {
+              this.close();
+              return;
+            }
+            if (this.body_buf.readable_len() + data_len > cfg.limits.max_h2_buffered_bytes or this.body_buf.readable_len() + data_len > cfg.limits.max_body_bytes) {
+              this.close();
+              return;
+            }
+            this.body_buf.append_bytes(data_payload, data_len);
+            if ((flags & H2_END_STREAM) != 0) {
+              this.handle_h2_request(handler, date, log, cfg, now_ms);
+            }
+          }
+          if (frame_len > 0) {
+            h2_frame(this.wbuf, 4, H2_WINDOW_UPDATE, _convert<u8>(0), 0);
+            h2_append_u32(this.wbuf, _convert<u32>(frame_len));
+            h2_frame(this.wbuf, 4, H2_WINDOW_UPDATE, _convert<u8>(0), stream);
+            h2_append_u32(this.wbuf, _convert<u32>(frame_len));
+          }
+        } else if (kind == H2_GOAWAY) {
+          this.close();
+          return;
+        } else if (kind == H2_PUSH_PROMISE) {
+          this.close();
+          return;
+        }
+        this.rbuf.consume(9 + frame_len);
+        this.rbuf.compact();
+        this.deadline_ms = now_ms + cfg.timeouts.keep_alive_ms;
+      }
+    }
+
+    // Report whether the current headers request an extended CONNECT.
+    method h2_is_extended_connect() bool {
+      for (var i: i64 = 0; i < this.h2_headers.size(); i = i + 1) {
+        var field: ref H2Header = this.h2_headers.get_unchecked(i);
+        if (field.name.equals_literal(":protocol") and field.value.equals_literal("websocket")) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // Convert decoded HTTP/2 headers into the existing handler request view.
+    method handle_h2_request(handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64) void {
+      if (not h2_valid_request_headers(this.h2_headers, cfg.limits)) {
+        this.close();
+        return;
+      }
+      var method = String(this.alloc, "");
+      var path = String(this.alloc, "");
+      var authority = String(this.alloc, "");
+      var protocol = String(this.alloc, "");
+      var head = ByteBuffer(this.alloc, 512);
+      for (var i: i64 = 0; i < this.h2_headers.size(); i = i + 1) {
+        var h: ref H2Header = this.h2_headers.get_unchecked(i);
+        if (h.name.equals_literal(":method")) {
+          method.append(h.value);
+        } else if (h.name.equals_literal(":path")) {
+          path.append(h.value);
+        } else if (h.name.equals_literal(":authority")) {
+          authority.append(h.value);
+        } else if (h.name.equals_literal(":protocol")) {
+          protocol.append(h.value);
+        }
+      }
+      if (method.length() == 0 or path.length() == 0) {
+        this.close();
+        return;
+      }
+      head.append_string(method);
+      head.append_byte(b' ');
+      head.append_string(path);
+      head.append_literal(" HTTP/1.1\r\nHost: ");
+      head.append_string(authority);
+      head.append_literal("\r\n");
+      for (var j: i64 = 0; j < this.h2_headers.size(); j = j + 1) {
+        var field: ref H2Header = this.h2_headers.get_unchecked(j);
+        if (not field.name.starts_with(":") and not field.name.equals_literal("host")) {
+          head.append_string(field.name);
+          head.append_literal(": ");
+          head.append_string(field.value);
+          head.append_literal("\r\n");
+        }
+      }
+      head.append_literal("\r\n");
+      if (this.request.parse_head(head.readable_ptr(), head.readable_len(), cfg.limits) != ParseStatus.Complete) {
+        this.close();
+        return;
+      }
+      this.request.set_body(this.body_buf.readable_ptr(), this.body_buf.readable_len());
+      if (protocol.equals_literal("websocket")) {
+        this.begin_h2_websocket(handler, date, cfg);
+        this.request.reset();
+        this.h2_headers.clear();
+        this.body_buf.clear();
+        this.h2_headers_ready = false;
+        return;
+      }
+      this.response.reset();
+      handler.handle(this.request, this.response);
+      this.response.serialize_h2(this.wbuf, date.value(), this.h2_stream, cfg.server_header, not this.request.is_head());
+      this.served = this.served + 1;
+      this.started_ms = now_ms;
+      this.bytes_sent = 0;
+      this.log_access(log, now_ms);
+      this.response.reset();
+      this.request.reset();
+      this.h2_headers.clear();
+      this.body_buf.clear();
+      this.h2_headers_ready = false;
+      this.want_ = EPOLLIN | EPOLLOUT | EPOLLRDHUP;
     }
 
     // Set up body reading after the head parsed.
@@ -465,10 +950,388 @@ public module sun_serve {
       return -1;
     }
 
+    // Upgrade an HTTP/1.1 request to cleartext HTTP/2 stream 1.
+    method try_h2c_upgrade(handler: ref IHandler, date: ref DateCache, cfg: const ref Config) bool {
+      if (not cfg.http2 or not this.request.header_equals("upgrade", "h2c")) {
+        return false;
+      }
+      if (not this.request.header_contains_token("connection", "upgrade") or not this.request.header_contains_token("connection", "http2-settings") or not this.request.has_header("http2-settings")) {
+        return false;
+      }
+      this.response.reset();
+      handler.handle(this.request, this.response);
+      this.wbuf.append_literal("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n");
+      this.proto = Protocol.Http2;
+      this.h2_preface = true;
+      this.h2_headers_ready = false;
+      this.hpack_decoder.reset();
+      h2_frame(this.wbuf, 12, H2_SETTINGS, _convert<u8>(0), 0);
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(3);
+      h2_append_u32(this.wbuf, _convert<u32>(cfg.limits.max_h2_concurrent_streams));
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(8);
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(0);
+      this.wbuf.append_byte(1);
+      this.response.serialize_h2(this.wbuf, date.value(), 1, cfg.server_header, not this.request.is_head());
+      this.h2_upgrading = true;
+      this.keep_alive = true;
+      this.send_body = false;
+      return true;
+    }
+
+    // Finish the h2c transition after the HTTP/1.1 101 response.
+    method finish_h2c_upgrade(cfg: const ref Config) void {
+      var used: i64 = this.request.head_len() + this.raw_body_len;
+      this.rbuf.consume(used);
+      this.rbuf.compact();
+      this.request.reset();
+      this.response.reset();
+      this.body_buf.clear();
+      this.wbuf.clear();
+      this.h2_upgrading = false;
+      this.state = ConnState.Http2;
+      this.want_ = EPOLLIN | EPOLLRDHUP;
+      this.deadline_ms = this.deadline_ms + cfg.timeouts.keep_alive_ms;
+    }
+
+    // Validate and dispatch an HTTP/1.1 WebSocket opening handshake.
+    method try_websocket_upgrade(handler: ref IHandler, date: ref DateCache, cfg: const ref Config) bool {
+      if (not this.request.method_is("GET") or this.request.version_minor() != 1) {
+        return false;
+      }
+      if (not this.request.header_contains_token("connection", "upgrade") or not this.request.header_equals("upgrade", "websocket")) {
+        return false;
+      }
+      if (not this.request.header_equals("sec-websocket-version", "13")) {
+        this.response.reset();
+        this.response.set_status(426);
+        this.response.add_header("Sec-WebSocket-Version", "13");
+        this.response.set_body("WebSocket version 13 required\n");
+        this.keep_alive = false;
+        this.send_body = true;
+        this.response.serialize_head(this.wbuf, date.value(), false, cfg.server_header);
+        this.wbuf.append_bytes(this.response.body_buffer().readable_ptr(), this.response.body_buffer().readable_len());
+        return true;
+      }
+      var missing = String(this.alloc, "");
+      var key: String = match this.request.header("sec-websocket-key", this.alloc) {
+        Option.Some(v) => v,
+        Option.None => missing
+      };
+      if (not websocket_valid_key(key)) {
+        return false;
+      }
+      var handshake = WebSocketHandshake(this.alloc, false);
+      handler.handle_websocket(this.request, handshake);
+      if (handshake.subprotocol.length() > 0 and not this.request.header_contains_token_string("sec-websocket-protocol", handshake.subprotocol)) {
+        handshake.reject(400);
+      }
+      if (not handshake.accepted) {
+        this.response.reset();
+        this.response.set_status(handshake.reject_status);
+        this.response.set_body("WebSocket upgrade rejected\n");
+        this.keep_alive = false;
+        this.send_body = true;
+        this.response.serialize_head(this.wbuf, date.value(), false, cfg.server_header);
+        this.wbuf.append_bytes(this.response.body_buffer().readable_ptr(), this.response.body_buffer().readable_len());
+        return true;
+      }
+      var accept = websocket_accept(this.alloc, key);
+      this.response.reset();
+      this.response.set_status(101);
+      this.wbuf.append_literal("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ");
+      this.wbuf.append_string(accept);
+      this.wbuf.append_literal("\r\n");
+      if (handshake.subprotocol.length() > 0) {
+        this.wbuf.append_literal("Sec-WebSocket-Protocol: ");
+        this.wbuf.append_string(handshake.subprotocol);
+        this.wbuf.append_literal("\r\n");
+      }
+      this.wbuf.append_literal("\r\n");
+      this.ws_generation = this.activate_websocket(cfg.limits.max_body_bytes);
+      this.ws_upgrading = true;
+      this.keep_alive = true;
+      this.send_body = false;
+      return true;
+    }
+
+    // Finish switching protocols after the 101 response reaches the client.
+    method finish_websocket_upgrade(handler: ref IHandler, cfg: const ref Config) void {
+      var used: i64 = this.request.head_len() + this.raw_body_len;
+      this.rbuf.consume(used);
+      this.rbuf.compact();
+      this.request.reset();
+      this.response.reset();
+      this.body_buf.clear();
+      this.wbuf.clear();
+      this.ws_upgrading = false;
+      this.h2_upgrading = false;
+      this.ws_fragmenting = false;
+      this.ws_closing = false;
+      this.state = ConnState.WebSocket;
+      this.want_ = EPOLLIN | EPOLLRDHUP;
+      this.deadline_ms = this.deadline_ms + cfg.timeouts.keep_alive_ms;
+      var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
+      handler.websocket_open(socket);
+    }
+
+    // Run the WebSocket frame state machine until the socket would block.
+    method drive_websocket(handler: ref IHandler, cfg: const ref Config) void {
+      while (true) {
+        var active: bool = this.drain_websocket();
+        if (this.wbuf.readable_len() > 0) {
+          var wr: i64 = this.flush_wbuf();
+          if (wr != 0) {
+            if (not this.wait_for(wr)) {
+              this.close();
+            }
+            return;
+          }
+        }
+        if (this.ws_closing or not active) {
+          this.close();
+          return;
+        }
+        if (this.rbuf.readable_len() < 2) {
+          if (not this.fill_rbuf()) {
+            return;
+          }
+          continue;
+        }
+        var base: raw_ptr<u8> = this.rbuf.readable_ptr();
+        var first: u8 = unsafe { _load<u8>(base, 0); };
+        var second: u8 = unsafe { _load<u8>(base, 1); };
+        var final_frame: bool = (first & 128) != 0;
+        var opcode: u8 = first & 15;
+        if ((first & 112) != 0 or (second & 128) == 0) {
+          this.websocket_protocol_error(handler, 1002);
+          continue;
+        }
+        var pos: i64 = 2;
+        var length: i64 = _convert<i64>(second & 127);
+        if (length == 126) {
+          if (this.rbuf.readable_len() < 4) {
+            if (not this.fill_rbuf()) {
+              return;
+            }
+            continue;
+          }
+          length = (_convert<i64>(unsafe { _load<u8>(base, 2); }) << 8) | _convert<i64>(unsafe { _load<u8>(base, 3); });
+          pos = 4;
+        } else if (length == 127) {
+          if (this.rbuf.readable_len() < 10) {
+            if (not this.fill_rbuf()) {
+              return;
+            }
+            continue;
+          }
+          length = 0;
+          for (var k: i64 = 2; k < 10; k = k + 1) {
+            length = (length << 8) | _convert<i64>(unsafe { _load<u8>(base, k); });
+          }
+          pos = 10;
+        }
+        if ((opcode & 8) != 0 and (not final_frame or length > 125)) {
+          this.websocket_protocol_error(handler, 1002);
+          continue;
+        }
+        if (length > cfg.limits.max_body_bytes) {
+          this.websocket_protocol_error(handler, 1009);
+          continue;
+        }
+        if (this.rbuf.readable_len() < pos + 4 + length) {
+          if (not this.fill_rbuf()) {
+            return;
+          }
+          continue;
+        }
+        var mask: raw_ptr<u8> = unsafe { _ptr_offset(base, pos); };
+        pos = pos + 4;
+        var decoded = ByteBuffer(this.alloc, length);
+        for (var n: i64 = 0; n < length; n = n + 1) {
+          decoded.append_byte(unsafe { _load<u8>(base, pos + n); } ^ unsafe { _load<u8>(mask, n % 4); });
+        }
+        if (opcode == 8) {
+          var code: i32 = 1000;
+          if (length >= 2) {
+            code = _convert<i32>(decoded.byte_at(0)) * 256 + _convert<i32>(decoded.byte_at(1));
+          }
+          var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
+          handler.websocket_close(socket, code);
+          websocket_append_frame(this.wbuf, _convert<u8>(8), decoded.readable_ptr(), decoded.readable_len());
+          this.ws_closing = true;
+        } else if (opcode == 9) {
+          websocket_append_frame(this.wbuf, _convert<u8>(10), decoded.readable_ptr(), decoded.readable_len());
+        } else if (opcode == 10) {} else if (opcode == 1 or opcode == 2) {
+          if (this.ws_fragmenting) {
+            this.websocket_protocol_error(handler, 1002);
+            continue;
+          }
+          this.body_buf.clear();
+          this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
+          this.ws_fragment_opcode = opcode;
+          this.ws_fragmenting = not final_frame;
+          if (final_frame) {
+            this.deliver_websocket_message(handler);
+          }
+        } else if (opcode == 0) {
+          if (not this.ws_fragmenting or this.body_buf.readable_len() + length > cfg.limits.max_body_bytes) {
+            this.websocket_protocol_error(handler, 1002);
+            continue;
+          }
+          this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
+          if (final_frame) {
+            this.ws_fragmenting = false;
+            this.deliver_websocket_message(handler);
+          }
+        } else {
+          this.websocket_protocol_error(handler, 1002);
+          continue;
+        }
+        this.rbuf.consume(pos + length);
+        this.rbuf.compact();
+      }
+    }
+
+    // Accept or reject an RFC 8441 extended CONNECT stream.
+    method begin_h2_websocket(handler: ref IHandler, date: ref DateCache, cfg: const ref Config) void {
+      var handshake = WebSocketHandshake(this.alloc, false);
+      if (this.h2_enable_connect and this.request.method_is("CONNECT")) {
+        handler.handle_websocket(this.request, handshake);
+      }
+      if (not handshake.accepted) {
+        this.response.reset();
+        this.response.set_status(handshake.reject_status);
+        this.response.set_body("WebSocket connect rejected\n");
+        this.response.serialize_h2(this.wbuf, date.value(), this.h2_stream, cfg.server_header, true);
+        return;
+      }
+      var block = ByteBuffer(this.alloc, 64);
+      hpack_status(block, 200, this.alloc);
+      if (handshake.subprotocol.length() > 0) {
+        var name = String(this.alloc, "sec-websocket-protocol");
+        hpack_header(block, name, handshake.subprotocol);
+      }
+      h2_frame(this.wbuf, block.readable_len(), H2_HEADERS, H2_END_HEADERS, this.h2_stream);
+      this.wbuf.append_bytes(block.readable_ptr(), block.readable_len());
+      this.ws_generation = this.activate_websocket(cfg.limits.max_body_bytes);
+      this.h2_ws_stream = this.h2_stream;
+      this.h2_ws_buf.clear();
+      var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
+      handler.websocket_open(socket);
+    }
+
+    // Process complete WebSocket frames carried by HTTP/2 DATA.
+    method process_h2_websocket(handler: ref IHandler, cfg: const ref Config) void {
+      var replies = ByteBuffer(this.alloc, 128);
+      while (this.h2_ws_buf.readable_len() >= 2) {
+        var base: raw_ptr<u8> = this.h2_ws_buf.readable_ptr();
+        var first: u8 = unsafe { _load<u8>(base, 0); };
+        var second: u8 = unsafe { _load<u8>(base, 1); };
+        var final_frame: bool = (first & 128) != 0;
+        var opcode: u8 = first & 15;
+        var pos: i64 = 2;
+        var length: i64 = _convert<i64>(second & 127);
+        if ((second & 128) == 0 or (first & 112) != 0) {
+          this.h2_ws_stream = 0;
+          return;
+        }
+        if (length == 126) {
+          if (this.h2_ws_buf.readable_len() < 4) {
+            return;
+          }
+          length = (_convert<i64>(unsafe { _load<u8>(base, 2); }) << 8) | _convert<i64>(unsafe { _load<u8>(base, 3); });
+          pos = 4;
+        } else if (length == 127) {
+          if (this.h2_ws_buf.readable_len() < 10) {
+            return;
+          }
+          length = 0;
+          for (var k: i64 = 2; k < 10; k = k + 1) {
+            length = (length << 8) | _convert<i64>(unsafe { _load<u8>(base, k); });
+          }
+          pos = 10;
+        }
+        if (length > cfg.limits.max_body_bytes or this.h2_ws_buf.readable_len() < pos + 4 + length) {
+          return;
+        }
+        var mask: raw_ptr<u8> = unsafe { _ptr_offset(base, pos); };
+        pos = pos + 4;
+        var decoded = ByteBuffer(this.alloc, length);
+        for (var n: i64 = 0; n < length; n = n + 1) {
+          decoded.append_byte(unsafe { _load<u8>(base, pos + n); } ^ unsafe { _load<u8>(mask, n % 4); });
+        }
+        if (opcode == 9) {
+          websocket_append_frame(replies, _convert<u8>(10), decoded.readable_ptr(), decoded.readable_len());
+        } else if (opcode == 8) {
+          websocket_append_frame(replies, _convert<u8>(8), decoded.readable_ptr(), decoded.readable_len());
+          this.deactivate_websocket();
+        } else if (opcode == 1 or opcode == 2) {
+          this.body_buf.clear();
+          this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
+          this.ws_fragment_opcode = opcode;
+          this.ws_fragmenting = not final_frame;
+          if (final_frame) {
+            this.deliver_websocket_message(handler);
+          }
+        } else if (opcode == 0 and this.ws_fragmenting) {
+          this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
+          if (final_frame) {
+            this.ws_fragmenting = false;
+            this.deliver_websocket_message(handler);
+          }
+        }
+        this.h2_ws_buf.consume(pos + length);
+        this.h2_ws_buf.compact();
+      }
+      if (replies.readable_len() > 0) {
+        h2_frame(this.wbuf, replies.readable_len(), H2_DATA, _convert<u8>(0), this.h2_ws_stream);
+        this.wbuf.append_bytes(replies.readable_ptr(), replies.readable_len());
+      }
+    }
+
+    // Deliver one assembled data message to the application.
+    method deliver_websocket_message(handler: ref IHandler) void {
+      if (this.ws_fragment_opcode == 1 and not websocket_valid_utf8(this.body_buf.readable_ptr(), this.body_buf.readable_len())) {
+        this.websocket_protocol_error(handler, 1007);
+        this.body_buf.clear();
+        return;
+      }
+      var kind: WebSocketMessageKind = WebSocketMessageKind.Binary;
+      if (this.ws_fragment_opcode == 1) {
+        kind = WebSocketMessageKind.Text;
+      }
+      var message = WebSocketMessage(kind, this.body_buf.readable_ptr(), this.body_buf.readable_len());
+      var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
+      handler.websocket_message(socket, message);
+      this.body_buf.clear();
+    }
+
+    // Notify the application and start a protocol-error close.
+    method websocket_protocol_error(handler: ref IHandler, code: i32) void {
+      var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
+      handler.websocket_error(socket, code);
+      var bytes = ContiguousBuffer<u8>(this.alloc, 2);
+      bytes.set_unchecked(0, _convert<u8>((code >> 8) & 255));
+      bytes.set_unchecked(1, _convert<u8>(code & 255));
+      websocket_append_frame(this.wbuf, _convert<u8>(8), bytes.raw_data(), 2);
+      this.ws_closing = true;
+      this.rbuf.clear();
+    }
+
     // Run the handler and serialize its response into wbuf.
     method handle_request(handler: ref IHandler, date: ref DateCache, cfg: const ref Config, draining: bool) void {
       this.response.reset();
       this.keep_alive = this.request.keep_alive() and not draining;
+      if (this.try_h2c_upgrade(handler, date, cfg)) {
+        return;
+      }
+      if (this.try_websocket_upgrade(handler, date, cfg)) {
+        return;
+      }
       this.send_body = not this.request.is_head();
       handler.handle(this.request, this.response);
       if (this.response.wants_close()) {

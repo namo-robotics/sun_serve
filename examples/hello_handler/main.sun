@@ -12,6 +12,7 @@
 //   curl 'http://127.0.0.1:8080/hi?name=sun'
 //   curl -d 'ping' http://127.0.0.1:8080/echo
 //   curl http://127.0.0.1:8080/stats
+//   websocat ws://127.0.0.1:8080/ws
 //
 // The library is compiled in from source through the $SUN_SERVE_SRC path
 // variable in sun-config.json. Importing build/sun_serve.moon instead is
@@ -87,6 +88,32 @@ module hello_handler {
       resp.set_content_type("text/plain");
       resp.set_body_string(body);
     }
+
+    // Accept WebSocket echo sessions on /ws.
+    public method handle_websocket(req: const ref Request, handshake: ref WebSocketHandshake) void {
+      if (req.path_is("/ws")) {
+        handshake.accept();
+      }
+    }
+
+    // A new echo session needs no setup.
+    public method websocket_open(socket: const ref WebSocketHandle) void {}
+
+    // Echo complete text and binary messages.
+    public method websocket_message(socket: const ref WebSocketHandle, message: const ref WebSocketMessage) void {
+      if (message.kind == WebSocketMessageKind.Text) {
+        var text = message.text(this.alloc);
+        socket.send_text(text);
+      } else {
+        socket.send_binary(message.data(), message.length());
+      }
+    }
+
+    // Echo sessions keep no close state.
+    public method websocket_close(socket: const ref WebSocketHandle, code: i32) void {}
+
+    // Echo sessions keep no error state.
+    public method websocket_error(socket: const ref WebSocketHandle, code: i32) void {}
   }
 
   // Build one HelloHandler per worker, as a Server expects.
@@ -129,7 +156,9 @@ manifest {
     "$SUN_SERVE_SRC/http/date.sun",
     "$SUN_SERVE_SRC/http/mime.sun",
     "$SUN_SERVE_SRC/http/request.sun",
+    "$SUN_SERVE_SRC/http2.sun",
     "$SUN_SERVE_SRC/http/response.sun",
+    "$SUN_SERVE_SRC/websocket.sun",
     "$SUN_SERVE_SRC/handler.sun",
     "$SUN_SERVE_SRC/tls/openssl_server.sun",
     "$SUN_SERVE_SRC/tls/tls_context.sun",
