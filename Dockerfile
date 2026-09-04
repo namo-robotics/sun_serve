@@ -27,22 +27,14 @@ RUN curl -fsSL -o /tmp/sun.deb \
  && apt-get clean \
  && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# musl toolchain (musl.cc): the default link mode is static, and static links
-# prefer musl — designed for static linking (no NSS dlopen), MIT-licensed, and
-# roughly half the binary size of static glibc. The bundle includes a
-# musl-built libstdc++ for Sun's exception runtime, which Ubuntu's glibc-built
-# libstdc++.a cannot provide.
-#
-# musl.cc is slow and cuts connections partway through, so the download is
-# resumed from where it stopped until it is complete, then checked against a
-# pinned sha256 before it is unpacked. Piping curl straight into tar fails
-# opaquely on a truncated transfer, and curl's own --retry starts over.
+# The musl toolchain provides the libstdc++ needed by Sun's static link mode.
+# Use musl.cc's GitHub mirror because the main download host is unreliable.
 RUN mkdir -p /opt/cross \
  && cd /tmp \
- && f="x86_64-linux-musl-cross.tgz" && n=0 \
- && until curl -fSL -C - --speed-limit 1000 --speed-time 30 -o "$f" "https://musl.cc/$f"; do \
-      n=$((n + 1)); [ "$n" -lt 30 ] || exit 1; sleep 5; \
-    done \
+ && f="x86_64-linux-musl-cross.tgz" \
+ && curl -fSL --connect-timeout 10 --max-time 300 \
+      --retry 3 --retry-all-errors --retry-delay 2 \
+      -o "$f" "https://github.com/musl-cc/musl.cc/releases/download/v0.0.1/$f" \
  && echo "c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea  $f" | sha256sum -c - \
  && tar xzf "$f" -C /opt/cross \
  && rm -f "$f"
