@@ -45,9 +45,24 @@ RUN curl -fsSL -o /tmp/sun.deb \
 # MIT-licensed, and roughly half the binary size of static glibc. These
 # bundles include a musl-built libstdc++ for Sun's exception runtime, which
 # Ubuntu's glibc-built libstdc++.a cannot provide.
+#
+# musl.cc is slow and cuts connections partway through, so each download is
+# resumed from where it stopped until it is complete, then checked against a
+# pinned sha256 before it is unpacked. Piping curl straight into tar fails
+# opaquely on a truncated transfer, and curl's own --retry starts over.
 RUN mkdir -p /opt/cross \
- && curl -sL https://musl.cc/aarch64-linux-musl-cross.tgz | tar xz -C /opt/cross \
- && curl -sL https://musl.cc/x86_64-linux-musl-cross.tgz | tar xz -C /opt/cross
+ && cd /tmp \
+ && for t in x86_64 aarch64; do \
+      f="$t-linux-musl-cross.tgz"; n=0; \
+      until curl -fSL -C - --speed-limit 1000 --speed-time 30 -o "$f" "https://musl.cc/$f"; do \
+        n=$((n + 1)); [ "$n" -lt 30 ] || exit 1; sleep 5; \
+      done; \
+    done \
+ && echo "c5d410d9f82a4f24c549fe5d24f988f85b2679b452413a9f7e5f7b956f2fe7ea  x86_64-linux-musl-cross.tgz" | sha256sum -c - \
+ && echo "c909817856d6ceda86aa510894fa3527eac7989f0ef6e87b5721c58737a06c38  aarch64-linux-musl-cross.tgz" | sha256sum -c - \
+ && tar xzf x86_64-linux-musl-cross.tgz -C /opt/cross \
+ && tar xzf aarch64-linux-musl-cross.tgz -C /opt/cross \
+ && rm -f /tmp/*-linux-musl-cross.tgz
 ENV PATH="/opt/cross/aarch64-linux-musl-cross/bin:/opt/cross/x86_64-linux-musl-cross/bin:${PATH}"
 
 # GitHub CLI from the official apt repo (newer than the Ubuntu archive build)
