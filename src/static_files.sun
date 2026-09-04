@@ -1,10 +1,15 @@
-// static_files.sun - Serving a directory tree over HTTP
-//
-// Paths are normalized before touching the filesystem so a request can never
-// escape the root. Files are opened first and inspected through the open
-// descriptor, so there is no window between a check and the read. Small files
-// are copied into the response; large ones are streamed by the connection.
+/*
+ * static_files.sun - Serving a directory tree over HTTP
+ *
+ * Paths are normalized before touching the filesystem so a request can never
+ * escape the root. Files are opened first and inspected through the open
+ * descriptor, so there is no window between a check and the read. Small files
+ * are copied into the response; large ones are streamed by the connection.
+ */
 
+/*
+ * Serves files from a normalized directory tree.
+ */
 public module sun_serve {
   using std;
   using std.io;
@@ -14,9 +19,12 @@ public module sun_serve {
 
   // Tunable behaviour of a StaticFiles handler.
   public class StaticOptions {
-    public var index_name: String;  // file served for a directory
-    public var cache_control: String;  // Cache-Control value, empty for none
-    public var add_charset: bool;  // append charset=utf-8 to text types
+    // The file served for a directory request.
+    public var index_name: String;
+    // The Cache-Control value, or an empty string when omitted.
+    public var cache_control: String;
+    // Whether text media types receive a UTF-8 charset.
+    public var add_charset: bool;
 
     // Defaults: index.html, no Cache-Control, charset on text.
     init(alloc: const ref HeapAllocator) {
@@ -37,10 +45,12 @@ public module sun_serve {
     }
   }
 
-  // Reduce a decoded request path to a safe path relative to the root:
-  // empty and "." segments vanish, ".." pops a segment, and a ".." with
-  // nothing left to pop means the client tried to escape, which yields None.
-  // The result starts with a slash and never ends with one (root is "/").
+  /*
+   * Reduce a decoded request path to a safe path relative to the root:
+   * empty and "." segments vanish, ".." pops a segment, and a ".." with
+   * nothing left to pop means the client tried to escape, which yields None.
+   * The result starts with a slash and never ends with one (root is "/").
+   */
   public function normalize_path(alloc: const ref HeapAllocator, path: const ref String) Option<String> {
     var out = String(alloc, "");
     var ends = Vec<i64>(alloc, 8);  // length of out after each kept segment
@@ -85,12 +95,12 @@ public module sun_serve {
     return Option.Some(out);
   }
 
+  // Serves normalized paths from a configured directory tree.
   public class StaticFiles implements IHandler {
     var root: String;  // absolute or relative directory, no trailing slash
     var opts: StaticOptions;
     var alloc: HeapAllocator;
     var mode_offset: i64;
-    var stat_buf: ContiguousBuffer<u8>;
     var full_path: String;
     var etag: String;
     var last_modified: String;
@@ -109,13 +119,12 @@ public module sun_serve {
       }
       this.opts = opts;
       this.mode_offset = stat_mode_offset(allocator);
-      this.stat_buf = ContiguousBuffer<u8>(allocator, 256);
       this.full_path = String(allocator, "");
       this.etag = String(allocator, "");
       this.last_modified = String(allocator, "");
     }
 
-    // Answer GET and HEAD from the tree; everything else gets 405.
+    // Answer GET and HEAD from the tree and reject other methods.
     public method handle(req: const ref Request, resp: ref Response) void {
       if (not req.method_is("GET") and not req.method_is("HEAD")) {
         resp.set_status(405);
@@ -124,8 +133,10 @@ public module sun_serve {
         resp.set_body("Method Not Allowed\n");
         return;
       }
-      // Fallbacks are built before the match; see SUN_FEEDBACK.md on
-      // temporaries inside match arms.
+      /*
+       * Fallbacks are built before the match; see SUN_FEEDBACK.md on
+       * temporaries inside match arms.
+       */
       var no_path = String(this.alloc, "");
       var rel: String = match normalize_path(this.alloc, req.path()) {
         Option.Some(p) => p,
@@ -147,12 +158,13 @@ public module sun_serve {
         this.not_found(resp);
         return;
       }
-      if (unsafe { sys_fstat(f.get_fd(), this.stat_buf.raw_data()); } != 0) {
+      var metadata = read_file_metadata(this.alloc, f.get_fd(), this.mode_offset);
+      if (not metadata.valid) {
         f.close();
         this.not_found(resp);
         return;
       }
-      var mode: u32 = unsafe { _load<u32>(_ptr_offset(this.stat_buf.raw_data(), this.mode_offset), 0); };
+      var mode: u32 = metadata.mode;
       if ((mode & S_IFMT) == S_IFDIR) {
         f.close();
         var path: const ref String = req.path();
@@ -179,18 +191,19 @@ public module sun_serve {
           resp.set_body("Forbidden\n");
           return;
         }
-        if (unsafe { sys_fstat(index.get_fd(), this.stat_buf.raw_data()); } != 0) {
+        metadata = read_file_metadata(this.alloc, index.get_fd(), this.mode_offset);
+        if (not metadata.valid) {
           index.close();
           this.not_found(resp);
           return;
         }
-        var index_mode: u32 = unsafe { _load<u32>(_ptr_offset(this.stat_buf.raw_data(), this.mode_offset), 0); };
+        var index_mode: u32 = metadata.mode;
         if ((index_mode & S_IFMT) != S_IFREG) {
           index.close();
           this.not_found(resp);
           return;
         }
-        this.serve_file(req, resp, index);
+        this.serve_file(req, resp, index, metadata.size, metadata.mtime);
         return;
       }
       if ((mode & S_IFMT) != S_IFREG) {
@@ -198,20 +211,18 @@ public module sun_serve {
         this.not_found(resp);
         return;
       }
-      this.serve_file(req, resp, f);
+      this.serve_file(req, resp, f, metadata.size, metadata.mtime);
     }
 
-    // A plain-text 404.
+    // A plain-text not-found response.
     method not_found(resp: ref Response) void {
       resp.set_status(404);
       resp.set_content_type("text/plain");
       resp.set_body("Not Found\n");
     }
 
-    // Send an open regular file whose stat block is in stat_buf.
-    method serve_file(req: const ref Request, resp: ref Response, f: File) void {
-      var size: i64 = unsafe { _load<i64>(_ptr_offset(this.stat_buf.raw_data(), STAT_SIZE_OFFSET), 0); };
-      var mtime: i64 = unsafe { _load<i64>(_ptr_offset(this.stat_buf.raw_data(), STAT_MTIME_OFFSET), 0); };
+    // Send an open regular file with its previously-read metadata.
+    method serve_file(req: const ref Request, resp: ref Response, f: File, size: i64, mtime: i64) void {
       this.etag.clear();
       this.etag.append_char(b'"');
       this.etag.append_hex(mtime);

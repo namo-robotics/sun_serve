@@ -1,10 +1,15 @@
-// sys_ffi.sun - The libc boundary sun_serve adds on top of the stdlib
-//
-// Every C symbol this library calls directly is declared here once, following
-// the stdlib's sys.sun convention: the declarations stay module-private and the
-// `sys_` prefix only marks call sites. Anything the stdlib already wraps
-// (sockets, files, time) is reached through the stdlib instead.
+/*
+ * sys_ffi.sun - The libc boundary sun_serve adds on top of the stdlib
+ *
+ * Every C symbol this library calls directly is declared here once, following
+ * the stdlib's sys.sun convention: the declarations stay module-private and the
+ * `sys_` prefix only marks call sites. Anything the stdlib already wraps
+ * (sockets, files, time) is reached through the stdlib instead.
+ */
 
+/*
+ * Defines the system foreign-function boundary.
+ */
 public module sun_serve {
   using std;
 
@@ -33,10 +38,15 @@ public module sun_serve {
 
   // --- constants (Linux ABI values) --------------------------------------
 
+  // Reports readable data in an epoll event mask.
   public const EPOLLIN: u32 = 1;
+  // Reports writable capacity in an epoll event mask.
   public const EPOLLOUT: u32 = 4;
+  // Reports an error in an epoll event mask.
   public const EPOLLERR: u32 = 8;
+  // Reports a hangup in an epoll event mask.
   public const EPOLLHUP: u32 = 16;
+  // Reports a peer half-close in an epoll event mask.
   public const EPOLLRDHUP: u32 = 8192;
   const EPOLL_CTL_ADD: i32 = 1;
   const EPOLL_CTL_DEL: i32 = 2;
@@ -80,13 +90,79 @@ public module sun_serve {
     var restorer: raw_ptr<u8>;
   }
 
+  // A shared atomic stop flag whose pointer stays inside the system boundary.
+  class StopToken {
+    var value: raw_ptr<i32>;
+
+    // Borrow stable storage owned by a server.
+    init(cell: ref Unique<i32>) {
+      this.value = cell.get_raw();
+    }
+
+    // Read the current stop value atomically.
+    method load() i32 {
+      return unsafe { _atomic_load_i32(this.value); };
+    }
+  }
+
+  // Store an atomic value in unique stable storage.
+  function atomic_store(cell: ref Unique<i32>, value: i32) void {
+    unsafe { _atomic_store_i32(cell.get_raw(), value); };
+  }
+
+  // Create a nonblocking event counter.
+  function create_event_counter() i32 {
+    return unsafe { sys_eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC); };
+  }
+
+  // Read one event-counter value, returning the syscall byte count.
+  function read_event_counter(fd: i32, value: ref u64) i64 {
+    return unsafe { sys_read_u64(fd, _address_of<u64>(value), 8); };
+  }
+
+  // Add one to an event counter, returning the syscall byte count.
+  function notify_event_counter(fd: i32) i64 {
+    var one: u64 = 1;
+    return unsafe { sys_write_u64(fd, _address_of<u64>(one), 8); };
+  }
+
+  // File metadata read through the platform stat layout.
+  class FileMetadata {
+    var valid: bool;
+    var mode: u32;
+    var size: i64;
+    var mtime: i64;
+
+    // Record one stat result.
+    init(valid: bool, mode: u32, size: i64, mtime: i64) {
+      this.valid = valid;
+      this.mode = mode;
+      this.size = size;
+      this.mtime = mtime;
+    }
+  }
+
+  // Read the file metadata fields used by the static-file handler.
+  function read_file_metadata(alloc: const ref HeapAllocator, fd: i32, mode_offset: i64) FileMetadata {
+    var stat = ContiguousBuffer<u8>(alloc, 256);
+    if (unsafe { sys_fstat(fd, stat.raw_data()); } != 0) {
+      return FileMetadata(false, 0, 0, 0);
+    }
+    var mode: u32 = unsafe { _load<u32>(_ptr_offset(stat.raw_data(), mode_offset), 0); };
+    var size: i64 = unsafe { _load<i64>(_ptr_offset(stat.raw_data(), STAT_SIZE_OFFSET), 0); };
+    var mtime: i64 = unsafe { _load<i64>(_ptr_offset(stat.raw_data(), STAT_MTIME_OFFSET), 0); };
+    return FileMetadata(true, mode, size, mtime);
+  }
+
   // The calling thread's errno after a failed C call.
   function last_errno() i32 {
     return unsafe { _load<i32>(sys_errno_location(), 0); };
   }
 
-  // Report whether an errno value means a nonblocking call should be retried
-  // once the descriptor is ready.
+  /*
+   * Report whether an errno value means a nonblocking call should be retried
+   * once the descriptor is ready.
+   */
   function errno_would_block(code: i32) bool {
     return code == EAGAIN;
   }
@@ -103,16 +179,20 @@ public module sun_serve {
     }
   }
 
-  // Close a descriptor, ignoring errors. Only positive descriptors are closed,
-  // so a zeroed (moved-from) owner never touches stdin.
+  /*
+   * Close a descriptor, ignoring errors. Only positive descriptors are closed,
+   * so a zeroed (moved-from) owner never touches stdin.
+   */
   function close_fd(fd: i32) void {
     if (fd > 0) {
       unsafe { sys_close(fd); };
     }
   }
 
-  // Write a whole buffer to a descriptor, retrying on partial writes. Errors
-  // are ignored: this backs logging, which must never fail the caller.
+  /*
+   * Write a whole buffer to a descriptor, retrying on partial writes. Errors
+   * are ignored: this backs logging, which must never fail the caller.
+   */
   function write_all(fd: i32, data: raw_ptr<u8>, len: i64) void {
     var done: i64 = 0;
     while (done < len) {
@@ -136,8 +216,10 @@ public module sun_serve {
     return _convert<i32>(n);
   }
 
-  // Stop a write to a closed socket from killing the process. OpenSSL writes
-  // straight to the descriptor, so MSG_NOSIGNAL alone is not enough.
+  /*
+   * Stop a write to a closed socket from killing the process. OpenSSL writes
+   * straight to the descriptor, so MSG_NOSIGNAL alone is not enough.
+   */
   public function ignore_sigpipe() void {
     unsafe { sys_signal(SIGPIPE, SIG_IGN); };
   }

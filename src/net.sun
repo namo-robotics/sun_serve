@@ -1,25 +1,37 @@
-// net.sun - Nonblocking listener and socket calls shaped for an event loop
-//
-// The stdlib's TcpListener and TcpStream report readiness by throwing, which
-// is the wrong shape for a loop that expects "would block" thousands of times
-// a second. These wrappers return plain numbers instead and never own a
-// descriptor they did not create.
+/*
+ * net.sun - Nonblocking listener and socket calls shaped for an event loop
+ *
+ * The stdlib's TcpListener and TcpStream report readiness by throwing, which
+ * is the wrong shape for a loop that expects "would block" thousands of times
+ * a second. These wrappers return plain numbers instead and never own a
+ * descriptor they did not create.
+ */
 
+/*
+ * Provides nonblocking networking operations for workers.
+ */
 public module sun_serve {
   using std;
 
   // Results of a nonblocking read or write, alongside a positive byte count.
   public const IO_CLOSED: i64 = 0;
+  // Reports that reading must wait for socket readiness.
   public const IO_WANT_READ: i64 = -1;
+  // Reports that writing must wait for socket readiness.
   public const IO_WANT_WRITE: i64 = -2;
+  // Reports an unrecoverable transport error.
   public const IO_ERROR: i64 = -3;
 
-  // A listening TCP socket bound with SO_REUSEPORT so every worker can own
-  // one on the same address and let the kernel spread connections.
+  /*
+   * A listening TCP socket bound with SO_REUSEPORT so every worker can own
+   * one on the same address and let the kernel spread connections.
+   */
   public class ListenerSocket {
-    var fd: i32;  // 0 = holds nothing
-    public var tls: bool;  // whether accepted connections speak TLS
-    public var spec_index: i64;  // which Config.listen entry this serves
+    var fd: i32;  // nonpositive values hold no descriptor
+    // Whether accepted connections use TLS.
+    public var tls: bool;
+    // The matching entry in the configured listener list.
+    public var spec_index: i64;
 
     // Build a listener that is not bound yet.
     init(tls: bool, spec_index: i64) {
@@ -33,8 +45,10 @@ public module sun_serve {
       this.close();
     }
 
-    // Create, configure, bind, and start listening on addr:port. Port zero
-    // lets the kernel choose; read the choice back with local_port().
+    /*
+     * Create, configure, bind, and start listening on addr:port. Port zero
+     * lets the kernel choose; read the choice back with local_port().
+     */
     public method bind(addr: const ref Ipv4Addr, port: i32, backlog: i32) void throws IError {
       var sock: i32 = unsafe { __socket(AF_INET, SOCK_STREAM, 0); };
       if (sock < 0) {
@@ -68,9 +82,11 @@ public module sun_serve {
       return port;
     }
 
-    // Accept one pending connection as a nonblocking, close-on-exec socket.
-    // Returns the new descriptor, zero when none is pending, or the negated
-    // errno when the accept itself failed.
+    /*
+     * Accept one pending connection as a nonblocking, close-on-exec socket.
+     * Returns the new descriptor, zero when none is pending, or the negated
+     * errno when the accept itself failed.
+     */
     public method accept() i32 {
       var client: i32 = unsafe { sys_accept4(this.fd, null, null, SOCK_NONBLOCK | SOCK_CLOEXEC); };
       if (client >= 0) {
@@ -103,14 +119,34 @@ public module sun_serve {
     }
   }
 
+  // The C timeval layout used for socket timeouts.
+  class SocketTimeout {
+    var seconds: i64;
+    var microseconds: i64;
+
+    // Build a whole-second timeout.
+    init(seconds: i64) {
+      this.seconds = seconds;
+      this.microseconds = 0;
+    }
+  }
+
+  // Set a receive timeout in seconds for clients and tests.
+  public function set_socket_receive_timeout(fd: i32, seconds: i64) void {
+    var timeout = SocketTimeout(seconds);
+    unsafe { __setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, _address_of<SocketTimeout>(timeout), 16); };
+  }
+
   // Disable Nagle's algorithm so small responses leave immediately.
   function set_tcp_nodelay(fd: i32) void {
     var one: i32 = 1;
     unsafe { __setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, _address_of<i32>(one), 4); };
   }
 
-  // Read into buf from a nonblocking socket: bytes read, IO_CLOSED at end of
-  // stream, IO_WANT_READ when nothing is pending, IO_ERROR otherwise.
+  /*
+   * Read into buf from a nonblocking socket: bytes read, IO_CLOSED at end of
+   * stream, IO_WANT_READ when nothing is pending, IO_ERROR otherwise.
+   */
   function socket_read(fd: i32, buf: raw_ptr<u8>, len: i64) i64 {
     while (true) {
       var n: i64 = unsafe { __recv(fd, buf, len, 0); };
@@ -129,8 +165,10 @@ public module sun_serve {
     return IO_ERROR;
   }
 
-  // Write from buf to a nonblocking socket: bytes written, IO_WANT_WRITE when
-  // the send buffer is full, IO_ERROR otherwise.
+  /*
+   * Write from buf to a nonblocking socket: bytes written, IO_WANT_WRITE when
+   * the send buffer is full, IO_ERROR otherwise.
+   */
   function socket_write(fd: i32, buf: raw_ptr<u8>, len: i64) i64 {
     while (true) {
       var n: i64 = unsafe { __send(fd, buf, len, MSG_NOSIGNAL); };

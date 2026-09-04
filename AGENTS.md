@@ -6,13 +6,18 @@ A file for guiding coding agents.
 
 - Never use git commands except readonly ones like `git status` and `git diff`.
 
-## Conventions
+## Sun safety boundary
 
-- Strongly avoid use of raw pointers in sun files
-- Strongly avoid use of unsafe blocks
+- Do not use `unsafe` or `raw_ptr` in protocol, application, command, example, or test code.
+- Keep unavoidable pointer operations inside the audited syscall, ABI, buffer, network, epoll, WebSocket C-binding, transport, signal, and TLS boundary files listed by `scripts/check-sun-safety.sh`.
+- Do not expose raw pointers through public APIs. The process entrypoint's `argv` signature is the only exception.
+- Wrap each foreign or intrinsic operation in a checked, pointer-free function before calling it from higher-level code.
+- Run `scripts/check-sun-safety.sh` when changing Sun code.
 
 ## Code Comments
 - All code comments should be concise, plain-english written for a general audience of software engineers.
+- Use block comments for comments that span multiple lines.
+- Put a block comment directly above every module declaration, with no blank line between them.
 - Every public function, class, module, etc should have a concise, plain-english block comment describing what it does.
 - Do not hard-code numeric values that subject to change in comments.
 

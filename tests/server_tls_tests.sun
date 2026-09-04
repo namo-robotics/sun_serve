@@ -1,11 +1,19 @@
-// server_tls_tests.sun - HTTPS end to end with a throwaway certificate.
-//
-// The certificate is minted with the openssl command-line tool, and the same
-// tool acts as the client, so the tests need no process-wide state and can
-// run in parallel with everything else. When the tool is missing they print
-// SKIP and pass.
+/*
+ * server_tls_tests.sun - HTTPS end to end with a throwaway certificate.
+ *
+ * The certificate is minted with the openssl command-line tool, and the same
+ * tool acts as the client, so the tests need no process-wide state and can
+ * run in parallel with everything else. When the tool is missing they print
+ * SKIP and pass.
+ */
 
+/*
+ * Extends the server module with TLS tests.
+ */
 public module sun_serve {
+  /*
+   * Contains TLS server integration tests.
+   */
   module server_tls_tests {
     using std;
     using std.process;
@@ -27,7 +35,9 @@ public module sun_serve {
 
     // A self-signed certificate for localhost in a temp directory.
     class TestCert {
+      // The generated certificate file path.
       public var cert_path: String;
+      // The generated private-key file path.
       public var key_path: String;
       var dir: String;
 
@@ -79,18 +89,24 @@ public module sun_serve {
     function tls_handler(req: const ref Request, resp: ref Response) void {
       resp.set_content_type("text/plain");
       if (req.path_is("/echo")) {
-        resp.set_body_bytes(req.body_ptr(), req.body_len());
+        resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
       } else {
         resp.set_body("secure hello");
       }
     }
 
-    // An HTTPS server (plus a plain listener) on kernel-picked ports, with
-    // a short keep-alive timeout so an idle s_client session ends quickly.
+    /*
+     * An HTTPS server (plus a plain listener) on kernel-picked ports, with
+     * a short keep-alive timeout so an idle s_client session ends quickly.
+     */
     class TlsServer {
+      // The generated certificate used by the server.
       public var cert: TestCert;
+      // The running test server.
       public var server: Server;
+      // The loopback port assigned to the TLS listener.
       public var tls_port: i32;
+      // The loopback port assigned to the plain listener.
       public var plain_port: i32;
 
       init(alloc: ref HeapAllocator, tag: static_ptr<u8>) throws IError {
@@ -110,9 +126,11 @@ public module sun_serve {
         this.plain_port = this.server.port(1);
       }
 
-      // Run openssl s_client against the TLS port, feed it request text, and
-      // return everything it printed. trust says whether to pass the test
-      // certificate as the CA; alpn is the protocol list to offer.
+      /*
+       * Run openssl s_client against the TLS port, feed it request text, and
+       * return everything it printed. trust says whether to pass the test
+       * certificate as the CA; alpn is the protocol list to offer.
+       */
       public method s_client(alloc: ref HeapAllocator, request: const ref String, trust: bool, alpn: static_ptr<u8>) String throws IError {
         var cli = Command(alloc, "openssl");
         cli.add_arg("s_client");

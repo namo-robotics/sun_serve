@@ -1,9 +1,14 @@
-// sun_serve.sun - Library entrypoint and manifest for sun_serve.moon
-//
-// sun_serve is an HTTP/1.1 and HTTP/2 server: one event loop per worker thread,
-// nonblocking sockets, optional TLS through the tls bundle's OpenSSL, and a
-// handler interface for application code. See README.md for the tour.
+/*
+ * sun_serve.sun - Library entrypoint and manifest for sun_serve.moon
+ *
+ * sun_serve is an HTTP/1.1 and HTTP/2 server: one event loop per worker thread,
+ * nonblocking sockets, optional TLS through the tls bundle's OpenSSL, and a
+ * handler interface for application code. See README.md for the tour.
+ */
 
+/*
+ * Defines the public server library module.
+ */
 public module sun_serve {
   using std;
 }

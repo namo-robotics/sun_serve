@@ -1,6 +1,12 @@
 // static_tests.sun - Path normalization and the StaticFiles handler.
 
+/*
+ * Extends the server module with static-file tests.
+ */
 public module sun_serve {
+  /*
+   * Contains static-file handler tests.
+   */
   module static_tests {
     using std;
     using std.io;
@@ -8,6 +14,7 @@ public module sun_serve {
 
     // A scratch directory under /tmp, removed with its files on drop.
     class TempDir {
+      // The scratch directory path.
       public var path: String;
       var alloc: HeapAllocator;
 
@@ -97,8 +104,11 @@ public module sun_serve {
 
     // A static server over a temp directory with a few files.
     class StaticServer {
+      // The scratch document root.
       public var dir: TempDir;
+      // The running test server.
       public var server: Server;
+      // The loopback port assigned to the server.
       public var port: i32;
 
       init(alloc: ref HeapAllocator, tag: static_ptr<u8>) throws IError {

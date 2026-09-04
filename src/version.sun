@@ -1,5 +1,8 @@
 // version.sun - The library version string
 
+/*
+ * Reports the server library version.
+ */
 public module sun_serve {
   using std;
 

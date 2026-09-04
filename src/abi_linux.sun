@@ -1,17 +1,24 @@
-// abi_linux.sun - Kernel structure layouts that differ between architectures
-//
-// struct epoll_event is packed on x86_64 but naturally aligned on aarch64, and
-// the Sun compiler has no architecture intrinsic, so the layout is measured
-// once at startup by round-tripping a known event through a real epoll
-// instance. struct stat's mode offset is picked from the machine name.
+/*
+ * abi_linux.sun - Kernel structure layouts that differ between architectures
+ *
+ * struct epoll_event is packed on x86_64 but naturally aligned on aarch64, and
+ * the Sun compiler has no architecture intrinsic, so the layout is measured
+ * once at startup by round-tripping a known event through a real epoll
+ * instance. struct stat's mode offset is picked from the machine name.
+ */
 
+/*
+ * Detects architecture-dependent Linux ABI layouts.
+ */
 public module sun_serve {
   using std;
 
   // Where the kernel puts the fields of struct epoll_event on this machine.
   public class EpollLayout {
-    public var stride: i64;  // bytes per event
-    public var data_offset: i64;  // byte offset of the 64-bit user data
+    // The byte distance between consecutive events.
+    public var stride: i64;
+    // The byte offset of the event's user data.
+    public var data_offset: i64;
 
     // Build a layout from measured values.
     init(stride: i64, data_offset: i64) {
@@ -20,12 +27,16 @@ public module sun_serve {
     }
   }
 
-  // Marker written into the user-data slot during the probe. Its two 32-bit
-  // halves are equal, so the overlapping candidate slots agree byte for byte.
+  /*
+   * Marker written into the user-data slot during the probe. Its two 32-bit
+   * halves are equal, so the overlapping candidate slots agree byte for byte.
+   */
   const PROBE_MARKER: u64 = 8844188892681527024;
 
-  // Measure the epoll_event layout by registering a writable pipe end with a
-  // known user-data value and reading it back from epoll_wait.
+  /*
+   * Measure the epoll_event layout by registering a writable pipe end with a
+   * known user-data value and reading it back from epoll_wait.
+   */
   public function probe_epoll_layout(alloc: const ref HeapAllocator) EpollLayout throws IError {
     var epfd: i32 = unsafe { sys_epoll_create1(EPOLL_CLOEXEC); };
     if (epfd < 0) {
@@ -35,8 +46,10 @@ public module sun_serve {
     var pipe: std.process.Pipe = std.process.open_pipe(pipe_alloc);
     var write_end: i32 = pipe.write_fd();
 
-    // The registration uses the wider layout with the marker in both
-    // candidate slots, so either kernel reading sees it.
+    /*
+     * The registration uses the wider layout with the marker in both
+     * candidate slots, so either kernel reading sees it.
+     */
     var ev = ContiguousBuffer<u8>(alloc, 16);
     ev.fill(0);
     unsafe { _store<u32>(ev.raw_data(), 0, EPOLLOUT); };

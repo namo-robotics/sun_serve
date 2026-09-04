@@ -1,13 +1,22 @@
 // http_tests.sun - Request parsing, response serialization, dates, MIME types.
 
+/*
+ * Extends the server module with HTTP tests.
+ */
 public module sun_serve {
+  /*
+   * Contains HTTP parsing and response tests.
+   */
   module http_tests {
     using std;
 
     // Parse a literal as a request head.
     function parse(req: ref Request, text: static_ptr<u8>) ParseStatus {
+      var alloc = make_heap_allocator();
+      var input = ByteBuffer(alloc, text.length());
+      input.append_literal(text);
       var limits = Limits();
-      return req.parse_head(text.raw(), text.length(), limits);
+      return req.parse_head(input, input.readable_len(), limits);
     }
 
     // Parse and return the failure status, or zero when the parse did not fail.
@@ -127,12 +136,16 @@ public module sun_serve {
       for (var i: i64 = 0; i < 100; i = i + 1) {
         big.append_char(b'a');
       }
-      std.test.assert(req.parse_head(big.c_str(), big.length(), limits) == ParseStatus.Failed, "failed");
+      var big_input = ByteBuffer(alloc, big.length());
+      big_input.append_string(big);
+      std.test.assert(req.parse_head(big_input, big_input.readable_len(), limits) == ParseStatus.Failed, "failed");
       std.test.assert_eq(req.error_status(), 431);
       limits.max_header_bytes = 16384;
       limits.max_headers = 2;
       var many = String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nA: 1\r\nB: 2\r\n\r\n");
-      std.test.assert(req.parse_head(many.c_str(), many.length(), limits) == ParseStatus.Failed, "failed");
+      var many_input = ByteBuffer(alloc, many.length());
+      many_input.append_string(many);
+      std.test.assert(req.parse_head(many_input, many_input.readable_len(), limits) == ParseStatus.Failed, "failed");
       std.test.assert_eq(req.error_status(), 431);
     }
 

@@ -1,14 +1,20 @@
-// server.sun - Binds listeners, starts workers, and waits for them
-//
-// A Server takes one handler per worker thread. Each worker gets its own
-// clone of the configuration, its own listening sockets (sharing the port
-// through SO_REUSEPORT), and a counted reference to the shared TLS context.
+/*
+ * server.sun - Binds listeners, starts workers, and waits for them
+ *
+ * A Server takes one handler per worker thread. Each worker gets its own
+ * clone of the configuration, its own listening sockets (sharing the port
+ * through SO_REUSEPORT), and a counted reference to the shared TLS context.
+ */
 
+/*
+ * Owns server listeners and worker threads.
+ */
 public module sun_serve {
   using std;
   using std.thread;
   using std.time;
 
+  // Owns listeners and worker threads for one server instance.
   public class Server {
     var alloc: HeapAllocator;
     var config: Config;
@@ -20,17 +26,19 @@ public module sun_serve {
     var started: bool;
     var joined: bool;
 
-    // Prepare a server. The number of handlers is the number of worker
-    // threads; use online_cpus() to size it. TLS listeners need set_tls() on
-    // the config, and the certificate is loaded here so problems surface
-    // before any socket is bound.
+    /*
+     * Prepare a server. The number of handlers is the number of worker
+     * threads; use online_cpus() to size it. TLS listeners need set_tls() on
+     * the config, and the certificate is loaded here so problems surface
+     * before any socket is bound.
+     */
     init(allocator: const ref HeapAllocator, config: Config, handlers: Vec<IHandler>) throws IError {
       this.alloc = allocator.copy();
       this.handlers = handlers;
       this.threads = Vec<Thread<i32>>(allocator, 8);
       this.stop_cell = this.alloc.create_unique<i32>(0);
       // create_unique does not write primitive values (see SUN_FEEDBACK.md).
-      unsafe { _atomic_store_i32(this.stop_cell.get_raw(), 0); };
+      atomic_store(this.stop_cell, 0);
       this.ports = Vec<i32>(allocator, 4);
       this.tls = TlsServerContext();
       this.started = false;
@@ -56,8 +64,10 @@ public module sun_serve {
       this.join();
     }
 
-    // Bind every listener and start the worker threads. Returns once the
-    // workers are running; bind failures throw before any thread starts.
+    /*
+     * Bind every listener and start the worker threads. Returns once the
+     * workers are running; bind failures throw before any thread starts.
+     */
     public method start() void throws IError {
       if (this.started) {
         throw Error(-1, "server already started");
@@ -90,7 +100,7 @@ public module sun_serve {
           mine.push(all.take(_convert<i64>(id) * specs + s));
         }
         var acceptor: TlsAcceptor = this.tls.acceptor();
-        var args = WorkerArgs(id, this.config.clone(), handler, mine, this.stop_cell.get_raw(), acceptor);
+        var args = WorkerArgs(id, this.config.clone(), handler, mine, StopToken(this.stop_cell), acceptor);
         this.threads.push(spawn(run_worker, args));
         id = id + 1;
       }
@@ -98,8 +108,10 @@ public module sun_serve {
       all.clear();
     }
 
-    // The port bound for the index-th listen entry, useful after asking
-    // for port zero.
+    /*
+     * The port bound for the index-th listen entry, useful after asking
+     * for port zero.
+     */
     public const method port(index: i64) i32 {
       return this.ports.get_unchecked(index);
     }
@@ -114,11 +126,13 @@ public module sun_serve {
       if (this.stop_cell.is_null()) {
         return;
       }
-      unsafe { _atomic_store_i32(this.stop_cell.get_raw(), 1); };
+      atomic_store(this.stop_cell, 1);
     }
 
-    // Wait for every worker to finish. Returns the number of workers that
-    // reported a failure.
+    /*
+     * Wait for every worker to finish. Returns the number of workers that
+     * reported a failure.
+     */
     public method join() i32 {
       var failures: i32 = 0;
       for (var i: i64 = 0; i < this.threads.size(); i = i + 1) {
@@ -132,12 +146,14 @@ public module sun_serve {
       return failures;
     }
 
-    // Start, then block until stop() is called or a shutdown signal arrives,
-    // then join. Returns zero on a clean shutdown.
+    /*
+     * Start, then block until stop() is called or a shutdown signal arrives,
+     * then join. Returns zero on a clean shutdown.
+     */
     public method run() i32 throws IError {
       this.start();
       var tick: Duration = create_duration_millis(this.config.timeouts.tick_ms);
-      while (not shutdown_requested() and unsafe { _atomic_load_i32(this.stop_cell.get_raw()); } == 0) {
+      while (not shutdown_requested() and StopToken(this.stop_cell).load() == 0) {
         sleep(tick);
       }
       this.stop();

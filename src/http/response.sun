@@ -1,15 +1,22 @@
-// response.sun - The response a handler builds and the connection sends
-//
-// Headers are framed straight into a byte buffer as they are added, so
-// serializing a response is a handful of appends. Bodies are either bytes
-// held in memory, a file streamed by the connection, or a sequence of chunks
-// written with chunked transfer encoding when the length is unknown up front.
+/*
+ * response.sun - The response a handler builds and the connection sends
+ *
+ * Headers are framed straight into a byte buffer as they are added, so
+ * serializing a response is a handful of appends. Bodies are either bytes
+ * held in memory, a file streamed by the connection, or a sequence of chunks
+ * written with chunked transfer encoding when the length is unknown up front.
+ */
 
+/*
+ * Builds responses for the connection layer to send.
+ */
 public module sun_serve {
   using std;
   using std.io;
 
+  // Collects the status, headers, and body produced by a handler.
   public class Response {
+    // The HTTP status code sent to the client.
     public var status: i32;
     var header_lines: ByteBuffer;  // extra headers, each already "Name: value\r\n"
     var body: ByteBuffer;
@@ -24,7 +31,7 @@ public module sun_serve {
     var close_after: bool;
     var alloc: HeapAllocator;
 
-    // Build an empty 200 response.
+    // Build an empty successful response.
     init(allocator: const ref HeapAllocator) {
       this.alloc = allocator.copy();
       this.status = 200;
@@ -41,7 +48,7 @@ public module sun_serve {
       this.close_after = false;
     }
 
-    // Return to the empty 200 state for the next request on a connection.
+    // Return to the initial successful state for the next request.
     public method reset() void {
       this.status = 200;
       this.header_lines.clear();
@@ -64,8 +71,10 @@ public module sun_serve {
       this.status = code;
     }
 
-    // Add a header line. Headers are sent in the order they were added, and
-    // adding the same name twice sends it twice.
+    /*
+     * Add a header line. Headers are sent in the order they were added, and
+     * adding the same name twice sends it twice.
+     */
     public method add_header(name: static_ptr<u8>, value: static_ptr<u8>) void {
       this.header_lines.append_literal(name);
       this.header_lines.append_literal(": ");
@@ -115,10 +124,10 @@ public module sun_serve {
       this.body.append_string(text);
     }
 
-    // Replace the body with raw bytes.
-    public method set_body_bytes(data: raw_ptr<u8>, len: i64) void {
+    // Replace the body with a readable buffer range.
+    public method set_body_buffer(data: const ref ByteBuffer, off: i64, len: i64) void {
       this.body.clear();
-      this.body.append_bytes(data, len);
+      this.body.append_buffer(data, off, len);
     }
 
     // Append a literal to the body.
@@ -131,9 +140,9 @@ public module sun_serve {
       this.body.append_string(text);
     }
 
-    // Append raw bytes to the body.
-    public method append_body_bytes(data: raw_ptr<u8>, len: i64) void {
-      this.body.append_bytes(data, len);
+    // Append a readable buffer range to the body.
+    public method append_body_buffer(data: const ref ByteBuffer, off: i64, len: i64) void {
+      this.body.append_buffer(data, off, len);
     }
 
     // Current body length in bytes, not counting a streamed file.
@@ -141,8 +150,10 @@ public module sun_serve {
       return this.body.readable_len();
     }
 
-    // Stream size bytes from an open file after any in-memory body. The
-    // response takes ownership of the file and closes it when done.
+    /*
+     * Stream size bytes from an open file after any in-memory body. The
+     * response takes ownership of the file and closes it when done.
+     */
     public method send_file(f: File, size: i64) void {
       if (this.has_file) {
         this.file.close();
@@ -152,23 +163,24 @@ public module sun_serve {
       this.has_file = true;
     }
 
-    // Write one chunk of a body whose total length is unknown. The response
-    // switches to chunked transfer encoding; finish with end_chunks().
-    public method write_chunk(data: raw_ptr<u8>, len: i64) void {
+    // Write one buffer range as a chunk of a body with unknown total length.
+    public method write_chunk_buffer(data: const ref ByteBuffer, off: i64, len: i64) void {
       if (len <= 0) {
         return;
       }
       this.chunked = true;
-      this.chunk_payload.append_bytes(data, len);
+      this.chunk_payload.append_buffer(data, off, len);
       this.body.append_hex_u64(_convert<u64>(len));
       this.body.append_literal("\r\n");
-      this.body.append_bytes(data, len);
+      this.body.append_buffer(data, off, len);
       this.body.append_literal("\r\n");
     }
 
     // Write a literal as one chunk.
     public method write_chunk_literal(text: static_ptr<u8>) void {
-      this.write_chunk(text.raw(), text.length());
+      var data = ByteBuffer(this.alloc, text.length());
+      data.append_literal(text);
+      this.write_chunk_buffer(data, 0, data.readable_len());
     }
 
     // Finish a chunked body.
@@ -224,9 +236,11 @@ public module sun_serve {
       return this.body;
     }
 
-    // Read the next piece of the queued file into out, up to max bytes.
-    // Returns how many bytes were read; zero means the file is finished or
-    // unreadable, and the file is closed either way.
+    /*
+     * Read the next piece of the queued file into out, up to max bytes.
+     * Returns how many bytes were read; zero means the file is finished or
+     * unreadable, and the file is closed either way.
+     */
     public method read_file_chunk(out: ref ByteBuffer, max: i64) i64 {
       if (not this.has_file or this.file_remaining <= 0) {
         return 0;
@@ -265,8 +279,10 @@ public module sun_serve {
       return this.declared_length();
     }
 
-    // Write the status line and headers into out. head_only is set for HEAD
-    // requests, which still declare the length of the body they omit.
+    /*
+     * Write the status line and headers into out. head_only is set for HEAD
+     * requests, which still declare the length of the body they omit.
+     */
     public method serialize_head(out: ref ByteBuffer, date: ref String, keep_alive: bool, server_header: bool) void {
       if (this.chunked and not this.chunks_ended) {
         this.end_chunks();

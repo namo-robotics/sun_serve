@@ -1,11 +1,16 @@
-// connection.sun - One client connection's state machine
-//
-// A Connection owns a transport and the buffers for the request being read
-// and the response being written. The worker calls on_event() whenever epoll
-// reports the socket ready; the connection then runs as far as it can without
-// blocking and records which readiness it needs next in want(). Every request
-// on a keep-alive connection passes through the same states in turn.
+/*
+ * connection.sun - One client connection's state machine
+ *
+ * A Connection owns a transport and the buffers for the request being read
+ * and the response being written. The worker calls on_event() whenever epoll
+ * reports the socket ready; the connection then runs as far as it can without
+ * blocking and records which readiness it needs next in want(). Every request
+ * on a keep-alive connection passes through the same states in turn.
+ */
 
+/*
+ * Drives client connections through the supported protocols.
+ */
 public module sun_serve {
   using std;
 
@@ -31,6 +36,7 @@ public module sun_serve {
   const IDLE_BUFFER_CAP: i64 = 65536;
   const MAX_CHUNK_SIZE_LINE: i64 = 64;
 
+  // Drives one client through parsing, dispatch, and response delivery.
   public class Connection {
     var transport: Transport;
     var state: ConnState;
@@ -147,8 +153,10 @@ public module sun_serve {
       this.bytes_sent = 0;
     }
 
-    // Take over an accepted socket. For TLS the handshake starts on the first
-    // event. Returns false if a TLS session could not be created.
+    /*
+     * Take over an accepted socket. For TLS the handshake starts on the first
+     * event. Returns false if a TLS session could not be created.
+     */
     public method open(fd: i32, tls: bool, acceptor: ref TlsAcceptor, now_ms: i64, timeouts: const ref Timeouts, wake_fd: i32) bool {
       if (not this.transport.open(fd, tls, acceptor)) {
         return false;
@@ -254,8 +262,10 @@ public module sun_serve {
       this.interest = mask;
     }
 
-    // Report whether the connection is between requests with nothing
-    // buffered, so it can be dropped at shutdown without losing anything.
+    /*
+     * Report whether the connection is between requests with nothing
+     * buffered, so it can be dropped at shutdown without losing anything.
+     */
     public const method is_idle() bool {
       return this.state == ConnState.ReadingHead and this.rbuf.is_empty() and this.served > 0;
     }
@@ -275,8 +285,10 @@ public module sun_serve {
       return this.state != ConnState.Vacant and now_ms >= this.deadline_ms;
     }
 
-    // Close the socket and return to the vacant state, releasing memory a
-    // large request may have grown.
+    /*
+     * Close the socket and return to the vacant state, releasing memory a
+     * large request may have grown.
+     */
     public method close() void {
       this.transport.close();
       this.state = ConnState.Vacant;
@@ -298,21 +310,21 @@ public module sun_serve {
     // Queue protocol-specific graceful shutdown notifications.
     public method begin_shutdown() void {
       if (this.state == ConnState.WebSocket) {
-        var code = ContiguousBuffer<u8>(HeapAllocator(), 2);
-        code.set_unchecked(0, 3);
-        code.set_unchecked(1, 233);
-        websocket_append_frame(this.wbuf, _convert<u8>(8), code.raw_data(), 2);
+        var code = ByteBuffer(HeapAllocator(), 2);
+        code.append_byte(3);
+        code.append_byte(233);
+        websocket_append_frame(this.wbuf, _convert<u8>(8), code, 0, 2);
         this.ws_closing = true;
         this.deactivate_websocket();
         this.want_ = EPOLLOUT;
       } else if (this.state == ConnState.Http2) {
         if (this.h2_ws_stream != 0) {
           var websocket = ByteBuffer(this.alloc, 4);
-          var ws_code = ContiguousBuffer<u8>(HeapAllocator(), 2);
-          ws_code.set_unchecked(0, 3);
-          ws_code.set_unchecked(1, 233);
-          websocket_append_frame(websocket, _convert<u8>(8), ws_code.raw_data(), 2);
-          this.h2_ws_out.append_bytes(websocket.readable_ptr(), websocket.readable_len());
+          var ws_code = ByteBuffer(HeapAllocator(), 2);
+          ws_code.append_byte(3);
+          ws_code.append_byte(233);
+          websocket_append_frame(websocket, _convert<u8>(8), ws_code, 0, 2);
+          this.h2_ws_out.append_buffer(websocket, 0, websocket.readable_len());
           this.h2_ws_end_pending = true;
           this.deactivate_websocket();
         }
@@ -323,9 +335,11 @@ public module sun_serve {
       }
     }
 
-    // Run the state machine for a readiness event. peer_hup says the peer
-    // closed its side; draining says the server is shutting down and no
-    // further requests should be accepted on this connection.
+    /*
+     * Run the state machine for a readiness event. peer_hup says the peer
+     * closed its side; draining says the server is shutting down and no
+     * further requests should be accepted on this connection.
+     */
     public method on_event(mask: u32, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) void {
       if ((mask & EPOLLERR) != 0) {
         this.close();
@@ -384,7 +398,7 @@ public module sun_serve {
             }
           }
           if (this.rbuf.readable_len() > 0) {
-            var st: ParseStatus = this.request.parse_head(this.rbuf.readable_ptr(), this.rbuf.readable_len(), cfg.limits);
+            var st: ParseStatus = this.request.parse_head(this.rbuf, this.rbuf.readable_len(), cfg.limits);
             if (st == ParseStatus.Complete) {
               this.started_ms = now_ms;
               this.begin_body();
@@ -461,8 +475,10 @@ public module sun_serve {
       }
     }
 
-    // Translate an IO_* wait value into the next interest mask. Returns false
-    // when the value means the connection is finished.
+    /*
+     * Translate an IO_* wait value into the next interest mask. Returns false
+     * when the value means the connection is finished.
+     */
     method wait_for(r: i64) bool {
       if (r == IO_WANT_READ) {
         this.want_ = EPOLLIN | EPOLLRDHUP;
@@ -488,9 +504,11 @@ public module sun_serve {
       return true;
     }
 
-    // Read more bytes into rbuf. Returns true when bytes arrived, false when
-    // the caller must return to the event loop (want() is set) or the
-    // connection was closed.
+    /*
+     * Read more bytes into rbuf. Returns true when bytes arrived, false when
+     * the caller must return to the event loop (want() is set) or the
+     * connection was closed.
+     */
     method fill_rbuf() bool {
       this.rbuf.reserve(READ_CHUNK);
       var n: i64 = this.transport.read(this.rbuf.writable_ptr(), this.rbuf.writable_len());
@@ -526,7 +544,7 @@ public module sun_serve {
         check = preface.length();
       }
       for (var i: i64 = 0; i < check; i = i + 1) {
-        if (this.rbuf.byte_at(i) != unsafe { _load<u8>(preface.raw(), i); }) {
+        if (this.rbuf.byte_at(i) != literal_byte(preface, i)) {
           return -1;
         }
       }
@@ -601,8 +619,7 @@ public module sun_serve {
           }
           continue;
         }
-        var base: raw_ptr<u8> = this.rbuf.readable_ptr();
-        var frame_len: i64 = (_convert<i64>(unsafe { _load<u8>(base, 0); }) << 16) | (_convert<i64>(unsafe { _load<u8>(base, 1); }) << 8) | _convert<i64>(unsafe { _load<u8>(base, 2); });
+        var frame_len: i64 = (_convert<i64>(this.rbuf.byte_at(0)) << 16) | (_convert<i64>(this.rbuf.byte_at(1)) << 8) | _convert<i64>(this.rbuf.byte_at(2));
         if (frame_len > H2_DEFAULT_FRAME_SIZE) {
           this.close();
           return;
@@ -613,10 +630,9 @@ public module sun_serve {
           }
           continue;
         }
-        var kind: u8 = unsafe { _load<u8>(base, 3); };
-        var flags: u8 = unsafe { _load<u8>(base, 4); };
-        var stream: u32 = h2_u32(base, 5) & 2147483647;
-        var payload: raw_ptr<u8> = unsafe { _ptr_offset(base, 9); };
+        var kind: u8 = this.rbuf.byte_at(3);
+        var flags: u8 = this.rbuf.byte_at(4);
+        var stream: u32 = h2_u32(this.rbuf, 5) & 2147483647;
         if (this.h2_continuation_stream != 0 and kind != H2_CONTINUATION) {
           this.close();
           return;
@@ -628,8 +644,8 @@ public module sun_serve {
           }
           if ((flags & H2_ACK) == 0) {
             for (var setting: i64 = 0; setting < frame_len; setting = setting + 6) {
-              var identifier: i32 = _convert<i32>(unsafe { _load<u8>(payload, setting); }) * 256 + _convert<i32>(unsafe { _load<u8>(payload, setting + 1); });
-              var setting_value: u32 = h2_u32(payload, setting + 2);
+              var identifier: i32 = _convert<i32>(this.rbuf.byte_at(9 + setting)) * 256 + _convert<i32>(this.rbuf.byte_at(9 + setting + 1));
+              var setting_value: u32 = h2_u32(this.rbuf, 9 + setting + 2);
               if (identifier == 2 and setting_value > 1) {
                 this.close();
                 return;
@@ -672,7 +688,7 @@ public module sun_serve {
           }
           if ((flags & H2_ACK) == 0) {
             h2_frame(this.wbuf, 8, H2_PING, H2_ACK, 0);
-            this.wbuf.append_bytes(payload, 8);
+            this.wbuf.append_buffer(this.rbuf, 9, 8);
           }
         } else if (kind == H2_HEADERS) {
           if (stream == 0 or (stream & 1) == 0) {
@@ -686,7 +702,7 @@ public module sun_serve {
               this.close();
               return;
             }
-            var padding: i64 = _convert<i64>(unsafe { _load<u8>(payload, 0); });
+            var padding: i64 = _convert<i64>(this.rbuf.byte_at(9 + 0));
             fragment_pos = 1;
             fragment_len = fragment_len - 1 - padding;
             if (fragment_len < 0) {
@@ -705,12 +721,12 @@ public module sun_serve {
           this.h2_headers.clear();
           this.body_buf.clear();
           this.h2_header_block.clear();
-          this.h2_header_block.append_bytes(unsafe { _ptr_offset(payload, fragment_pos); }, fragment_len);
+          this.h2_header_block.append_buffer(this.rbuf, 9 + fragment_pos, fragment_len);
           this.h2_header_end_stream = (flags & H2_END_STREAM) != 0;
           if ((flags & H2_END_HEADERS) == 0) {
             this.h2_continuation_stream = stream;
           } else {
-            if (not hpack_decode(this.alloc, this.h2_header_block.readable_ptr(), this.h2_header_block.readable_len(), this.hpack_decoder, this.h2_headers)) {
+            if (not hpack_decode(this.alloc, this.h2_header_block, this.h2_header_block.readable_len(), this.hpack_decoder, this.h2_headers)) {
               this.close();
               return;
             }
@@ -721,10 +737,10 @@ public module sun_serve {
             this.close();
             return;
           }
-          this.h2_header_block.append_bytes(payload, frame_len);
+          this.h2_header_block.append_buffer(this.rbuf, 9, frame_len);
           if ((flags & H2_END_HEADERS) != 0) {
             this.h2_continuation_stream = 0;
-            if (not hpack_decode(this.alloc, this.h2_header_block.readable_ptr(), this.h2_header_block.readable_len(), this.hpack_decoder, this.h2_headers)) {
+            if (not hpack_decode(this.alloc, this.h2_header_block, this.h2_header_block.readable_len(), this.hpack_decoder, this.h2_headers)) {
               this.close();
               return;
             }
@@ -742,7 +758,7 @@ public module sun_serve {
               this.close();
               return;
             }
-            var data_padding: i64 = _convert<i64>(unsafe { _load<u8>(payload, 0); });
+            var data_padding: i64 = _convert<i64>(this.rbuf.byte_at(9 + 0));
             data_pos = 1;
             data_len = data_len - 1 - data_padding;
             if (data_len < 0) {
@@ -750,9 +766,8 @@ public module sun_serve {
               return;
             }
           }
-          var data_payload: raw_ptr<u8> = unsafe { _ptr_offset(payload, data_pos); };
           if (stream == this.h2_ws_stream and stream != 0) {
-            this.h2_ws_buf.append_bytes(data_payload, data_len);
+            this.h2_ws_buf.append_buffer(this.rbuf, 9 + data_pos, data_len);
             this.process_h2_websocket(handler, cfg);
             if ((flags & H2_END_STREAM) != 0) {
               var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
@@ -770,7 +785,7 @@ public module sun_serve {
                 this.h2_send_rst(stream, 11);
                 this.reset_h2_request_stream(stream_index);
               } else {
-                this.h2_streams.get_unchecked(stream_index).body.append_bytes(data_payload, data_len);
+                this.h2_streams.get_unchecked(stream_index).body.append_buffer(this.rbuf, 9 + data_pos, data_len);
                 this.h2_buffered_bytes = this.h2_buffered_bytes + data_len;
                 if ((flags & H2_END_STREAM) != 0) {
                   this.dispatch_h2_request_stream(stream_index, handler, date, log, cfg, now_ms);
@@ -792,7 +807,7 @@ public module sun_serve {
         } else if (kind == H2_WINDOW_UPDATE) {
           var increment: i64 = 0;
           if (frame_len == 4) {
-            increment = _convert<i64>(h2_u32(payload, 0) & 2147483647);
+            increment = _convert<i64>(h2_u32(this.rbuf, 9) & 2147483647);
           }
           if (increment == 0) {
             this.close();
@@ -888,9 +903,8 @@ public module sun_serve {
       this.response.serialize_h2(encoded, date.value(), stream, server_header, send_body);
       var response_index: i64 = -1;
       while (encoded.readable_len() >= 9) {
-        var base: raw_ptr<u8> = encoded.readable_ptr();
-        var length: i64 = (_convert<i64>(unsafe { _load<u8>(base, 0); }) << 16) | (_convert<i64>(unsafe { _load<u8>(base, 1); }) << 8) | _convert<i64>(unsafe { _load<u8>(base, 2); });
-        var kind: u8 = unsafe { _load<u8>(base, 3); };
+        var length: i64 = (_convert<i64>(encoded.byte_at(0)) << 16) | (_convert<i64>(encoded.byte_at(1)) << 8) | _convert<i64>(encoded.byte_at(2));
+        var kind: u8 = encoded.byte_at(3);
         if (encoded.readable_len() < 9 + length) {
           return;
         }
@@ -898,9 +912,9 @@ public module sun_serve {
           if (response_index < 0) {
             response_index = this.open_h2_response_stream(stream);
           }
-          this.h2_responses.get_unchecked(response_index).data.append_bytes(unsafe { _ptr_offset(base, 9); }, length);
+          this.h2_responses.get_unchecked(response_index).data.append_buffer(encoded, 9, length);
         } else if (kind == H2_HEADERS and length > this.h2_peer_frame_size) {
-          var original_flags: u8 = unsafe { _load<u8>(base, 4); };
+          var original_flags: u8 = encoded.byte_at(4);
           var header_pos: i64 = 0;
           var first_fragment: bool = true;
           while (header_pos < length) {
@@ -918,12 +932,12 @@ public module sun_serve {
               fragment_flags = fragment_flags | H2_END_HEADERS;
             }
             h2_frame(this.wbuf, take, fragment_kind, fragment_flags, stream);
-            this.wbuf.append_bytes(unsafe { _ptr_offset(base, 9 + header_pos); }, take);
+            this.wbuf.append_buffer(encoded, 9 + header_pos, take);
             header_pos = header_pos + take;
             first_fragment = false;
           }
         } else {
-          this.wbuf.append_bytes(base, 9 + length);
+          this.wbuf.append_buffer(encoded, 0, 9 + length);
         }
         encoded.consume(9 + length);
       }
@@ -1142,11 +1156,11 @@ public module sun_serve {
         }
       }
       head.append_literal("\r\n");
-      if (this.request.parse_head(head.readable_ptr(), head.readable_len(), cfg.limits) != ParseStatus.Complete) {
+      if (this.request.parse_head(head, head.readable_len(), cfg.limits) != ParseStatus.Complete) {
         this.close();
         return;
       }
-      this.request.set_body(this.body_buf.readable_ptr(), this.body_buf.readable_len());
+      this.request.set_body(this.body_buf, 0, this.body_buf.readable_len());
       if (protocol.equals_literal("websocket")) {
         this.begin_h2_websocket(handler, date, cfg);
         this.request.reset();
@@ -1187,43 +1201,42 @@ public module sun_serve {
       }
     }
 
-    // Make progress on the body from what rbuf holds. Returns zero when the
-    // body is complete, a negative number when more bytes are needed, or an
-    // error status.
+    /*
+     * Make progress on the body from what rbuf holds. Returns zero when the
+     * body is complete, a negative number when more bytes are needed, or an
+     * error status.
+     */
     method advance_body(cfg: const ref Config) i32 {
       var head: i64 = this.request.head_len();
       if (this.body_kind == BODY_NONE) {
-        this.request.rebase(this.rbuf.readable_ptr());
-        this.request.set_body(null, 0);
+        this.request.set_body(this.rbuf, 0, 0);
         return 0;
       }
       if (this.body_kind == BODY_LENGTH) {
         if (this.rbuf.readable_len() < head + this.raw_body_len) {
           return -1;
         }
-        var base: raw_ptr<u8> = this.rbuf.readable_ptr();
-        this.request.rebase(base);
-        this.request.set_body(unsafe { _ptr_offset(base, head); }, this.raw_body_len);
+        this.request.set_body(this.rbuf, head, this.raw_body_len);
         return 0;
       }
       return this.decode_chunks(cfg);
     }
 
-    // Decode chunked framing from rbuf into body_buf. Same results as
-    // advance_body().
+    /*
+     * Decode chunked framing from rbuf into body_buf. Same results as
+     * advance_body().
+     */
     method decode_chunks(cfg: const ref Config) i32 {
-      var base: raw_ptr<u8> = this.rbuf.readable_ptr();
       var avail: i64 = this.rbuf.readable_len();
       var head: i64 = this.request.head_len();
       while (true) {
         var pos: i64 = head + this.raw_body_len;
         if (this.chunk_state == CHUNK_DONE) {
-          this.request.rebase(base);
-          this.request.set_body(this.body_buf.readable_ptr(), this.body_buf.readable_len());
+          this.request.set_body(this.body_buf, 0, this.body_buf.readable_len());
           return 0;
         }
         if (this.chunk_state == CHUNK_SIZE) {
-          var eol: i64 = find_crlf(base, pos, avail);
+          var eol: i64 = find_crlf(this.rbuf, pos, avail);
           if (eol < 0) {
             if (avail - pos > MAX_CHUNK_SIZE_LINE) {
               return 400;
@@ -1234,7 +1247,7 @@ public module sun_serve {
           var digits: i64 = 0;
           var i: i64 = pos;
           while (i < eol) {
-            var d: i32 = hex_value(unsafe { _load<u8>(base, i); });
+            var d: i32 = hex_value(this.rbuf.byte_at(i));
             if (d < 0) {
               break;
             }
@@ -1248,8 +1261,10 @@ public module sun_serve {
           if (digits == 0) {
             return 400;
           }
-          // Anything after the digits up to the line end is a chunk
-          // extension, which is ignored.
+          /*
+           * Anything after the digits up to the line end is a chunk
+           * extension, which is ignored.
+           */
           this.raw_body_len = eol + 2 - head;
           if (size == 0) {
             this.chunk_state = CHUNK_TRAILERS;
@@ -1271,7 +1286,7 @@ public module sun_serve {
           if (take > this.chunk_remaining) {
             take = this.chunk_remaining;
           }
-          this.body_buf.append_bytes(unsafe { _ptr_offset(base, pos); }, take);
+          this.body_buf.append_buffer(this.rbuf, pos, take);
           this.raw_body_len = this.raw_body_len + take;
           this.chunk_remaining = this.chunk_remaining - take;
           if (this.chunk_remaining == 0) {
@@ -1283,7 +1298,7 @@ public module sun_serve {
           if (avail - pos < 2) {
             return -1;
           }
-          if (unsafe { _load<u8>(base, pos); } != 13 or unsafe { _load<u8>(base, pos + 1); } != 10) {
+          if (this.rbuf.byte_at(pos) != 13 or this.rbuf.byte_at(pos + 1) != 10) {
             return 400;
           }
           this.raw_body_len = this.raw_body_len + 2;
@@ -1291,7 +1306,7 @@ public module sun_serve {
           continue;
         }
         // Trailers: lines up to and including an empty one.
-        var teol: i64 = find_crlf(base, pos, avail);
+        var teol: i64 = find_crlf(this.rbuf, pos, avail);
         if (teol < 0) {
           if (avail - pos > cfg.limits.max_header_bytes) {
             return 431;
@@ -1325,7 +1340,7 @@ public module sun_serve {
       }
       for (var setting: i64 = 0; setting < settings_payload.readable_len(); setting = setting + 6) {
         var identifier: i32 = _convert<i32>(settings_payload.byte_at(setting)) * 256 + _convert<i32>(settings_payload.byte_at(setting + 1));
-        var setting_value: u32 = h2_u32(settings_payload.readable_ptr(), setting + 2);
+        var setting_value: u32 = h2_u32(settings_payload, setting + 2);
         if ((identifier == 2 or identifier == 8) and setting_value > 1) {
           return false;
         }
@@ -1503,9 +1518,8 @@ public module sun_serve {
           }
           continue;
         }
-        var base: raw_ptr<u8> = this.rbuf.readable_ptr();
-        var first: u8 = unsafe { _load<u8>(base, 0); };
-        var second: u8 = unsafe { _load<u8>(base, 1); };
+        var first: u8 = this.rbuf.byte_at(0);
+        var second: u8 = this.rbuf.byte_at(1);
         var final_frame: bool = (first & 128) != 0;
         var compressed_frame: bool = (first & 64) != 0;
         var opcode: u8 = first & 15;
@@ -1522,7 +1536,7 @@ public module sun_serve {
             }
             continue;
           }
-          length = (_convert<i64>(unsafe { _load<u8>(base, 2); }) << 8) | _convert<i64>(unsafe { _load<u8>(base, 3); });
+          length = (_convert<i64>(this.rbuf.byte_at(2)) << 8) | _convert<i64>(this.rbuf.byte_at(3));
           pos = 4;
         } else if (length == 127) {
           if (this.rbuf.readable_len() < 10) {
@@ -1533,7 +1547,7 @@ public module sun_serve {
           }
           length = 0;
           for (var k: i64 = 2; k < 10; k = k + 1) {
-            length = (length << 8) | _convert<i64>(unsafe { _load<u8>(base, k); });
+            length = (length << 8) | _convert<i64>(this.rbuf.byte_at(k));
           }
           pos = 10;
         }
@@ -1551,14 +1565,14 @@ public module sun_serve {
           }
           continue;
         }
-        var mask: raw_ptr<u8> = unsafe { _ptr_offset(base, pos); };
+        var mask_pos: i64 = pos;
         pos = pos + 4;
         var decoded = ByteBuffer(this.alloc, length);
         for (var n: i64 = 0; n < length; n = n + 1) {
-          decoded.append_byte(unsafe { _load<u8>(base, pos + n); } ^ unsafe { _load<u8>(mask, n % 4); });
+          decoded.append_byte(this.rbuf.byte_at(pos + n) ^ this.rbuf.byte_at(mask_pos + n % 4));
         }
         if (opcode == 8) {
-          var close_status: i32 = websocket_close_payload_status(decoded.readable_ptr(), decoded.readable_len());
+          var close_status: i32 = websocket_close_payload_status(decoded, decoded.readable_len());
           if (close_status != 0) {
             this.websocket_protocol_error(handler, close_status);
             continue;
@@ -1569,17 +1583,17 @@ public module sun_serve {
           }
           var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
           handler.websocket_close(socket, code);
-          websocket_append_frame(this.wbuf, _convert<u8>(8), decoded.readable_ptr(), decoded.readable_len());
+          websocket_append_frame(this.wbuf, _convert<u8>(8), decoded, 0, decoded.readable_len());
           this.ws_closing = true;
         } else if (opcode == 9) {
-          websocket_append_frame(this.wbuf, _convert<u8>(10), decoded.readable_ptr(), decoded.readable_len());
+          websocket_append_frame(this.wbuf, _convert<u8>(10), decoded, 0, decoded.readable_len());
         } else if (opcode == 10) {} else if (opcode == 1 or opcode == 2) {
           if (this.ws_fragmenting) {
             this.websocket_protocol_error(handler, 1002);
             continue;
           }
           this.body_buf.clear();
-          this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
+          this.body_buf.append_buffer(decoded, 0, decoded.readable_len());
           this.ws_fragment_opcode = opcode;
           this.ws_fragment_compressed = compressed_frame;
           this.ws_fragmenting = not final_frame;
@@ -1591,7 +1605,7 @@ public module sun_serve {
             this.websocket_protocol_error(handler, 1002);
             continue;
           }
-          this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
+          this.body_buf.append_buffer(decoded, 0, decoded.readable_len());
           if (final_frame) {
             this.ws_fragmenting = false;
             this.deliver_websocket_message(handler, cfg);
@@ -1648,9 +1662,8 @@ public module sun_serve {
     method process_h2_websocket(handler: ref IHandler, cfg: const ref Config) void {
       var replies = ByteBuffer(this.alloc, 128);
       while (this.h2_ws_buf.readable_len() >= 2) {
-        var base: raw_ptr<u8> = this.h2_ws_buf.readable_ptr();
-        var first: u8 = unsafe { _load<u8>(base, 0); };
-        var second: u8 = unsafe { _load<u8>(base, 1); };
+        var first: u8 = this.h2_ws_buf.byte_at(0);
+        var second: u8 = this.h2_ws_buf.byte_at(1);
         var final_frame: bool = (first & 128) != 0;
         var compressed_frame: bool = (first & 64) != 0;
         var opcode: u8 = first & 15;
@@ -1664,7 +1677,7 @@ public module sun_serve {
           if (this.h2_ws_buf.readable_len() < 4) {
             return;
           }
-          length = (_convert<i64>(unsafe { _load<u8>(base, 2); }) << 8) | _convert<i64>(unsafe { _load<u8>(base, 3); });
+          length = (_convert<i64>(this.h2_ws_buf.byte_at(2)) << 8) | _convert<i64>(this.h2_ws_buf.byte_at(3));
           pos = 4;
         } else if (length == 127) {
           if (this.h2_ws_buf.readable_len() < 10) {
@@ -1672,27 +1685,27 @@ public module sun_serve {
           }
           length = 0;
           for (var k: i64 = 2; k < 10; k = k + 1) {
-            length = (length << 8) | _convert<i64>(unsafe { _load<u8>(base, k); });
+            length = (length << 8) | _convert<i64>(this.h2_ws_buf.byte_at(k));
           }
           pos = 10;
         }
         if (length > cfg.limits.max_body_bytes or this.h2_ws_buf.readable_len() < pos + 4 + length) {
           return;
         }
-        var mask: raw_ptr<u8> = unsafe { _ptr_offset(base, pos); };
+        var mask_pos: i64 = pos;
         pos = pos + 4;
         var decoded = ByteBuffer(this.alloc, length);
         for (var n: i64 = 0; n < length; n = n + 1) {
-          decoded.append_byte(unsafe { _load<u8>(base, pos + n); } ^ unsafe { _load<u8>(mask, n % 4); });
+          decoded.append_byte(this.h2_ws_buf.byte_at(pos + n) ^ this.h2_ws_buf.byte_at(mask_pos + n % 4));
         }
         if ((opcode & 8) != 0 and (not final_frame or length > 125)) {
           this.websocket_protocol_error(handler, 1002);
           return;
         }
         if (opcode == 9) {
-          websocket_append_frame(replies, _convert<u8>(10), decoded.readable_ptr(), decoded.readable_len());
+          websocket_append_frame(replies, _convert<u8>(10), decoded, 0, decoded.readable_len());
         } else if (opcode == 10) {} else if (opcode == 8) {
-          var close_status: i32 = websocket_close_payload_status(decoded.readable_ptr(), decoded.readable_len());
+          var close_status: i32 = websocket_close_payload_status(decoded, decoded.readable_len());
           if (close_status != 0) {
             this.websocket_protocol_error(handler, close_status);
             return;
@@ -1703,7 +1716,7 @@ public module sun_serve {
           }
           var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
           handler.websocket_close(socket, code);
-          websocket_append_frame(replies, _convert<u8>(8), decoded.readable_ptr(), decoded.readable_len());
+          websocket_append_frame(replies, _convert<u8>(8), decoded, 0, decoded.readable_len());
           this.deactivate_websocket();
         } else if (opcode == 1 or opcode == 2) {
           if (this.ws_fragmenting) {
@@ -1711,7 +1724,7 @@ public module sun_serve {
             return;
           }
           this.body_buf.clear();
-          this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
+          this.body_buf.append_buffer(decoded, 0, decoded.readable_len());
           this.ws_fragment_opcode = opcode;
           this.ws_fragment_compressed = compressed_frame;
           this.ws_fragmenting = not final_frame;
@@ -1723,7 +1736,7 @@ public module sun_serve {
             this.websocket_protocol_error(handler, 1002);
             return;
           }
-          this.body_buf.append_bytes(decoded.readable_ptr(), decoded.readable_len());
+          this.body_buf.append_buffer(decoded, 0, decoded.readable_len());
           if (final_frame) {
             this.ws_fragmenting = false;
             this.deliver_websocket_message(handler, cfg);
@@ -1736,18 +1749,16 @@ public module sun_serve {
         this.h2_ws_buf.compact();
       }
       if (replies.readable_len() > 0) {
-        this.h2_ws_out.append_bytes(replies.readable_ptr(), replies.readable_len());
+        this.h2_ws_out.append_buffer(replies, 0, replies.readable_len());
         this.flush_h2_websocket_data();
       }
     }
 
     // Deliver one assembled data message to the application.
     method deliver_websocket_message(handler: ref IHandler, cfg: const ref Config) void {
-      var inflated = ByteBuffer(this.alloc, 16);
-      var message_data: raw_ptr<u8> = this.body_buf.readable_ptr();
-      var message_len: i64 = this.body_buf.readable_len();
+      var message_data = ByteBuffer(this.alloc, this.body_buf.readable_len());
       if (this.ws_fragment_compressed) {
-        var inflate_status: i32 = websocket_inflate(this.alloc, message_data, message_len, cfg.limits.max_body_bytes, inflated);
+        var inflate_status: i32 = websocket_inflate(this.alloc, this.body_buf, 0, this.body_buf.readable_len(), cfg.limits.max_body_bytes, message_data);
         if (inflate_status != 0) {
           if (inflate_status == 2) {
             this.websocket_protocol_error(handler, 1009);
@@ -1758,10 +1769,10 @@ public module sun_serve {
           this.ws_fragment_compressed = false;
           return;
         }
-        message_data = inflated.readable_ptr();
-        message_len = inflated.readable_len();
+      } else {
+        message_data.append_buffer(this.body_buf, 0, this.body_buf.readable_len());
       }
-      if (this.ws_fragment_opcode == 1 and not websocket_valid_utf8(message_data, message_len)) {
+      if (this.ws_fragment_opcode == 1 and not websocket_valid_utf8(message_data, 0, message_data.readable_len())) {
         this.websocket_protocol_error(handler, 1007);
         this.body_buf.clear();
         this.ws_fragment_compressed = false;
@@ -1771,7 +1782,7 @@ public module sun_serve {
       if (this.ws_fragment_opcode == 1) {
         kind = WebSocketMessageKind.Text;
       }
-      var message = WebSocketMessage(kind, message_data, message_len);
+      var message = WebSocketMessage(kind, message_data);
       var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
       handler.websocket_message(socket, message);
       this.body_buf.clear();
@@ -1782,19 +1793,19 @@ public module sun_serve {
     method websocket_protocol_error(handler: ref IHandler, code: i32) void {
       var socket = WebSocketHandle(this.ws_mailbox.clone(), this.ws_generation);
       handler.websocket_error(socket, code);
-      var bytes = ContiguousBuffer<u8>(this.alloc, 2);
-      bytes.set_unchecked(0, _convert<u8>((code >> 8) & 255));
-      bytes.set_unchecked(1, _convert<u8>(code & 255));
+      var bytes = ByteBuffer(this.alloc, 2);
+      bytes.append_byte(_convert<u8>((code >> 8) & 255));
+      bytes.append_byte(_convert<u8>(code & 255));
       if (this.h2_ws_stream != 0) {
         var close_frame = ByteBuffer(this.alloc, 4);
-        websocket_append_frame(close_frame, _convert<u8>(8), bytes.raw_data(), 2);
-        this.h2_ws_out.append_bytes(close_frame.readable_ptr(), close_frame.readable_len());
+        websocket_append_frame(close_frame, _convert<u8>(8), bytes, 0, 2);
+        this.h2_ws_out.append_buffer(close_frame, 0, close_frame.readable_len());
         this.h2_ws_end_pending = true;
         this.flush_h2_websocket_data();
         this.h2_ws_buf.clear();
         this.deactivate_websocket();
       } else {
-        websocket_append_frame(this.wbuf, _convert<u8>(8), bytes.raw_data(), 2);
+        websocket_append_frame(this.wbuf, _convert<u8>(8), bytes, 0, 2);
         this.ws_closing = true;
         this.rbuf.clear();
       }
@@ -1859,8 +1870,10 @@ public module sun_serve {
       return 0;
     }
 
-    // Write the response head, body, and any streamed file. Returns zero when
-    // everything was sent, else an IO_* value.
+    /*
+     * Write the response head, body, and any streamed file. Returns zero when
+     * everything was sent, else an IO_* value.
+     */
     method write_response() i64 {
       while (true) {
         var r: i64 = this.flush_wbuf();
@@ -1871,8 +1884,10 @@ public module sun_serve {
           var before: i64 = this.response.file_bytes_remaining();
           var n: i64 = this.response.read_file_chunk(this.wbuf, FILE_CHUNK);
           if (n == 0 and before > 0) {
-            // The file shrank or failed mid-stream; the response is short,
-            // so the connection must not be reused.
+            /*
+             * The file shrank or failed mid-stream; the response is short,
+             * so the connection must not be reused.
+             */
             this.keep_alive = false;
             return 0;
           }

@@ -1,10 +1,18 @@
-// hello_tests.sun - The example handler, exercised end to end over loopback
-//
-// Each test starts a real server on a kernel-picked port, sends one request
-// with a plain TCP socket, and checks the reply. The same pattern works for
-// testing any handler built on sun_serve.
+/*
+ * hello_tests.sun - The example handler, exercised end to end over loopback
+ *
+ * Each test starts a real server on a kernel-picked port, sends one request
+ * with a plain TCP socket, and checks the reply. The same pattern works for
+ * testing any handler built on sun_serve.
+ */
 
+/*
+ * Extends the example module with integration tests.
+ */
 module hello_handler {
+  /*
+   * Contains the example integration tests.
+   */
   module tests {
     using std;
     using sun_serve;
@@ -19,10 +27,14 @@ module hello_handler {
       }
     }
 
-    // A HelloHandler server on loopback with one worker, so /stats counts
-    // every request the test sends.
+    /*
+     * A HelloHandler server on loopback with one worker, so /stats counts
+     * every request the test sends.
+     */
     class TestServer {
+      // The running example server.
       public var server: Server;
+      // The loopback port assigned to the server.
       public var port: i32;
 
       init(alloc: ref HeapAllocator) throws IError {
@@ -37,14 +49,15 @@ module hello_handler {
         this.port = this.server.port(0);
       }
 
-      // Send one request with Connection: close and return the whole reply.
-      // A receive timeout turns a server that never answers into a failure
-      // instead of a hang.
+      /*
+       * Send one request with Connection: close and return the whole reply.
+       * A receive timeout turns a server that never answers into a failure
+       * instead of a hang.
+       */
       public method exchange(alloc: ref HeapAllocator, request: static_ptr<u8>) String throws IError {
         var stream = TcpStream();
         stream.connect_local(this.port);
-        var tv = Timeval(10);
-        unsafe { __setsockopt(stream.get_fd(), SOL_SOCKET, SO_RCVTIMEO, _address_of<Timeval>(tv), 16); };
+        set_socket_receive_timeout(stream.get_fd(), 10);
         stream.send_str(request);
         var reply = String(alloc, "");
         var chunk = ContiguousBuffer<u8>(alloc, 4096);
@@ -135,8 +148,7 @@ module hello_handler {
       var ts = TestServer(alloc);
       var stream = TcpStream();
       stream.connect_local(ts.port);
-      var tv = Timeval(2);
-      unsafe { __setsockopt(stream.get_fd(), SOL_SOCKET, SO_RCVTIMEO, _address_of<Timeval>(tv), 16); };
+      set_socket_receive_timeout(stream.get_fd(), 2);
       stream.send_str("GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
       var reply = ContiguousBuffer<u8>(alloc, 4096);
       var got: i64 = stream.recv(reply);
@@ -177,8 +189,7 @@ module hello_handler {
       var ts = TestServer(alloc);
       var stream = TcpStream();
       stream.connect_local(ts.port);
-      var tv = Timeval(2);
-      unsafe { __setsockopt(stream.get_fd(), SOL_SOCKET, SO_RCVTIMEO, _address_of<Timeval>(tv), 16); };
+      set_socket_receive_timeout(stream.get_fd(), 2);
       var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
       append_h2_frame(wire, 6, 4, _convert<u8>(0), 0);
       wire.append_char(0);
@@ -243,8 +254,7 @@ module hello_handler {
       var ts = TestServer(alloc);
       var stream = TcpStream();
       stream.connect_local(ts.port);
-      var tv = Timeval(2);
-      unsafe { __setsockopt(stream.get_fd(), SOL_SOCKET, SO_RCVTIMEO, _address_of<Timeval>(tv), 16); };
+      set_socket_receive_timeout(stream.get_fd(), 2);
       stream.send_str("GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n");
       var reply = ContiguousBuffer<u8>(alloc, 4096);
       var got: i64 = stream.recv(reply);

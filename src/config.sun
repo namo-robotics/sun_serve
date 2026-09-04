@@ -1,15 +1,23 @@
-// config.sun - Everything a Server needs to know before it starts
-//
-// Config is plain data. Every worker receives its own clone, so nothing in
-// here is shared between threads once the server is running.
+/*
+ * config.sun - Everything a Server needs to know before it starts
+ *
+ * Config is plain data. Every worker receives its own clone, so nothing in
+ * here is shared between threads once the server is running.
+ */
 
+/*
+ * Defines server configuration types and defaults.
+ */
 public module sun_serve {
   using std;
 
   // One address to listen on and whether it speaks TLS.
   public class ListenSpec {
+    // The network address to bind.
     public var addr: Ipv4Addr;
+    // The TCP port to bind.
     public var port: i32;
+    // Whether accepted connections use TLS.
     public var tls: bool;
 
     // Describe a listener.
@@ -27,7 +35,9 @@ public module sun_serve {
 
   // Where the server certificate chain and private key live.
   public class TlsSpec {
+    // The certificate-chain file path.
     public var cert_path: String;
+    // The private-key file path.
     public var key_path: String;
 
     // Point at PEM files on disk.
@@ -51,12 +61,19 @@ public module sun_serve {
 
   // Caps that keep one client from exhausting a worker.
   public class Limits {
+    // The largest accepted request head in bytes.
     public var max_header_bytes: i64;
+    // The largest accepted request body in bytes.
     public var max_body_bytes: i64;
+    // The largest accepted header count.
     public var max_headers: i64;
+    // The largest connection count owned by one worker.
     public var max_connections_per_worker: i64;
-    public var max_pipelined: i64;  // requests served per readiness event on one connection
+    // The most pipelined requests served for one readiness event.
+    public var max_pipelined: i64;
+    // The largest concurrent HTTP/2 stream count.
     public var max_h2_concurrent_streams: i64;
+    // The largest amount of buffered HTTP/2 request data.
     public var max_h2_buffered_bytes: i64;
 
     // Sensible defaults for a general-purpose server.
@@ -86,13 +103,20 @@ public module sun_serve {
 
   // How long a connection may sit in each state, in milliseconds.
   public class Timeouts {
+    // The TLS handshake deadline.
     public var handshake_ms: i64;
+    // The request-head deadline.
     public var header_ms: i64;
+    // The request-body deadline.
     public var body_ms: i64;
+    // The idle keep-alive deadline.
     public var keep_alive_ms: i64;
+    // The response-write deadline.
     public var write_ms: i64;
-    public var drain_ms: i64;  // grace period for in-flight requests at shutdown
-    public var tick_ms: i64;  // how often idle workers wake to sweep and check for stop
+    // The shutdown grace period for active requests.
+    public var drain_ms: i64;
+    // How often idle workers wake to inspect server state.
+    public var tick_ms: i64;
 
     // Defaults tuned for browsers and command-line clients.
     init() {
@@ -119,17 +143,29 @@ public module sun_serve {
     }
   }
 
+  // Holds all settings needed to start a server.
   public class Config {
+    // The addresses the server listens on.
     public var listen: Vec<ListenSpec>;
-    public var tls: TlsSpec;  // meaningful only when has_tls is set
+    // The configured TLS certificate and key.
+    public var tls: TlsSpec;
+    // Whether TLS credentials have been configured.
     public var has_tls: bool;
+    // The pending-connection queue size.
     public var backlog: i32;
+    // The server resource limits.
     public var limits: Limits;
+    // The connection timeouts.
     public var timeouts: Timeouts;
+    // The least severe diagnostic level to write.
     public var log_level: LogLevel;
+    // Whether completed requests are logged.
     public var access_log: bool;
-    public var server_header: bool;  // send a Server header
+    // Whether responses include the Server header.
+    public var server_header: bool;
+    // Whether HTTP/2 support is enabled.
     public var http2: bool;
+    // Whether WebSocket compression may be negotiated.
     public var websocket_compression: bool;
     var alloc: HeapAllocator;
 

@@ -1,20 +1,29 @@
-// worker.sun - One thread's event loop
-//
-// Each worker owns an epoll instance, its own listening sockets, a table of
-// connections, and its own handler. Nothing here is shared with other workers
-// except the stop flag and WebSocket mailboxes.
+/*
+ * worker.sun - One thread's event loop
+ *
+ * Each worker owns an epoll instance, its own listening sockets, a table of
+ * connections, and its own handler. Nothing here is shared with other workers
+ * except the stop flag and WebSocket mailboxes.
+ */
 
+/*
+ * Runs the server event loop for one worker thread.
+ */
 public module sun_serve {
   using std;
   using std.time;
 
-  // Tokens at or above this value identify listeners; below it, connection
-  // slots.
+  /*
+   * Tokens at or above this value identify listeners; below it, connection
+   * slots.
+   */
   const LISTENER_TOKEN_BASE: u64 = 1099511627776;
   const WORKER_WAKE_TOKEN: u64 = 1099511627775;
 
-  // How many connections one readiness event on a listener may accept before
-  // yielding to other work.
+  /*
+   * How many connections one readiness event on a listener may accept before
+   * yielding to other work.
+   */
   const ACCEPT_BATCH: i32 = 64;
 
   // Everything a worker thread is given when it starts.
@@ -23,11 +32,11 @@ public module sun_serve {
     var config: Config;
     var handler: IHandler;
     var listeners: Vec<ListenerSocket>;
-    var stop: raw_ptr<i32>;
+    var stop: StopToken;
     var tls: TlsAcceptor;
 
     // Bundle the pieces for one worker.
-    init(id: i32, config: Config, handler: IHandler, listeners: Vec<ListenerSocket>, stop: raw_ptr<i32>, tls: TlsAcceptor) {
+    init(id: i32, config: Config, handler: IHandler, listeners: Vec<ListenerSocket>, stop: StopToken, tls: TlsAcceptor) {
       this.id = id;
       this.config = config;
       this.handler = handler;
@@ -37,6 +46,7 @@ public module sun_serve {
     }
   }
 
+  // Runs one event loop and owns its connections and listeners.
   public class Worker {
     var args: WorkerArgs;
     var alloc: HeapAllocator;
@@ -62,7 +72,7 @@ public module sun_serve {
       this.epoch = now();
       var layout: EpollLayout = probe_epoll_layout(alloc);
       this.epoll = Epoll(alloc, layout, 256);
-      this.wake_fd = unsafe { sys_eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC); };
+      this.wake_fd = create_event_counter();
       if (this.wake_fd < 0) {
         throw Error(last_errno(), "eventfd failed");
       }
@@ -87,8 +97,10 @@ public module sun_serve {
       return this.epoch.elapsed().as_millis();
     }
 
-    // Serve until the stop flag is raised and the connections have drained.
-    // Returns the process exit status the worker would like.
+    /*
+     * Serve until the stop flag is raised and the connections have drained.
+     * Returns the process exit status the worker would like.
+     */
     public method run() i32 {
       try {
         this.epoll.add(this.wake_fd, EPOLLIN, WORKER_WAKE_TOKEN);
@@ -144,7 +156,7 @@ public module sun_serve {
     // Clear accumulated worker wake notifications.
     method drain_wake() void {
       var value: u64 = 0;
-      while (unsafe { sys_read_u64(this.wake_fd, _address_of<u64>(value), 8); } > 0) {}
+      while (read_event_counter(this.wake_fd, value) > 0) {}
     }
 
     // Drain asynchronous output for every WebSocket owned by this worker.
@@ -202,8 +214,10 @@ public module sun_serve {
       }
     }
 
-    // Attach an accepted socket to a slot and register it with epoll.
-    // Returns false (with the socket closed) when that fails.
+    /*
+     * Attach an accepted socket to a slot and register it with epoll.
+     * Returns false (with the socket closed) when that fails.
+     */
     method open_slot(slot: i64, fd: i32, tls: bool, now_ms: i64) bool {
       var conn: ref Connection = this.conns.get_unchecked(slot);
       if (not conn.open(fd, tls, this.args.tls, now_ms, this.args.config.timeouts, this.wake_fd)) {
@@ -294,13 +308,15 @@ public module sun_serve {
       }
     }
 
-    // Notice a stop request: stop accepting, drop idle connections, and give
-    // in-flight requests a grace period.
+    /*
+     * Notice a stop request: stop accepting, drop idle connections, and give
+     * in-flight requests a grace period.
+     */
     method check_stop(now_ms: i64) void {
       if (this.stopping) {
         return;
       }
-      var stop_flag: i32 = unsafe { _atomic_load_i32(this.args.stop); };
+      var stop_flag: i32 = this.args.stop.load();
       if (stop_flag == 0 and not shutdown_requested()) {
         return;
       }
@@ -332,8 +348,10 @@ public module sun_serve {
     }
   }
 
-  // The thread entry point: build a worker and run it, reporting any failure
-  // on stderr instead of throwing across the thread boundary.
+  /*
+   * The thread entry point: build a worker and run it, reporting any failure
+   * on stderr instead of throwing across the thread boundary.
+   */
   public function run_worker(args: WorkerArgs) i32 {
     try {
       var w = Worker(args);

@@ -1,8 +1,13 @@
-// signals.sun - Turning SIGINT and SIGTERM into a shutdown request
-//
-// The handler only stores a flag; workers notice it on their next tick.
-// Module-level functions are the only Sun functions C can call back into.
+/*
+ * signals.sun - Turning SIGINT and SIGTERM into a shutdown request
+ *
+ * The handler only stores a flag; workers notice it on their next tick.
+ * Module-level functions are the only Sun functions C can call back into.
+ */
 
+/*
+ * Provides process signal handling for server shutdown.
+ */
 public module sun_serve {
   using std;
 

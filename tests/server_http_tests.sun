@@ -1,6 +1,12 @@
 // server_http_tests.sun - The server end to end over loopback, plain HTTP.
 
+/*
+ * Extends the server module with integration tests.
+ */
 public module sun_serve {
+  /*
+   * Contains plain HTTP server integration tests.
+   */
   module server_http_tests {
     using std;
     using std.time;
@@ -14,7 +20,7 @@ public module sun_serve {
         resp.set_body("hello");
       } else if (req.path_is("/echo")) {
         resp.set_content_type("application/octet-stream");
-        resp.set_body_bytes(req.body_ptr(), req.body_len());
+        resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
       } else if (req.path_is("/big")) {
         resp.set_content_type("text/plain");
         var line = String(alloc, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n");
@@ -55,7 +61,9 @@ public module sun_serve {
 
     // A running server on a kernel-picked loopback port.
     class TestServer {
+      // The running test server.
       public var server: Server;
+      // The loopback port assigned to the server.
       public var port: i32;
 
       init(alloc: ref HeapAllocator, workers: i32, keep_alive_ms: i64) throws IError {

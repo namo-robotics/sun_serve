@@ -1,32 +1,40 @@
-// main.sun - A custom handler built on the sun_serve library
-//
-// The sun_serve binary only serves files. This program shows the other way
-// to use sun_serve: link the library and answer requests yourself with a
-// handler class. It keeps per-worker state (a request counter), reads query
-// parameters and request bodies, and falls through to a 404.
-//
-// Build from the repository root with `sun -c sun-config.json`, which
-// produces build/hello_handler and build/hello_handler_test. Then:
-//
-//   build/hello_handler
-//   curl 'http://127.0.0.1:8080/hi?name=sun'
-//   curl -d 'ping' http://127.0.0.1:8080/echo
-//   curl http://127.0.0.1:8080/stats
-//   websocat ws://127.0.0.1:8080/ws
-//
-// The library is compiled in from source through the $SUN_SERVE_SRC path
-// variable in sun-config.json. Importing build/sun_serve.moon instead is
-// blocked by two compiler issues recorded in SUN_FEEDBACK.md.
+/*
+ * main.sun - A custom handler built on the sun_serve library
+ *
+ * The sun_serve binary only serves files. This program shows the other way
+ * to use sun_serve: link the library and answer requests yourself with a
+ * handler class. It keeps per-worker state (a request counter), reads query
+ * parameters and request bodies, and falls through to a not-found response.
+ *
+ * Build from the repository root with `sun -c sun-config.json`, which
+ * produces build/hello_handler and build/hello_handler_test. Then:
+ *
+ *   build/hello_handler
+ * Set SERVER to the address printed at startup, then try:
+ *   curl "${SERVER}/hi?name=sun"
+ *   curl -d 'ping' "${SERVER}/echo"
+ *   curl "${SERVER}/stats"
+ *   websocat "${SERVER/http:/ws:}/ws"
+ *
+ * The library is compiled in from source through the $SUN_SERVE_SRC path
+ * variable in sun-config.json. Importing build/sun_serve.moon instead is
+ * blocked by two compiler issues recorded in SUN_FEEDBACK.md.
+ */
 
 using std;
 using sun_serve;
 
+/*
+ * Implements the custom handler example.
+ */
 module hello_handler {
   using std;
   using sun_serve;
 
-  // Answers a few routes and counts the requests it has handled. Each worker
-  // thread owns one instance, so the counter needs no locking.
+  /*
+   * Answers a few routes and counts the requests it has handled. Each worker
+   * thread owns one instance, so the counter needs no locking.
+   */
   public class HelloHandler implements IHandler {
     var served: i64;
     var alloc: HeapAllocator;
@@ -77,7 +85,7 @@ module hello_handler {
         return;
       }
       resp.set_content_type("application/octet-stream");
-      resp.set_body_bytes(req.body_ptr(), req.body_len());
+      resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
     }
 
     // GET /stats reports how many requests this worker has handled.
@@ -105,7 +113,7 @@ module hello_handler {
         var text = message.text(this.alloc);
         socket.send_text(text);
       } else {
-        socket.send_binary(message.data(), message.length());
+        socket.send_binary(message.data(), 0, message.length());
       }
     }
 

@@ -1,10 +1,15 @@
 // status.sun - HTTP status codes and their reason phrases
 
+/*
+ * Provides HTTP status descriptions and serialization.
+ */
 public module sun_serve {
   using std;
 
-  // The standard reason phrase for a status code. Unknown codes get a
-  // generic phrase for their class, which clients treat the same way.
+  /*
+   * The standard reason phrase for a status code. Unknown codes get a
+   * generic phrase for their class, which clients treat the same way.
+   */
   public function reason_phrase(code: i32) static_ptr<u8> {
     return match code {
       100 => "Continue",

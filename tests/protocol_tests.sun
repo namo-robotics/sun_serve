@@ -1,8 +1,14 @@
 // protocol_tests.sun - Unit coverage for HTTP/2, HPACK, and WebSocket wire helpers
 
+/*
+ * Extends the server module with protocol tests.
+ */
 public module sun_serve {
   using std;
 
+  /*
+   * Contains HTTP/2, HPACK, and WebSocket tests.
+   */
   module protocol_tests {
     using std;
     using sun_serve;
@@ -16,7 +22,7 @@ public module sun_serve {
 
     test_function websocket_cross_thread_wake_stale_and_overflow() {
       var alloc = make_heap_allocator();
-      var wake_fd: i32 = unsafe { sys_eventfd(0, EFD_NONBLOCK | EFD_CLOEXEC); };
+      var wake_fd: i32 = create_event_counter();
       std.test.assert(wake_fd > 0, "eventfd created");
       var mailbox = Shared<WebSocketMailbox>(alloc, WebSocketMailbox(alloc));
       var generation: i64 = 0;
@@ -28,7 +34,7 @@ public module sun_serve {
       var sender = spawn(send_from_thread, handle.clone());
       std.test.assert(sender.join(), "cross-thread send queued");
       var wake_count: u64 = 0;
-      std.test.assert_eq(unsafe { sys_read_u64(wake_fd, _address_of<u64>(wake_count), 8); }, 8);
+      std.test.assert_eq(read_event_counter(wake_fd, wake_count), 8);
       std.test.assert(wake_count >= 1, "worker notified");
       var frames = ByteBuffer(alloc, 32);
       if (true) {
@@ -60,38 +66,42 @@ public module sun_serve {
     test_function websocket_frames_and_utf8() {
       var alloc = make_heap_allocator();
       var out = ByteBuffer(alloc, 16);
-      websocket_append_frame(out, _convert<u8>(1), "hello".raw(), 5);
+      var hello = ByteBuffer(alloc, 5);
+      hello.append_literal("hello");
+      websocket_append_frame(out, _convert<u8>(1), hello, 0, 5);
       std.test.assert_eq(out.readable_len(), 7);
       std.test.assert_eq(out.byte_at(0), 129);
       std.test.assert_eq(out.byte_at(1), 5);
-      std.test.assert(websocket_valid_utf8("hello".raw(), 5), "ASCII is UTF-8");
-      var bad = ContiguousBuffer<u8>(alloc, 2);
-      bad.set_unchecked(0, 192);
-      bad.set_unchecked(1, 128);
-      std.test.assert(not websocket_valid_utf8(bad.raw_data(), 2), "overlong UTF-8 rejected");
+      std.test.assert(websocket_valid_utf8(hello, 0, 5), "ASCII is UTF-8");
+      var bad = ByteBuffer(alloc, 2);
+      bad.append_byte(192);
+      bad.append_byte(128);
+      std.test.assert(not websocket_valid_utf8(bad, 0, 2), "overlong UTF-8 rejected");
       var offers = String(alloc, "other; value=1, permessage-deflate; client_max_window_bits");
       std.test.assert(websocket_offers_deflate(offers), "compression offer found");
       var prefix = String(alloc, "not-permessage-deflate");
       std.test.assert(not websocket_offers_deflate(prefix), "extension token is exact");
-      std.test.assert_eq(websocket_close_payload_status(bad.raw_data(), 1), 1002);
-      var invalid_code = ContiguousBuffer<u8>(alloc, 2);
-      invalid_code.set_unchecked(0, 3);
-      invalid_code.set_unchecked(1, 237);
-      std.test.assert_eq(websocket_close_payload_status(invalid_code.raw_data(), 2), 1002);
+      std.test.assert_eq(websocket_close_payload_status(bad, 1), 1002);
+      var invalid_code = ByteBuffer(alloc, 2);
+      invalid_code.append_byte(3);
+      invalid_code.append_byte(237);
+      std.test.assert_eq(websocket_close_payload_status(invalid_code, 2), 1002);
     }
 
     test_function websocket_permessage_deflate_round_trip() {
       var alloc = make_heap_allocator();
       var source = String(alloc, "hello hello hello hello hello");
+      var source_bytes = ByteBuffer(alloc, source.length());
+      source_bytes.append_string(source);
       var compressed = ByteBuffer(alloc, 64);
-      std.test.assert(websocket_deflate(source.c_str(), source.length(), compressed), "message compressed");
+      std.test.assert(websocket_deflate(source_bytes, 0, source_bytes.readable_len(), compressed), "message compressed");
       std.test.assert(compressed.readable_len() < source.length(), "repetition compressed");
       var inflated = ByteBuffer(alloc, 64);
-      std.test.assert_eq(websocket_inflate(alloc, compressed.readable_ptr(), compressed.readable_len(), 1024, inflated), 0);
+      std.test.assert_eq(websocket_inflate(alloc, compressed, 0, compressed.readable_len(), 1024, inflated), 0);
       var restored = inflated.to_string(alloc);
       std.test.assert(restored.equals_literal("hello hello hello hello hello"), "message restored");
       var limited = ByteBuffer(alloc, 8);
-      std.test.assert_eq(websocket_inflate(alloc, compressed.readable_ptr(), compressed.readable_len(), 8, limited), 2);
+      std.test.assert_eq(websocket_inflate(alloc, compressed, 0, compressed.readable_len(), 8, limited), 2);
     }
 
     test_function h2c_settings_use_unpadded_base64url() {
@@ -100,8 +110,8 @@ public module sun_serve {
       var decoded = ByteBuffer(alloc, 16);
       std.test.assert(h2_decode_settings_header(encoded, decoded), "settings decoded");
       std.test.assert_eq(decoded.readable_len(), 12);
-      std.test.assert_eq(h2_u32(decoded.readable_ptr(), 2), 100);
-      std.test.assert_eq(h2_u32(decoded.readable_ptr(), 8), 65535);
+      std.test.assert_eq(h2_u32(decoded, 2), 100);
+      std.test.assert_eq(h2_u32(decoded, 8), 65535);
       var invalid = String(alloc, "A===");
       var discarded = ByteBuffer(alloc, 4);
       std.test.assert(not h2_decode_settings_header(invalid, discarded), "padding rejected");
@@ -162,20 +172,20 @@ public module sun_serve {
 
     test_function hpack_huffman_and_dynamic_table() {
       var alloc = make_heap_allocator();
-      var encoded = ContiguousBuffer<u8>(alloc, 12);
-      encoded.set_unchecked(0, 241);
-      encoded.set_unchecked(1, 227);
-      encoded.set_unchecked(2, 194);
-      encoded.set_unchecked(3, 229);
-      encoded.set_unchecked(4, 242);
-      encoded.set_unchecked(5, 58);
-      encoded.set_unchecked(6, 107);
-      encoded.set_unchecked(7, 160);
-      encoded.set_unchecked(8, 171);
-      encoded.set_unchecked(9, 144);
-      encoded.set_unchecked(10, 244);
-      encoded.set_unchecked(11, 255);
-      var decoded: Option<String> = hpack_huffman_decode(alloc, encoded.raw_data(), 12);
+      var encoded = ByteBuffer(alloc, 12);
+      encoded.append_byte(241);
+      encoded.append_byte(227);
+      encoded.append_byte(194);
+      encoded.append_byte(229);
+      encoded.append_byte(242);
+      encoded.append_byte(58);
+      encoded.append_byte(107);
+      encoded.append_byte(160);
+      encoded.append_byte(171);
+      encoded.append_byte(144);
+      encoded.append_byte(244);
+      encoded.append_byte(255);
+      var decoded: Option<String> = hpack_huffman_decode(alloc, encoded, 0, 12);
       var fallback = String(alloc, "");
       var text: String = match decoded {
         Option.Some(v) => v,
@@ -184,24 +194,16 @@ public module sun_serve {
       std.test.assert(text.equals_literal("www.example.com"), "RFC Huffman example");
 
       var decoder = HpackDecoder(alloc);
-      var first = ContiguousBuffer<u8>(alloc, 11);
-      first.set_unchecked(0, 65);
-      first.set_unchecked(1, 9);
-      first.set_unchecked(2, 108);
-      first.set_unchecked(3, 111);
-      first.set_unchecked(4, 99);
-      first.set_unchecked(5, 97);
-      first.set_unchecked(6, 108);
-      first.set_unchecked(7, 104);
-      first.set_unchecked(8, 111);
-      first.set_unchecked(9, 115);
-      first.set_unchecked(10, 116);
+      var first = ByteBuffer(alloc, 11);
+      first.append_byte(65);
+      first.append_byte(9);
+      first.append_literal("localhost");
       var headers = Vec<H2Header>(alloc, 4);
-      std.test.assert(hpack_decode(alloc, first.raw_data(), 11, decoder, headers), "literal decoded");
+      std.test.assert(hpack_decode(alloc, first, 11, decoder, headers), "literal decoded");
       headers.clear();
-      var indexed = ContiguousBuffer<u8>(alloc, 1);
-      indexed.set_unchecked(0, 190);
-      std.test.assert(hpack_decode(alloc, indexed.raw_data(), 1, decoder, headers), "dynamic index decoded");
+      var indexed = ByteBuffer(alloc, 1);
+      indexed.append_byte(190);
+      std.test.assert(hpack_decode(alloc, indexed, 1, decoder, headers), "dynamic index decoded");
       std.test.assert(headers.get_unchecked(0).value.equals_literal("localhost"), "dynamic value");
 
       var first_name = String(alloc, "x");

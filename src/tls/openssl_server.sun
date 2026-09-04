@@ -1,10 +1,15 @@
-// openssl_server.sun - The server-side OpenSSL symbols sun_serve calls
-//
-// The tls bundle only binds the client half of libssl, but it carries the
-// whole library, so the server half is declared here and links against the
-// same archives. Declarations mirror the bundle's openssl.sun: module-private,
-// opaque handles as raw_ptr<u8>, macros expressed through SSL_CTX_ctrl.
+/*
+ * openssl_server.sun - The server-side OpenSSL symbols sun_serve calls
+ *
+ * The tls bundle only binds the client half of libssl, but it carries the
+ * whole library, so the server half is declared here and links against the
+ * same archives. Declarations mirror the bundle's openssl.sun: module-private,
+ * opaque handles as raw_ptr<u8>, macros expressed through SSL_CTX_ctrl.
+ */
 
+/*
+ * Defines the OpenSSL server bindings.
+ */
 public module sun_serve {
   using std;
 
@@ -68,7 +73,7 @@ public module sun_serve {
   const SSL_TLSEXT_ERR_OK: i32 = 0;
   const SSL_TLSEXT_ERR_NOACK: i32 = 3;
   const OPENSSL_NPN_NEGOTIATED: i32 = 1;
-  // ERR_GET_REASON(code) == code & this mask (OpenSSL 3.x packing)
+  // The mask OpenSSL uses to extract a packed error reason.
   const OPENSSL_REASON_MASK: u64 = 8388607;
   // SSL_R_UNEXPECTED_EOF_WHILE_READING
   const SSL_REASON_UNEXPECTED_EOF: u64 = 294;

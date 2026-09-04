@@ -1,6 +1,12 @@
 // buffer_tests.sun - ByteBuffer growth, cursors, and number formatting.
 
+/*
+ * Extends the server module with buffer tests.
+ */
 public module sun_serve {
+  /*
+   * Contains byte-buffer tests.
+   */
   module buffer_tests {
     using std;
 
@@ -30,15 +36,27 @@ public module sun_serve {
       std.test.assert_eq(b.readable_len(), 0);
     }
 
-    test_function commit_after_reserve() {
+    test_function reserve_then_append() {
       var alloc = make_heap_allocator();
       var b = ByteBuffer(alloc, 2);
       b.reserve(3);
       std.test.assert(b.writable_len() >= 3, "reserve makes room");
-      unsafe { _store<u8>(b.writable_ptr(), 0, b'x'); };
-      b.commit(1);
+      b.append_byte(b'x');
       std.test.assert_eq(b.readable_len(), 1);
       std.test.assert_eq(b.byte_at(0), b'x');
+    }
+
+    test_function checked_ranges_reject_invalid_offsets() {
+      var alloc = make_heap_allocator();
+      var source = ByteBuffer(alloc, 4);
+      source.append_literal("data");
+      std.test.assert_eq(source.byte_at(-1), 0);
+      std.test.assert_eq(source.byte_at(4), 0);
+      var invalid = source.range_text(alloc, 3, 2);
+      std.test.assert_eq(invalid.length(), 0);
+      var destination = ByteBuffer(alloc, 4);
+      destination.append_buffer(source, 3, 2);
+      std.test.assert_eq(destination.readable_len(), 0);
     }
 
     test_function number_formatting() {

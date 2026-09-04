@@ -1,6 +1,12 @@
 // epoll_tests.sun - Layout probe and event round trips through Epoll.
 
+/*
+ * Extends the server module with readiness tests.
+ */
 public module sun_serve {
+  /*
+   * Contains readiness-polling tests.
+   */
   module epoll_tests {
     using std;
 

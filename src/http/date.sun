@@ -1,8 +1,13 @@
-// date.sun - The IMF-fixdate format HTTP uses for Date and Last-Modified
-//
-// Formatting is done by hand from UTC calendar fields so it is locale-proof
-// and needs no C formatting call on the hot path.
+/*
+ * date.sun - The IMF-fixdate format HTTP uses for Date and Last-Modified
+ *
+ * Formatting is done by hand from UTC calendar fields so it is locale-proof
+ * and needs no C formatting call on the hot path.
+ */
 
+/*
+ * Formats and caches dates used in HTTP messages.
+ */
 public module sun_serve {
   using std;
   using std.time;

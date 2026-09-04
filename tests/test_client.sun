@@ -1,10 +1,18 @@
-// test_client.sun - A blocking HTTP client for the integration tests
-//
-// Deliberately naive: it speaks just enough HTTP/1.1 to exercise the server
-// from the outside, with a receive timeout so a server bug fails a test
-// instead of hanging it.
+/*
+ * test_client.sun - A blocking HTTP client for the integration tests
+ *
+ * Deliberately naive: it speaks just enough HTTP/1.1 to exercise the server
+ * from the outside, with a receive timeout so a server bug fails a test
+ * instead of hanging it.
+ */
 
+/*
+ * Extends the server module with shared test helpers.
+ */
 public module sun_serve {
+  /*
+   * Contains integration-test client helpers.
+   */
   module tests {
     using std;
 
@@ -20,8 +28,11 @@ public module sun_serve {
 
     // What the client read back for one request.
     public class ClientResponse {
+      // The parsed HTTP status code.
       public var status: i32;
-      public var head: String;  // header block after the status line
+      // The header block after the status line.
+      public var head: String;
+      // The decoded response body.
       public var body: String;
 
       init(alloc: const ref HeapAllocator) {
@@ -61,6 +72,7 @@ public module sun_serve {
       return value;
     }
 
+    // Provides the blocking socket operations used by integration tests.
     public class RawClient {
       var stream: TcpStream;
       var pending: String;  // bytes read but not yet consumed
@@ -72,8 +84,7 @@ public module sun_serve {
         this.stream = TcpStream();
         this.pending = String(allocator, "");
         this.stream.connect_local(port);
-        var tv = Timeval(10);
-        unsafe { __setsockopt(this.stream.get_fd(), SOL_SOCKET, SO_RCVTIMEO, _address_of<Timeval>(tv), 16); };
+        set_socket_receive_timeout(this.stream.get_fd(), 10);
       }
 
       // Send a literal.
@@ -119,8 +130,10 @@ public module sun_serve {
         return this.pending.clone(this.alloc);
       }
 
-      // Report whether the server closed the connection (a read returns
-      // nothing within the timeout counts as still open).
+      /*
+       * Report whether the server closed the connection (a read returns
+       * nothing within the timeout counts as still open).
+       */
       public method peer_closed() bool {
         try {
           return not this.fill();
@@ -129,8 +142,10 @@ public module sun_serve {
         }
       }
 
-      // Read one response, framed by Content-Length or chunked encoding.
-      // Interim 1xx responses are skipped.
+      /*
+       * Read one response, framed by Content-Length or chunked encoding.
+       * Interim 1xx responses are skipped.
+       */
       public method read_response() ClientResponse throws IError {
         while (true) {
           var resp: ClientResponse = this.read_one();
@@ -141,8 +156,10 @@ public module sun_serve {
         return ClientResponse(this.alloc);
       }
 
-      // Read a response to a HEAD request: head only, whatever length it
-      // declares.
+      /*
+       * Read a response to a HEAD request: head only, whatever length it
+       * declares.
+       */
       public method read_head_response() ClientResponse throws IError {
         return this.read_framed(true);
       }
@@ -217,8 +234,10 @@ public module sun_serve {
         return resp;
       }
 
-      // Decode a chunked body starting at from, filling more as needed.
-      // Returns the index just past the terminating chunk.
+      /*
+       * Decode a chunked body starting at from, filling more as needed.
+       * Returns the index just past the terminating chunk.
+       */
       method read_chunked(from: i64, out: ref String) i64 throws IError {
         var i: i64 = from;
         while (true) {

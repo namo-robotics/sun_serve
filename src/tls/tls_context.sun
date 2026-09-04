@@ -1,15 +1,22 @@
-// tls_context.sun - The server certificate, key, and protocol settings
-//
-// One SSL_CTX is built when the server starts and shared by every worker
-// through reference-counted acceptors. OpenSSL guards the context with its
-// own locks, so workers create sessions from it without coordinating.
+/*
+ * tls_context.sun - The server certificate, key, and protocol settings
+ *
+ * One SSL_CTX is built when the server starts and shared by every worker
+ * through reference-counted acceptors. OpenSSL guards the context with its
+ * own locks, so workers create sessions from it without coordinating.
+ */
 
+/*
+ * Creates shared server TLS contexts and acceptors.
+ */
 public module sun_serve {
   using std;
 
-  // ALPN protocol list in wire form: each name prefixed with its length.
-  // Built once because the callback below runs inside OpenSSL and must not
-  // allocate. HTTP/2 is added here when its framing exists.
+  /*
+   * ALPN protocol list in wire form: each name prefixed with its length.
+   * Built once because the callback below runs inside OpenSSL and must not
+   * allocate. HTTP/2 is added here when its framing exists.
+   */
   var alpn_protocols: String = String("");
   var alpn_http1: String = String("");
 
@@ -36,8 +43,10 @@ public module sun_serve {
     return SSL_TLSEXT_ERR_NOACK;
   }
 
-  // OpenSSL calls this during the handshake to pick an application protocol
-  // from the client's list. Only module-level functions can cross to C.
+  /*
+   * OpenSSL calls this during the handshake to pick an application protocol
+   * from the client's list. Only module-level functions can cross to C.
+   */
   function alpn_select(ssl: raw_ptr<u8>, out: raw_ptr<raw_ptr<u8>>, outlen: raw_ptr<u8>, client: raw_ptr<u8>, client_len: u32, arg: raw_ptr<u8>) i32 {
     var rc: i32 = unsafe {
       ssl_select_next_proto(out, outlen, alpn_protocols.c_str(), _convert<u32>(alpn_protocols.length()), client, client_len);
@@ -74,9 +83,10 @@ public module sun_serve {
   public class TlsServerContext {
     var ctx: raw_ptr<u8>;
 
-    // Load the certificate chain and key and apply the protocol policy:
-    // TLS 1.2 or newer, no renegotiation, no compression, server-preferred
-    // ciphers, partial writes allowed for the nonblocking loop.
+    /*
+     * Load the certificate chain and key, apply transport hardening, and
+     * allow partial writes for the nonblocking loop.
+     */
     init(alloc: const ref HeapAllocator, spec: const ref TlsSpec, http2: bool) throws IError {
       this.ctx = null;
       var cert_path: String = spec.cert_path.clone(alloc);
@@ -155,8 +165,10 @@ public module sun_serve {
     }
   }
 
-  // A worker's counted reference to the shared SSL_CTX. A null acceptor
-  // means the worker has no TLS listeners.
+  /*
+   * A worker's counted reference to the shared SSL_CTX. A null acceptor
+   * means the worker has no TLS listeners.
+   */
   public class TlsAcceptor {
     var ctx: raw_ptr<u8>;
 

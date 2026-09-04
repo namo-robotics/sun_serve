@@ -1,27 +1,39 @@
-// main.sun - The sun_serve command: serve a directory over HTTP and HTTPS
-//
-// Usage: sun_serve [--root DIR] [--listen HOST:PORT] [--tls-listen HOST:PORT
-//        --cert FILE --key FILE] [options]
-//
-// Exit status: 0 after a clean shutdown, 1 if a worker failed, 2 for a usage
-// error, 3 when the server could not start.
+/*
+ * main.sun - The sun_serve command: serve a directory over HTTP and HTTPS
+ *
+ * Usage: sun_serve [--root DIR] [--listen HOST:PORT] [--tls-listen HOST:PORT
+ *        --cert FILE --key FILE] [options]
+ *
+ * The command reports clean shutdown, worker, usage, and startup outcomes
+ * with distinct exit statuses.
+ */
 
 using std;
 using sun_serve;
 
+/*
+ * Implements the static-file server command.
+ */
 module sun_serve_cli {
   using std;
   using sun_serve;
 
   // Everything the command line decided.
   public class Cli {
+    // The server settings selected by the command line.
     public var config: Config;
+    // The static-file settings selected by the command line.
     public var static_opts: StaticOptions;
+    // The directory served by the command.
     public var root: String;
+    // The requested worker count.
     public var workers: i32;
+    // Whether help should be printed.
     public var show_help: bool;
+    // Whether version information should be printed.
     public var show_version: bool;
-    public var error: String;  // empty when parsing succeeded
+    // The parsing error, or an empty string after successful parsing.
+    public var error: String;
     var alloc: HeapAllocator;
 
     // Defaults before any flag is read.

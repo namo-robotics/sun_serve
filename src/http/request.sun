@@ -1,10 +1,14 @@
-// request.sun - The parsed HTTP/1.1 request handed to handlers
-//
-// A Request is a view over the connection's read buffer: the request line and
-// headers stay where they arrived and the parser only records where each
-// piece sits. Nothing is copied until a handler asks for a String. The view is
-// valid for the duration of one handle() call.
+/*
+ * request.sun - The parsed HTTP/1.1 request handed to handlers
+ *
+ * A Request owns the bytes visible to handlers. The parser records offsets
+ * while reading a connection buffer, then copies the completed head and body
+ * before the connection can move or reuse that storage.
+ */
 
+/*
+ * Parses requests and exposes them to handlers.
+ */
 public module sun_serve {
   using std;
 
@@ -18,9 +22,13 @@ public module sun_serve {
 
   // Where one header's name and value sit, as offsets from the head start.
   public class HeaderSpan {
+    // The header-name offset in the request head.
     public var name_off: i64;
+    // The header-name byte count.
     public var name_len: i64;
+    // The header-value offset in the request head.
     public var value_off: i64;
+    // The header-value byte count.
     public var value_len: i64;
 
     // Record a header's position.
@@ -69,13 +77,12 @@ public module sun_serve {
   }
 
   // Compare len bytes at base+off with a literal, byte for byte.
-  function bytes_equal(base: raw_ptr<u8>, off: i64, len: i64, lit: static_ptr<u8>) bool {
+  function bytes_equal(base: const ref ByteBuffer, off: i64, len: i64, lit: static_ptr<u8>) bool {
     if (len != lit.length()) {
       return false;
     }
-    var p: raw_ptr<u8> = lit.raw();
     for (var i: i64 = 0; i < len; i = i + 1) {
-      if (unsafe { _load<u8>(base, off + i); } != unsafe { _load<u8>(p, i); }) {
+      if (base.byte_at(off + i) != literal_byte(lit, i)) {
         return false;
       }
     }
@@ -83,13 +90,12 @@ public module sun_serve {
   }
 
   // Compare len bytes at base+off with a lowercase literal, ignoring case.
-  function bytes_equal_ci(base: raw_ptr<u8>, off: i64, len: i64, lit: static_ptr<u8>) bool {
+  function bytes_equal_ci(base: const ref ByteBuffer, off: i64, len: i64, lit: static_ptr<u8>) bool {
     if (len != lit.length()) {
       return false;
     }
-    var p: raw_ptr<u8> = lit.raw();
     for (var i: i64 = 0; i < len; i = i + 1) {
-      if (lower_ascii(unsafe { _load<u8>(base, off + i); }) != unsafe { _load<u8>(p, i); }) {
+      if (lower_ascii(base.byte_at(off + i)) != literal_byte(lit, i)) {
         return false;
       }
     }
@@ -97,21 +103,23 @@ public module sun_serve {
   }
 
   // Compare bytes with a runtime ASCII string, ignoring case.
-  function bytes_equal_string_ci(base: raw_ptr<u8>, off: i64, len: i64, text: ref String) bool {
+  function bytes_equal_string_ci(base: const ref ByteBuffer, off: i64, len: i64, text: ref String) bool {
     if (len != text.length()) {
       return false;
     }
     for (var i: i64 = 0; i < len; i = i + 1) {
-      if (lower_ascii(unsafe { _load<u8>(base, off + i); }) != lower_ascii(text.at(i))) {
+      if (lower_ascii(base.byte_at(off + i)) != lower_ascii(text.at(i))) {
         return false;
       }
     }
     return true;
   }
 
-  // Report whether the bytes at base+off end with a lowercase literal,
-  // ignoring case.
-  function bytes_end_with_ci(base: raw_ptr<u8>, off: i64, len: i64, lit: static_ptr<u8>) bool {
+  /*
+   * Report whether the bytes at base+off end with a lowercase literal,
+   * ignoring case.
+   */
+  function bytes_end_with_ci(base: const ref ByteBuffer, off: i64, len: i64, lit: static_ptr<u8>) bool {
     if (len < lit.length()) {
       return false;
     }
@@ -119,10 +127,10 @@ public module sun_serve {
   }
 
   // Index of the first CRLF at or after from, or a negative number.
-  function find_crlf(base: raw_ptr<u8>, from: i64, len: i64) i64 {
+  function find_crlf(base: const ref ByteBuffer, from: i64, len: i64) i64 {
     var i: i64 = from;
     while (i + 1 < len) {
-      if (unsafe { _load<u8>(base, i); } == CR and unsafe { _load<u8>(base, i + 1); } == LF) {
+      if (base.byte_at(i) == CR and base.byte_at(i + 1) == LF) {
         return i;
       }
       i = i + 1;
@@ -131,28 +139,25 @@ public module sun_serve {
   }
 
   // Copy len bytes at base+off into a new String.
-  function bytes_to_string(alloc: const ref HeapAllocator, base: raw_ptr<u8>, off: i64, len: i64) String {
-    var s = String(alloc, "");
-    s.reserve(len);
-    for (var i: i64 = 0; i < len; i = i + 1) {
-      s.append_char(unsafe { _load<u8>(base, off + i); });
-    }
-    return s;
+  function bytes_to_string(alloc: const ref HeapAllocator, base: const ref ByteBuffer, off: i64, len: i64) String {
+    return base.range_text(alloc, off, len);
   }
 
-  // Percent-decode len bytes at base+off into out. Plus signs become spaces
-  // when plus_is_space is set (form queries). Returns false for a malformed
-  // escape, an encoded NUL, or a control byte.
-  function percent_decode(base: raw_ptr<u8>, off: i64, len: i64, plus_is_space: bool, out: ref String) bool {
+  /*
+   * Percent-decode len bytes at base+off into out. Plus signs become spaces
+   * when plus_is_space is set (form queries). Returns false for a malformed
+   * escape, an encoded NUL, or a control byte.
+   */
+  function percent_decode(base: const ref ByteBuffer, off: i64, len: i64, plus_is_space: bool, out: ref String) bool {
     var i: i64 = 0;
     while (i < len) {
-      var c: u8 = unsafe { _load<u8>(base, off + i); };
+      var c: u8 = base.byte_at(off + i);
       if (c == b'%') {
         if (i + 2 >= len) {
           return false;
         }
-        var hi: i32 = hex_value(unsafe { _load<u8>(base, off + i + 1); });
-        var lo: i32 = hex_value(unsafe { _load<u8>(base, off + i + 2); });
+        var hi: i32 = hex_value(base.byte_at(off + i + 1));
+        var lo: i32 = hex_value(base.byte_at(off + i + 2));
         if (hi < 0 or lo < 0) {
           return false;
         }
@@ -176,8 +181,9 @@ public module sun_serve {
     return true;
   }
 
+  // Owns a parsed request and exposes stable views to handlers.
   public class Request {
-    var base: raw_ptr<u8>;
+    var head: ByteBuffer;
     var head_len_: i64;
     var method_off: i64;
     var method_len: i64;
@@ -188,8 +194,7 @@ public module sun_serve {
     var version_minor_: i32;
     var headers: Vec<HeaderSpan>;
     var path_: String;
-    var body_ptr_: raw_ptr<u8>;
-    var body_len_: i64;
+    var body: ByteBuffer;
     var content_length_: i64;
     var chunked_: bool;
     var expect_continue_: bool;
@@ -204,14 +209,14 @@ public module sun_serve {
       this.alloc = allocator.copy();
       this.headers = Vec<HeaderSpan>(allocator, 32);
       this.path_ = String(allocator, "");
-      this.base = null;
-      this.body_ptr_ = null;
+      this.head = ByteBuffer(allocator, 1024);
+      this.body = ByteBuffer(allocator, 1024);
       this.reset();
     }
 
     // Forget the previous request. The header list keeps its capacity.
     public method reset() void {
-      this.base = null;
+      this.head.clear();
       this.head_len_ = 0;
       this.method_off = 0;
       this.method_len = 0;
@@ -222,8 +227,7 @@ public module sun_serve {
       this.version_minor_ = 1;
       this.headers.clear();
       this.path_.clear();
-      this.body_ptr_ = null;
-      this.body_len_ = 0;
+      this.body.clear();
       this.content_length_ = -1i64;
       this.chunked_ = false;
       this.expect_continue_ = false;
@@ -237,12 +241,12 @@ public module sun_serve {
 
     // Report whether the request method equals a literal such as "GET".
     public const method method_is(lit: static_ptr<u8>) bool {
-      return bytes_equal(this.base, this.method_off, this.method_len, lit);
+      return bytes_equal(this.head, this.method_off, this.method_len, lit);
     }
 
     // The request method as an owned String.
     public const method method_text(allocator: const ref HeapAllocator) String {
-      return bytes_to_string(allocator, this.base, this.method_off, this.method_len);
+      return bytes_to_string(allocator, this.head, this.method_off, this.method_len);
     }
 
     // Report whether this is a HEAD request.
@@ -262,7 +266,7 @@ public module sun_serve {
 
     // The raw request target as sent by the client.
     public const method raw_target(allocator: const ref HeapAllocator) String {
-      return bytes_to_string(allocator, this.base, this.target_off, this.target_len);
+      return bytes_to_string(allocator, this.head, this.target_off, this.target_len);
     }
 
     // Report whether the target carried a query string.
@@ -272,7 +276,7 @@ public module sun_serve {
 
     // The raw query string, without the question mark.
     public const method query(allocator: const ref HeapAllocator) String {
-      return bytes_to_string(allocator, this.base, this.query_off, this.query_len);
+      return bytes_to_string(allocator, this.head, this.query_off, this.query_len);
     }
 
     // The decoded value of the first query parameter with this name.
@@ -282,20 +286,20 @@ public module sun_serve {
       while (i < end) {
         // One pair spans up to the next ampersand.
         var pair_end: i64 = i;
-        while (pair_end < end and unsafe { _load<u8>(this.base, this.query_off + pair_end); } != b'&') {
+        while (pair_end < end and this.head.byte_at(this.query_off + pair_end) != b'&') {
           pair_end = pair_end + 1;
         }
         var eq: i64 = i;
-        while (eq < pair_end and unsafe { _load<u8>(this.base, this.query_off + eq); } != b'=') {
+        while (eq < pair_end and this.head.byte_at(this.query_off + eq) != b'=') {
           eq = eq + 1;
         }
-        if (bytes_equal(this.base, this.query_off + i, eq - i, name)) {
+        if (bytes_equal(this.head, this.query_off + i, eq - i, name)) {
           var value = String(allocator, "");
           var vstart: i64 = eq;
           if (vstart < pair_end) {
             vstart = vstart + 1;
           }
-          if (percent_decode(this.base, this.query_off + vstart, pair_end - vstart, true, value)) {
+          if (percent_decode(this.head, this.query_off + vstart, pair_end - vstart, true, value)) {
             return Option.Some(value);
           }
           return Option.None;
@@ -315,12 +319,14 @@ public module sun_serve {
       return this.headers.size();
     }
 
-    // Index of the first header with this lowercase name, or a negative
-    // number when absent.
+    /*
+     * Index of the first header with this lowercase name, or a negative
+     * number when absent.
+     */
     const method find_header(name: static_ptr<u8>) i64 {
       for (var i: i64 = 0; i < this.headers.size(); i = i + 1) {
         var h: const ref HeaderSpan = this.headers.get_unchecked(i);
-        if (bytes_equal_ci(this.base, h.name_off, h.name_len, name)) {
+        if (bytes_equal_ci(this.head, h.name_off, h.name_len, name)) {
           return i;
         }
       }
@@ -334,7 +340,7 @@ public module sun_serve {
         return Option.None;
       }
       var h: const ref HeaderSpan = this.headers.get_unchecked(i);
-      return Option.Some(bytes_to_string(allocator, this.base, h.value_off, h.value_len));
+      return Option.Some(bytes_to_string(allocator, this.head, h.value_off, h.value_len));
     }
 
     // Report whether a comma-separated header contains a token.
@@ -346,18 +352,18 @@ public module sun_serve {
       var h: const ref HeaderSpan = this.headers.get_unchecked(index);
       var start: i64 = 0;
       while (start < h.value_len) {
-        while (start < h.value_len and (unsafe { _load<u8>(this.base, h.value_off + start); } == SP or unsafe { _load<u8>(this.base, h.value_off + start); } == b',')) {
+        while (start < h.value_len and (this.head.byte_at(h.value_off + start) == SP or this.head.byte_at(h.value_off + start) == b',')) {
           start = start + 1;
         }
         var finish: i64 = start;
-        while (finish < h.value_len and unsafe { _load<u8>(this.base, h.value_off + finish); } != b',') {
+        while (finish < h.value_len and this.head.byte_at(h.value_off + finish) != b',') {
           finish = finish + 1;
         }
         var trimmed: i64 = finish;
-        while (trimmed > start and (unsafe { _load<u8>(this.base, h.value_off + trimmed - 1); } == SP or unsafe { _load<u8>(this.base, h.value_off + trimmed - 1); } == HT)) {
+        while (trimmed > start and (this.head.byte_at(h.value_off + trimmed - 1) == SP or this.head.byte_at(h.value_off + trimmed - 1) == HT)) {
           trimmed = trimmed - 1;
         }
-        if (bytes_equal_ci(this.base, h.value_off + start, trimmed - start, token)) {
+        if (bytes_equal_ci(this.head, h.value_off + start, trimmed - start, token)) {
           return true;
         }
         start = finish + 1;
@@ -374,18 +380,18 @@ public module sun_serve {
       var h: const ref HeaderSpan = this.headers.get_unchecked(index);
       var start: i64 = 0;
       while (start < h.value_len) {
-        while (start < h.value_len and (unsafe { _load<u8>(this.base, h.value_off + start); } == SP or unsafe { _load<u8>(this.base, h.value_off + start); } == b',')) {
+        while (start < h.value_len and (this.head.byte_at(h.value_off + start) == SP or this.head.byte_at(h.value_off + start) == b',')) {
           start = start + 1;
         }
         var finish: i64 = start;
-        while (finish < h.value_len and unsafe { _load<u8>(this.base, h.value_off + finish); } != b',') {
+        while (finish < h.value_len and this.head.byte_at(h.value_off + finish) != b',') {
           finish = finish + 1;
         }
         var trimmed: i64 = finish;
-        while (trimmed > start and unsafe { _load<u8>(this.base, h.value_off + trimmed - 1); } == SP) {
+        while (trimmed > start and this.head.byte_at(h.value_off + trimmed - 1) == SP) {
           trimmed = trimmed - 1;
         }
-        if (bytes_equal_string_ci(this.base, h.value_off + start, trimmed - start, token)) {
+        if (bytes_equal_string_ci(this.head, h.value_off + start, trimmed - start, token)) {
           return true;
         }
         start = finish + 1;
@@ -398,42 +404,44 @@ public module sun_serve {
       return this.find_header(name) >= 0;
     }
 
-    // Report whether the named header's value equals a literal, ignoring
-    // ASCII case. The literal must be lowercase.
+    /*
+     * Report whether the named header's value equals a literal, ignoring
+     * ASCII case. The literal must be lowercase.
+     */
     public const method header_equals(name: static_ptr<u8>, value: static_ptr<u8>) bool {
       var i: i64 = this.find_header(name);
       if (i < 0) {
         return false;
       }
       var h: const ref HeaderSpan = this.headers.get_unchecked(i);
-      return bytes_equal_ci(this.base, h.value_off, h.value_len, value);
+      return bytes_equal_ci(this.head, h.value_off, h.value_len, value);
     }
 
     // The name of the i-th header as sent.
     public const method header_name_at(i: i64, allocator: const ref HeapAllocator) String {
       var h: const ref HeaderSpan = this.headers.get_unchecked(i);
-      return bytes_to_string(allocator, this.base, h.name_off, h.name_len);
+      return bytes_to_string(allocator, this.head, h.name_off, h.name_len);
     }
 
     // The value of the i-th header.
     public const method header_value_at(i: i64, allocator: const ref HeapAllocator) String {
       var h: const ref HeaderSpan = this.headers.get_unchecked(i);
-      return bytes_to_string(allocator, this.base, h.value_off, h.value_len);
+      return bytes_to_string(allocator, this.head, h.value_off, h.value_len);
     }
 
     // The request body bytes, decoded if the client used chunked encoding.
-    public const method body_ptr() raw_ptr<u8> {
-      return this.body_ptr_;
+    public const method body_buffer() ref ByteBuffer {
+      return this.body;
     }
 
     // Length of the body in bytes.
     public const method body_len() i64 {
-      return this.body_len_;
+      return this.body.readable_len();
     }
 
     // The body as an owned String.
     public const method body_text(allocator: const ref HeapAllocator) String {
-      return bytes_to_string(allocator, this.body_ptr_, 0, this.body_len_);
+      return this.body.range_text(allocator, 0, this.body.readable_len());
     }
 
     // The declared Content-Length, or a negative number when absent.
@@ -451,8 +459,10 @@ public module sun_serve {
       return this.expect_continue_;
     }
 
-    // Report whether the connection may serve another request afterwards,
-    // by the HTTP/1.0 and HTTP/1.1 defaults and the Connection header.
+    /*
+     * Report whether the connection may serve another request afterwards,
+     * by the HTTP/1.0 and HTTP/1.1 defaults and the Connection header.
+     */
     public const method keep_alive() bool {
       if (this.conn_close_) {
         return false;
@@ -473,15 +483,10 @@ public module sun_serve {
       return this.head_len_;
     }
 
-    // Point the view at the head's new address after the read buffer moved.
-    public method rebase(base: raw_ptr<u8>) void {
-      this.base = base;
-    }
-
-    // Record where the body was collected.
-    public method set_body(data: raw_ptr<u8>, len: i64) void {
-      this.body_ptr_ = data;
-      this.body_len_ = len;
+    // Copy the completed body from a readable buffer range.
+    public method set_body(data: const ref ByteBuffer, off: i64, len: i64) void {
+      this.body.clear();
+      this.body.append_buffer(data, off, len);
     }
 
     // --- parsing --------------------------------------------------------
@@ -492,14 +497,15 @@ public module sun_serve {
       return ParseStatus.Failed;
     }
 
-    // Parse the request line and headers from len bytes at base. Returns
-    // Incomplete when more bytes are needed, Failed with error_status() set,
-    // or Complete with every accessor ready and head_len() set.
-    public method parse_head(base: raw_ptr<u8>, len: i64, limits: const ref Limits) ParseStatus {
+    /*
+     * Parse the request line and headers from len bytes at base. Returns
+     * Incomplete when more bytes are needed, Failed with error_status() set,
+     * or Complete with every accessor ready and head_len() set.
+     */
+    public method parse_head(base: const ref ByteBuffer, len: i64, limits: const ref Limits) ParseStatus {
       this.reset();
-      this.base = base;
       var i: i64 = 0;
-      while (i + 1 < len and unsafe { _load<u8>(base, i); } == CR and unsafe { _load<u8>(base, i + 1); } == LF) {
+      while (i + 1 < len and base.byte_at(i) == CR and base.byte_at(i + 1) == LF) {
         i = i + 2;
       }
       var start: i64 = i;
@@ -513,17 +519,17 @@ public module sun_serve {
         return ParseStatus.Incomplete;
       }
       var j: i64 = i;
-      while (j < eol and is_tchar(unsafe { _load<u8>(base, j); })) {
+      while (j < eol and is_tchar(base.byte_at(j))) {
         j = j + 1;
       }
-      if (j == i or j >= eol or unsafe { _load<u8>(base, j); } != SP) {
+      if (j == i or j >= eol or base.byte_at(j) != SP) {
         return this.fail(400);
       }
       this.method_off = i;
       this.method_len = j - i;
       j = j + 1;
       var t: i64 = j;
-      while (j < eol and unsafe { _load<u8>(base, j); } != SP) {
+      while (j < eol and base.byte_at(j) != SP) {
         j = j + 1;
       }
       if (j == t or j >= eol) {
@@ -538,7 +544,7 @@ public module sun_serve {
         }
         return this.fail(400);
       }
-      var minor: u8 = unsafe { _load<u8>(base, j + 7); };
+      var minor: u8 = base.byte_at(j + 7);
       if (minor == b'1') {
         this.version_minor_ = 1;
       } else if (minor == b'0') {
@@ -564,29 +570,29 @@ public module sun_serve {
         if (eol + 2 - start > limits.max_header_bytes) {
           return this.fail(431);
         }
-        var first: u8 = unsafe { _load<u8>(base, i); };
+        var first: u8 = base.byte_at(i);
         if (first == SP or first == HT) {
           return this.fail(400);
         }
         j = i;
-        while (j < eol and is_tchar(unsafe { _load<u8>(base, j); })) {
+        while (j < eol and is_tchar(base.byte_at(j))) {
           j = j + 1;
         }
-        if (j == i or j >= eol or unsafe { _load<u8>(base, j); } != b':') {
+        if (j == i or j >= eol or base.byte_at(j) != b':') {
           return this.fail(400);
         }
         var name_off: i64 = i;
         var name_len: i64 = j - i;
         j = j + 1;
-        while (j < eol and (unsafe { _load<u8>(base, j); } == SP or unsafe { _load<u8>(base, j); } == HT)) {
+        while (j < eol and (base.byte_at(j) == SP or base.byte_at(j) == HT)) {
           j = j + 1;
         }
         var vend: i64 = eol;
-        while (vend > j and (unsafe { _load<u8>(base, vend - 1); } == SP or unsafe { _load<u8>(base, vend - 1); } == HT)) {
+        while (vend > j and (base.byte_at(vend - 1) == SP or base.byte_at(vend - 1) == HT)) {
           vend = vend - 1;
         }
         for (var k: i64 = j; k < vend; k = k + 1) {
-          var c: u8 = unsafe { _load<u8>(base, k); };
+          var c: u8 = base.byte_at(k);
           if ((c < SP and c != HT) or c == 127) {
             return this.fail(400);
           }
@@ -607,7 +613,7 @@ public module sun_serve {
           }
           var value: i64 = 0;
           for (var k: i64 = 0; k < span.value_len; k = k + 1) {
-            var d: u8 = unsafe { _load<u8>(base, span.value_off + k); };
+            var d: u8 = base.byte_at(span.value_off + k);
             if (d < b'0' or d > b'9') {
               return this.fail(400);
             }
@@ -624,7 +630,7 @@ public module sun_serve {
             return this.fail(501);
           }
         } else if (bytes_equal_ci(base, span.name_off, span.name_len, "connection")) {
-          this.scan_connection_tokens(span.value_off, span.value_len);
+          this.scan_connection_tokens(base, span.value_off, span.value_len);
         } else if (bytes_equal_ci(base, span.name_off, span.name_len, "expect")) {
           if (bytes_equal_ci(base, span.value_off, span.value_len, "100-continue")) {
             this.expect_continue_ = true;
@@ -645,28 +651,30 @@ public module sun_serve {
         return this.fail(413);
       }
 
-      // Target: origin-form, asterisk-form, or absolute-form with the
-      // scheme and authority dropped.
+      /*
+       * Target: origin-form, asterisk-form, or absolute-form with the
+       * scheme and authority dropped.
+       */
       var toff: i64 = this.target_off;
       var tlen: i64 = this.target_len;
       if (tlen >= 7 and bytes_equal_ci(base, toff, 7, "http://")) {
-        this.strip_authority(7);
+        this.strip_authority(base, 7);
         toff = this.target_off;
         tlen = this.target_len;
       } else if (tlen >= 8 and bytes_equal_ci(base, toff, 8, "https://")) {
-        this.strip_authority(8);
+        this.strip_authority(base, 8);
         toff = this.target_off;
         tlen = this.target_len;
       }
-      if (tlen == 1 and unsafe { _load<u8>(base, toff); } == b'*') {
+      if (tlen == 1 and base.byte_at(toff) == b'*') {
         this.path_.append_char(b'*');
-        return ParseStatus.Complete;
+        return this.complete(base);
       }
-      if (tlen == 0 or unsafe { _load<u8>(base, toff); } != b'/') {
+      if (tlen == 0 or base.byte_at(toff) != b'/') {
         return this.fail(400);
       }
       var plen: i64 = 0;
-      while (plen < tlen and unsafe { _load<u8>(base, toff + plen); } != b'?') {
+      while (plen < tlen and base.byte_at(toff + plen) != b'?') {
         plen = plen + 1;
       }
       if (plen < tlen) {
@@ -676,15 +684,23 @@ public module sun_serve {
       if (not percent_decode(base, toff, plen, false, this.path_)) {
         return this.fail(400);
       }
+      return this.complete(base);
+    }
+
+    // Finish a successful parse by retaining only the request head.
+    method complete(base: const ref ByteBuffer) ParseStatus {
+      this.head.append_buffer(base, 0, this.head_len_);
       return ParseStatus.Complete;
     }
 
-    // Drop "scheme://authority" from the target, leaving the path. A target
-    // with no path after the authority becomes "/".
-    method strip_authority(scheme_len: i64) void {
+    /*
+     * Drop "scheme://authority" from the target, leaving the path. A target
+     * with no path after the authority becomes "/".
+     */
+    method strip_authority(base: const ref ByteBuffer, scheme_len: i64) void {
       var off: i64 = this.target_off + scheme_len;
       var end: i64 = this.target_off + this.target_len;
-      while (off < end and unsafe { _load<u8>(this.base, off); } != b'/') {
+      while (off < end and base.byte_at(off) != b'/') {
         off = off + 1;
       }
       if (off >= end) {
@@ -698,19 +714,19 @@ public module sun_serve {
     }
 
     // Note "close" and "keep-alive" tokens in a Connection header value.
-    method scan_connection_tokens(off: i64, len: i64) void {
+    method scan_connection_tokens(base: const ref ByteBuffer, off: i64, len: i64) void {
       var i: i64 = 0;
       while (i < len) {
-        while (i < len and (unsafe { _load<u8>(this.base, off + i); } == b',' or unsafe { _load<u8>(this.base, off + i); } == SP or unsafe { _load<u8>(this.base, off + i); } == HT)) {
+        while (i < len and (base.byte_at(off + i) == b',' or base.byte_at(off + i) == SP or base.byte_at(off + i) == HT)) {
           i = i + 1;
         }
         var tstart: i64 = i;
-        while (i < len and unsafe { _load<u8>(this.base, off + i); } != b',' and unsafe { _load<u8>(this.base, off + i); } != SP and unsafe { _load<u8>(this.base, off + i); } != HT) {
+        while (i < len and base.byte_at(off + i) != b',' and base.byte_at(off + i) != SP and base.byte_at(off + i) != HT) {
           i = i + 1;
         }
-        if (bytes_equal_ci(this.base, off + tstart, i - tstart, "close")) {
+        if (bytes_equal_ci(base, off + tstart, i - tstart, "close")) {
           this.conn_close_ = true;
-        } else if (bytes_equal_ci(this.base, off + tstart, i - tstart, "keep-alive")) {
+        } else if (bytes_equal_ci(base, off + tstart, i - tstart, "keep-alive")) {
           this.conn_keep_alive_ = true;
         }
       }

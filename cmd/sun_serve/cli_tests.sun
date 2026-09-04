@@ -1,6 +1,12 @@
 // cli_tests.sun - Command-line parsing.
 
+/*
+ * Extends the command module with parser tests.
+ */
 module sun_serve_cli {
+  /*
+   * Contains command-line parser tests.
+   */
   module cli_tests {
     using std;
     using sun_serve;

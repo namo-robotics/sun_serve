@@ -1,13 +1,19 @@
-// handler.sun - The contract between the server and application code
-//
-// A handler receives each parsed request and fills in the response. Every
-// worker thread owns its own handler instance, so a handler may keep state
-// without locking as long as that state is per-instance. Handlers run on the
-// event loop and must not block.
+/*
+ * handler.sun - The contract between the server and application code
+ *
+ * A handler receives each parsed request and fills in the response. Every
+ * worker thread owns its own handler instance, so a handler may keep state
+ * without locking as long as that state is per-instance. Handlers run on the
+ * event loop and must not block.
+ */
 
+/*
+ * Defines the application handler contract and adapters.
+ */
 public module sun_serve {
   using std;
 
+  // Defines the HTTP and WebSocket callbacks implemented by applications.
   public interface IHandler {
     // Fill resp for req. The request view is valid only during this call.
     public method handle(req: const ref Request, resp: ref Response) void;
@@ -61,12 +67,12 @@ public module sun_serve {
     public method websocket_error(socket: const ref WebSocketHandle, code: i32) void {}
   }
 
-  // Answers every request with 404. Useful as a placeholder.
+  // Answers every request as not found. Useful as a placeholder.
   public class NotFoundHandler implements IHandler {
     // Nothing to set up.
     init() {}
 
-    // Send a plain-text 404.
+    // Send a plain-text not-found response.
     public method handle(req: const ref Request, resp: ref Response) void {
       resp.set_status(404);
       resp.set_content_type("text/plain");

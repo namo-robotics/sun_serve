@@ -1,14 +1,35 @@
-// buffer.sun - Growable byte buffer with a read cursor
-//
-// ByteBuffer is the workhorse behind every connection: the inbound bytes a
-// request is parsed from, the serialized response waiting to be written, and
-// the decoded request body. Bytes live in [pos, len) of a heap block; the
-// parser reads through raw pointers into that block, so the block only moves
-// when reserve() grows it, never behind a reader's back.
+/*
+ * buffer.sun - Growable byte buffer with a read cursor
+ *
+ * ByteBuffer is the workhorse behind every connection: the inbound bytes a
+ * request is parsed from, the serialized response waiting to be written, and
+ * the decoded request body. Bytes live in [pos, len) of a heap block; the
+ * low-level I/O reaches the block through private pointer-oriented methods.
+ * Protocol and application code use indexed and buffer-to-buffer operations.
+ */
 
+/*
+ * Provides the byte buffer used by server protocols.
+ */
 public module sun_serve {
   using std;
 
+  // Read one byte from a static string inside the low-level buffer boundary.
+  function literal_byte(text: static_ptr<u8>, index: i64) u8 {
+    return unsafe { _load<u8>(text.raw(), index); };
+  }
+
+  // Copy a raw byte range at a foreign-function boundary into a String.
+  function bytes_to_string(alloc: const ref HeapAllocator, data: raw_ptr<u8>, off: i64, count: i64) String {
+    var out = String(alloc, "");
+    out.reserve(count);
+    for (var i: i64 = 0; i < count; i = i + 1) {
+      out.append_char(unsafe { _load<u8>(data, off + i); });
+    }
+    return out;
+  }
+
+  // Owns growable bytes and tracks how many have been consumed.
   public class ByteBuffer {
     var data: ContiguousBuffer<u8>;
     var alloc: HeapAllocator;
@@ -29,13 +50,29 @@ public module sun_serve {
     }
 
     // Start of the unread bytes.
-    public const method readable_ptr() raw_ptr<u8> {
+    const method readable_ptr() raw_ptr<u8> {
       return unsafe { _ptr_offset(this.data.raw_data(), this.pos); };
     }
 
     // The unread byte at index i, counted from the read cursor.
     public const method byte_at(i: i64) u8 {
+      if (i < 0 or i >= this.readable_len()) {
+        return 0;
+      }
       return unsafe { _load<u8>(this.data.raw_data(), this.pos + i); };
+    }
+
+    // Copy a readable range into a new String.
+    public const method range_text(allocator: const ref HeapAllocator, off: i64, count: i64) String {
+      var out = String(allocator, "");
+      if (off < 0 or count < 0 or off > this.readable_len() or count > this.readable_len() - off) {
+        return out;
+      }
+      out.reserve(count);
+      for (var i: i64 = 0; i < count; i = i + 1) {
+        out.append_char(this.byte_at(off + i));
+      }
+      return out;
     }
 
     // Total bytes the block can hold.
@@ -49,7 +86,7 @@ public module sun_serve {
     }
 
     // Where the next appended bytes go.
-    public method writable_ptr() raw_ptr<u8> {
+    method writable_ptr() raw_ptr<u8> {
       return unsafe { _ptr_offset(this.data.raw_data(), this.len); };
     }
 
@@ -58,8 +95,10 @@ public module sun_serve {
       return this.len == this.pos;
     }
 
-    // Make room for at least extra more bytes after the stored data, doubling
-    // the block as needed. Stored bytes keep their offsets.
+    /*
+     * Make room for at least extra more bytes after the stored data, doubling
+     * the block as needed. Stored bytes keep their offsets.
+     */
     public method reserve(extra: i64) void {
       var needed: i64 = this.len + extra;
       if (needed <= this.data.size()) {
@@ -93,8 +132,10 @@ public module sun_serve {
       }
     }
 
-    // Move the unread bytes to the front of the block so the space behind the
-    // cursor can be reused. Offsets taken before this call are invalid after.
+    /*
+     * Move the unread bytes to the front of the block so the space behind the
+     * cursor can be reused. Offsets taken before this call are invalid after.
+     */
     public method compact() void {
       if (this.pos == 0) {
         return;
@@ -116,8 +157,10 @@ public module sun_serve {
       this.pos = 0;
     }
 
-    // Drop the block down to cap bytes when it grew past that and now sits
-    // empty, so an idle connection does not pin a large request's memory.
+    /*
+     * Drop the block down to cap bytes when it grew past that and now sits
+     * empty, so an idle connection does not pin a large request's memory.
+     */
     public method shrink_to(cap: i64) void {
       if (this.len == 0 and this.data.size() > cap) {
         this.data = ContiguousBuffer<u8>(this.alloc, cap);
@@ -126,13 +169,24 @@ public module sun_serve {
     }
 
     // Append n raw bytes.
-    public method append_bytes(src: raw_ptr<u8>, n: i64) void {
+    method append_bytes(src: raw_ptr<u8>, n: i64) void {
       if (n <= 0) {
         return;
       }
       this.reserve(n);
       unsafe { _memcpy(this.writable_ptr(), src, n); };
       this.len = this.len + n;
+    }
+
+    // Append a readable range from another buffer without exposing pointers.
+    public method append_buffer(src: const ref ByteBuffer, off: i64, count: i64) void {
+      if (off < 0 or count <= 0 or off > src.readable_len() or count > src.readable_len() - off) {
+        return;
+      }
+      this.reserve(count);
+      for (var i: i64 = 0; i < count; i = i + 1) {
+        this.append_byte(src.byte_at(off + i));
+      }
     }
 
     // Append a string literal.

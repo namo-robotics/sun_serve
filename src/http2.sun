@@ -1,5 +1,8 @@
 // http2.sun - HTTP/2 framing and the HPACK wire representation
 
+/*
+ * Implements HTTP/2 framing and header compression.
+ */
 public module sun_serve {
   using std;
 
@@ -20,7 +23,9 @@ public module sun_serve {
 
   // One decoded HTTP/2 header field.
   public class H2Header {
+    // The decoded header name.
     public var name: String;
+    // The decoded header value.
     public var value: String;
 
     // Copy this header into another allocator.
@@ -176,8 +181,8 @@ public module sun_serve {
   }
 
   // Read an unsigned big-endian HTTP/2 integer.
-  function h2_u32(data: raw_ptr<u8>, off: i64) u32 {
-    return (_convert<u32>(unsafe { _load<u8>(data, off); }) << 24) | (_convert<u32>(unsafe { _load<u8>(data, off + 1); }) << 16) | (_convert<u32>(unsafe { _load<u8>(data, off + 2); }) << 8) | _convert<u32>(unsafe { _load<u8>(data, off + 3); });
+  function h2_u32(data: const ref ByteBuffer, off: i64) u32 {
+    return (_convert<u32>(data.byte_at(off)) << 24) | (_convert<u32>(data.byte_at(off + 1)) << 16) | (_convert<u32>(data.byte_at(off + 2)) << 8) | _convert<u32>(data.byte_at(off + 3));
   }
 
   // Append an unsigned big-endian HTTP/2 integer.
@@ -298,12 +303,12 @@ public module sun_serve {
   }
 
   // Decode an HPACK variable-length integer and advance pos.
-  function hpack_int(data: raw_ptr<u8>, len: i64, pos: ref i64, prefix: i32) i64 {
+  function hpack_int(data: const ref ByteBuffer, len: i64, pos: ref i64, prefix: i32) i64 {
     if (pos >= len) {
       return -1;
     }
     var mask: i32 = (1 << prefix) - 1;
-    var first: i32 = _convert<i32>(unsafe { _load<u8>(data, pos); });
+    var first: i32 = _convert<i32>(data.byte_at(pos));
     pos = pos + 1;
     var value: i64 = _convert<i64>(first & mask);
     if (value < _convert<i64>(mask)) {
@@ -311,7 +316,7 @@ public module sun_serve {
     }
     var shift: i32 = 0;
     while (pos < len and shift <= 56) {
-      var b: i32 = _convert<i32>(unsafe { _load<u8>(data, pos); });
+      var b: i32 = _convert<i32>(data.byte_at(pos));
       pos = pos + 1;
       value = value + (_convert<i64>(b & 127) << shift);
       if ((b & 128) == 0) {
@@ -940,12 +945,12 @@ public module sun_serve {
   }
 
   // Decode one RFC HPACK Huffman string.
-  function hpack_huffman_decode(alloc: const ref HeapAllocator, data: raw_ptr<u8>, len: i64) Option<String> {
+  function hpack_huffman_decode(alloc: const ref HeapAllocator, data: const ref ByteBuffer, off: i64, len: i64) Option<String> {
     var out = String(alloc, "");
     var bits: i32 = 0;
     var acc: u64 = 0;
     for (var i: i64 = 0; i < len; i = i + 1) {
-      acc = (acc << 8) | _convert<u64>(unsafe { _load<u8>(data, i); });
+      acc = (acc << 8) | _convert<u64>(data.byte_at(off + i));
       bits = bits + 8;
       while (true) {
         var found: i32 = -1;
@@ -983,33 +988,33 @@ public module sun_serve {
   }
 
   // Decode an HPACK string and advance pos.
-  function hpack_string(alloc: const ref HeapAllocator, data: raw_ptr<u8>, len: i64, pos: ref i64) Option<String> {
+  function hpack_string(alloc: const ref HeapAllocator, data: const ref ByteBuffer, len: i64, pos: ref i64) Option<String> {
     if (pos >= len) {
       return Option.None;
     }
-    var huffman: bool = (unsafe { _load<u8>(data, pos); } & 128) != 0;
+    var huffman: bool = (data.byte_at(pos) & 128) != 0;
     var n: i64 = hpack_int(data, len, pos, 7);
     if (n < 0 or pos + n > len) {
       return Option.None;
     }
     if (huffman) {
-      var decoded = hpack_huffman_decode(alloc, unsafe { _ptr_offset(data, pos); }, n);
+      var decoded = hpack_huffman_decode(alloc, data, pos, n);
       pos = pos + n;
       return decoded;
     }
     var out = String(alloc, "");
     for (var i: i64 = 0; i < n; i = i + 1) {
-      out.append_char(unsafe { _load<u8>(data, pos + i); });
+      out.append_char(data.byte_at(pos + i));
     }
     pos = pos + n;
     return Option.Some(out);
   }
 
   // Decode one HPACK block. Dynamic references and Huffman strings are rejected.
-  function hpack_decode(alloc: const ref HeapAllocator, data: raw_ptr<u8>, len: i64, decoder: ref HpackDecoder, out: ref Vec<H2Header>) bool {
+  function hpack_decode(alloc: const ref HeapAllocator, data: const ref ByteBuffer, len: i64, decoder: ref HpackDecoder, out: ref Vec<H2Header>) bool {
     var pos: i64 = 0;
     while (pos < len) {
-      var first: u8 = unsafe { _load<u8>(data, pos); };
+      var first: u8 = data.byte_at(pos);
       if ((first & 224) == 32) {
         var size: i64 = hpack_int(data, len, pos, 5);
         if (not decoder.resize(size)) {

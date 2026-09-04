@@ -1,16 +1,22 @@
-// transport.sun - A socket that may or may not be wrapped in TLS
-//
-// The connection state machine talks to a Transport and never learns which
-// kind it has. Both kinds answer with a byte count or one of the IO_* values
-// from net.sun, and a TLS transport may ask for write readiness during a read
-// (or the reverse) while the handshake or a renegotiation-free record exchange
-// is in progress.
+/*
+ * transport.sun - A socket that may or may not be wrapped in TLS
+ *
+ * The connection state machine talks to a Transport and never learns which
+ * kind it has. Both kinds answer with a byte count or one of the IO_* values
+ * from net.sun, and a TLS transport may ask for write readiness during a read
+ * (or the reverse) while the handshake or a renegotiation-free record exchange
+ * is in progress.
+ */
 
+/*
+ * Unifies plain and TLS socket operations.
+ */
 public module sun_serve {
   using std;
 
+  // Presents the same nonblocking operations for plain and TLS sockets.
   public class Transport {
-    var fd: i32;  // 0 = none
+    var fd: i32;  // nonpositive values hold no descriptor
     var tls: TlsSession;
 
     // Start with no socket.
@@ -24,8 +30,10 @@ public module sun_serve {
       this.close();
     }
 
-    // Take over a connected, nonblocking socket. For TLS the acceptor must be
-    // ready; returns false if a session could not be created.
+    /*
+     * Take over a connected, nonblocking socket. For TLS the acceptor must be
+     * ready; returns false if a session could not be created.
+     */
     method open(fd: i32, tls: bool, acceptor: ref TlsAcceptor) bool {
       this.close();
       this.fd = fd;
@@ -52,8 +60,10 @@ public module sun_serve {
       return this.fd;
     }
 
-    // Run the TLS handshake as far as the socket allows. Plain sockets are
-    // ready immediately. Returns zero when done or an IO_* value.
+    /*
+     * Run the TLS handshake as far as the socket allows. Plain sockets are
+     * ready immediately. Returns zero when done or an IO_* value.
+     */
     method handshake() i64 {
       if (this.tls.is_active()) {
         return this.tls.handshake();

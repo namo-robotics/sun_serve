@@ -116,7 +116,7 @@ networking, so ports bound inside it are reachable from the host as is.
 
 WebSocket upgrades use `handle_websocket`; open, message, close, and error callbacks run on the owning worker. Cloneable `WebSocketHandle` values support bounded sends from other threads and wake the owning worker immediately. `permessage-deflate` is enabled by default with client and server context takeover disabled; set `Config.websocket_compression` to `false` or pass `--no-websocket-compression` to opt out. The hello example exposes an echo endpoint at `/ws`.
 
-Request accessors (`path()`, `query_param()`, `header()`, `body_ptr()`, ...)
+Request accessors (`path()`, `query_param()`, `header()`, `body_buffer()`, ...)
 are views into the connection's buffer and are valid only during `handle()`;
 the `String`-returning variants copy. Responses take a status, headers, an
 in-memory body, a file to stream (`send_file`), or chunks (`write_chunk`).

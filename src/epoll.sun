@@ -1,14 +1,20 @@
-// epoll.sun - Thin owner of an epoll instance
-//
-// Events are read into a raw byte block and decoded with the layout measured
-// by abi_linux.sun, because the kernel's struct differs between x86_64 and
-// aarch64 and a Sun class can only mirror one of them.
+/*
+ * epoll.sun - Thin owner of an epoll instance
+ *
+ * Events are read into a raw byte block and decoded with the layout measured
+ * by abi_linux.sun, because the kernel's struct differs between x86_64 and
+ * aarch64 and a Sun class can only mirror one of them.
+ */
 
+/*
+ * Wraps Linux readiness polling for server workers.
+ */
 public module sun_serve {
   using std;
 
+  // Owns an epoll instance and decodes its ready events.
   public class Epoll {
-    var fd: i32;  // 0 = holds nothing
+    var fd: i32;  // nonpositive values hold no descriptor
     var events: ContiguousBuffer<u8>;
     var scratch: ContiguousBuffer<u8>;  // one event for epoll_ctl
     var max_events: i64;
@@ -57,14 +63,18 @@ public module sun_serve {
       }
     }
 
-    // Stop watching a descriptor. Errors are ignored: the descriptor is about
-    // to be closed anyway.
+    /*
+     * Stop watching a descriptor. Errors are ignored: the descriptor is about
+     * to be closed anyway.
+     */
     public method remove(fd: i32) void {
       unsafe { sys_epoll_ctl(this.fd, EPOLL_CTL_DEL, fd, this.scratch.raw_data()); };
     }
 
-    // Wait up to timeout_ms (negative waits forever) and return how many
-    // events are ready. A signal interruption counts as zero events.
+    /*
+     * Wait up to timeout_ms (negative waits forever) and return how many
+     * events are ready. A signal interruption counts as zero events.
+     */
     public method wait(timeout_ms: i32) i64 throws IError {
       var n: i32 = unsafe {
         sys_epoll_wait(this.fd, this.events.raw_data(), _convert<i32>(this.max_events), timeout_ms);

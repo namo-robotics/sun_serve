@@ -1,12 +1,18 @@
-// tls_session.sun - One nonblocking TLS connection
-//
-// Every call maps OpenSSL's outcome onto the same numbers the plain socket
-// path uses: a byte count, IO_CLOSED, IO_WANT_READ, IO_WANT_WRITE, or
-// IO_ERROR. A session whose handle is null stands for a plain connection.
+/*
+ * tls_session.sun - One nonblocking TLS connection
+ *
+ * Every call maps OpenSSL's outcome onto the same numbers the plain socket
+ * path uses: a byte count, IO_CLOSED, IO_WANT_READ, IO_WANT_WRITE, or
+ * IO_ERROR. A session whose handle is null stands for a plain connection.
+ */
 
+/*
+ * Manages TLS state for individual connections.
+ */
 public module sun_serve {
   using std;
 
+  // Owns an optional OpenSSL session for one connection.
   public class TlsSession {
     var ssl: raw_ptr<u8>;  // null = no TLS on this connection
 
@@ -53,8 +59,10 @@ public module sun_serve {
       if (reason == SSL_ERROR_ZERO_RETURN) {
         return IO_CLOSED;
       }
-      // A peer that drops the socket without close_notify shows up as a
-      // syscall error with an empty queue or as an unexpected-EOF reason.
+      /*
+       * A peer that drops the socket without close_notify shows up as a
+       * syscall error with an empty queue or as an unexpected-EOF reason.
+       */
       if (reason == SSL_ERROR_SYSCALL and unsafe { ssl_err_peek_error(); } == 0) {
         return IO_CLOSED;
       }
@@ -102,8 +110,10 @@ public module sun_serve {
       return this.map_result(r);
     }
 
-    // Decrypted bytes already buffered inside OpenSSL, which no socket
-    // readiness event will announce.
+    /*
+     * Decrypted bytes already buffered inside OpenSSL, which no socket
+     * readiness event will announce.
+     */
     method pending() i64 {
       return _convert<i64>(unsafe { ssl_pending(this.ssl); });
     }

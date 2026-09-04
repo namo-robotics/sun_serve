@@ -1,9 +1,14 @@
-// log.sun - Per-worker logging that never needs a lock
-//
-// Every log call formats one complete line and hands it to the kernel in a
-// single write, so lines from different workers interleave whole rather than
-// mid-line. Diagnostics go to stderr; access log lines go to stdout.
+/*
+ * log.sun - Per-worker logging that never needs a lock
+ *
+ * Every log call formats one complete line and hands it to the kernel in a
+ * single write, so lines from different workers interleave whole rather than
+ * mid-line. Diagnostics go to stderr; access log lines go to stdout.
+ */
 
+/*
+ * Provides per-worker diagnostic and access logging.
+ */
 public module sun_serve {
   using std;
 
@@ -37,6 +42,7 @@ public module sun_serve {
     return Option.None;
   }
 
+  // Formats diagnostics and access records for one worker.
   public class Logger {
     var level: i32;
     var worker: i32;
@@ -129,8 +135,10 @@ public module sun_serve {
       this.error(message, text);
     }
 
-    // Write an access log line to stdout. The caller formats the request
-    // part; this adds the worker id and a newline.
+    /*
+     * Write an access log line to stdout. The caller formats the request
+     * part; this adds the worker id and a newline.
+     */
     public method access(entry: ref ByteBuffer) void {
       if (not this.access_enabled) {
         return;
