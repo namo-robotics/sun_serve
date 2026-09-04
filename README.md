@@ -1,23 +1,33 @@
-# sun_serve
 
-A high-performance, memory-safe HTTP/1.1 server written in
-[Sun](https://namo-robotics.github.io/sun/), with TLS through the Sun TLS
-bundle's OpenSSL.
 
-- One epoll event loop per worker thread, one `SO_REUSEPORT` listener per
-  worker, nonblocking sockets, nonblocking TLS handshakes. No locks on the
-  request path.
-- HTTP/1.1 with keep-alive, pipelining, `Content-Length` and chunked request
-  bodies, chunked responses, `Expect: 100-continue`, HEAD, and streamed
-  file bodies.
-- Strict parsing: header and body size limits, per-state timeouts, request
-  smuggling defenses (`Transfer-Encoding` with `Content-Length` is refused).
-- A static file handler with ETag/Last-Modified validators, index files,
-  directory redirects, MIME types, and path traversal protection.
-- TLS 1.2+, ALPN (`http/1.1`; the seam for `h2` is in place), certificate
-  and key from PEM files.
-- Every descriptor, TLS session, and buffer is owned by a class with a
-  `deinit`; `unsafe` is confined to the FFI wrappers, buffers, and the parser.
+<div align="center">
+
+# Sun Serve
+
+[![ci](https://github.com/namo-robotics/sun_serve/actions/workflows/ci.yml/badge.svg)](https://github.com/namo-robotics/sun_serve/actions/workflows/ci.yml) [![release-dev](https://github.com/namo-robotics/sun_serve/actions/workflows/release-dev.yml/badge.svg)](https://github.com/namo-robotics/sun_serve/actions/workflows/release-dev.yml)
+
+### A high-performance and memory-safe web server written in
+[Sun](https://namo-robotics.github.io/sun/)
+
+
+Supports **x86_64 Linux** only
+
+</div>
+
+## Key Features
+
+- **Fast.** An epoll loop per worker thread and no locks on the request path:
+  ~67k requests/s on loopback, ~1.6 GB/s on large files.
+- **Static files, done properly.** ETag and `Last-Modified` revalidation, index
+  files, directory redirects, MIME types, `Cache-Control`, and traversal
+  protection.
+- **HTTPS included.** TLS 1.2+ with certificate and key from PEM files.
+- **Complete HTTP/1.1.** Keep-alive, pipelining, chunked bodies in both
+  directions, `Expect: 100-continue`, HEAD, and streamed file responses.
+- **Hard to knock over.** Header and body size limits, per-state timeouts,
+  request smuggling refused, and graceful shutdown on `SIGINT`/`SIGTERM`.
+- **A binary or a library.** Serve a directory with one static binary and no
+  dependencies, or link the library and write your own handler.
 
 ## Install and try it
 
@@ -29,13 +39,29 @@ curl -fsSL https://github.com/namo-robotics/sun_serve/releases/download/dev/sun_
 sudo install sun_serve-dev-linux-x86_64/sun_serve /usr/local/bin/sun_serve
 ```
 
-Serve a directory and make a request:
+There are two ways to use sun_serve: run the binary as a static file server,
+or build your own program on the library and give it a handler.
+
+**Static serving** needs nothing but the binary and a directory:
 
 ```sh
 mkdir -p www && printf 'hello\n' > www/index.html
-sun_serve --root ./www --listen 127.0.0.1:8080
+sun_serve --root ./www --listen 127.0.0.1:8080 &
 curl http://127.0.0.1:8080/
 ```
+
+**A custom handler** is a program that links the library and answers requests
+itself. `examples/hello_handler.sun` is a complete one; building it needs the
+`sun` toolchain (see [Build and run](#build-and-run)):
+
+```sh
+sun -c sun-config.json           # produces build/hello_handler
+build/hello_handler &
+curl 'http://127.0.0.1:8080/hi?name=you'
+```
+
+The two compose: a custom handler can fall back to the same `StaticFiles`
+handler the binary uses. [Using the library](#using-the-library) shows the code.
 
 ## Build and run
 
@@ -79,11 +105,11 @@ function main() i32 throws IError {
 }
 ```
 
-`examples/hello_handler.sun` is the complete version, built by
-`sun -c sun-config.json` into `build/hello_handler`; run it and open
-`http://localhost:8080/hi?name=you`. The devcontainer uses host networking,
-so ports bound inside it are reachable from the host as is. For richer handlers
-implement `IHandler` directly (see `StaticFiles` in `src/static_files.sun`).
+`examples/hello_handler.sun` is the complete version of that program. For
+richer handlers implement `IHandler` directly, which is what `StaticFiles` in
+`src/static_files.sun` does; a handler can also hold a `StaticFiles` and
+delegate to it for the paths it does not serve itself. The devcontainer uses
+host networking, so ports bound inside it are reachable from the host as is.
 
 Request accessors (`path()`, `query_param()`, `header()`, `body_ptr()`, ...)
 are views into the connection's buffer and are valid only during `handle()`;
