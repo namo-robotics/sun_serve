@@ -88,6 +88,49 @@ module hello_handler {
       out.append_char(_convert<u8>(stream & 255));
     }
 
+    // WebSocket fields used by client-frame fixtures.
+    const WS_FIN_FLAG: u8 = 128;
+    const WS_COMPRESSED_FLAG: u8 = 64;
+    const WS_MASK_FLAG: u8 = 128;
+    const WS_TEXT_OPCODE: u8 = 1;
+    const WS_SHORT_PAYLOAD_MAX: i64 = 125;
+    const WS_HEADER_BYTES: i64 = 2;
+    const WS_MASK_BYTES: i64 = 4;
+    const TEST_MASK_FIRST_BYTE: i64 = 1;
+
+    // Build a masked client text frame from a literal.
+    function masked_text_frame(alloc: const ref HeapAllocator, text: static_ptr<u8>, compressed: bool) ContiguousBuffer<u8> throws IError {
+      var source = ByteBuffer(alloc, text.length());
+      source.append_literal(text);
+      var payload = ByteBuffer(alloc, text.length());
+      if (compressed) {
+        std.test.assert(websocket_deflate(source, 0, source.readable_len(), payload), "compress test frame");
+      } else {
+        payload.append_buffer(source, 0, source.readable_len());
+      }
+      var payload_len: i64 = payload.readable_len();
+      std.test.assert(payload_len <= WS_SHORT_PAYLOAD_MAX, "test frame uses short payload encoding");
+      var wire = ByteBuffer(alloc, WS_HEADER_BYTES + WS_MASK_BYTES + payload_len);
+      var first: u8 = WS_FIN_FLAG | WS_TEXT_OPCODE;
+      if (compressed) {
+        first = first | WS_COMPRESSED_FLAG;
+      }
+      wire.append_byte(first);
+      wire.append_byte(WS_MASK_FLAG | _convert<u8>(payload_len));
+      for (var i: i64 = 0; i < WS_MASK_BYTES; i = i + 1) {
+        wire.append_byte(_convert<u8>(TEST_MASK_FIRST_BYTE + i));
+      }
+      for (var i: i64 = 0; i < payload_len; i = i + 1) {
+        var mask: u8 = _convert<u8>(TEST_MASK_FIRST_BYTE + (i % WS_MASK_BYTES));
+        wire.append_byte(payload.byte_at(i) ^ mask);
+      }
+      var frame = ContiguousBuffer<u8>(alloc, wire.readable_len());
+      for (var i: i64 = 0; i < wire.readable_len(); i = i + 1) {
+        frame.set_unchecked(i, wire.byte_at(i));
+      }
+      return frame;
+    }
+
     // The body is everything after the blank line that ends the head.
     function body_of(alloc: ref HeapAllocator, reply: const ref String) String {
       var start: i64 = find_header_end(reply) + 4;
@@ -158,29 +201,19 @@ module hello_handler {
       }
       std.test.assert(head.contains("101 Switching Protocols"), "upgrade accepted");
       std.test.assert(head.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "accept key");
-      var frame = ContiguousBuffer<u8>(alloc, 11);
-      frame.set_unchecked(0, 129);
-      frame.set_unchecked(1, 133);
-      frame.set_unchecked(2, 1);
-      frame.set_unchecked(3, 2);
-      frame.set_unchecked(4, 3);
-      frame.set_unchecked(5, 4);
-      frame.set_unchecked(6, 105);
-      frame.set_unchecked(7, 103);
-      frame.set_unchecked(8, 111);
-      frame.set_unchecked(9, 104);
-      frame.set_unchecked(10, 110);
-      stream.send_bytes(frame.raw_data(), 11);
+      var message = String(alloc, "hello");
+      var frame = masked_text_frame(alloc, "hello", false);
+      stream.send_bytes(frame.raw_data(), frame.size());
       var echoed = ContiguousBuffer<u8>(alloc, 16);
       var echoed_len: i64 = stream.recv(echoed);
-      std.test.assert_eq(echoed_len, 7);
-      std.test.assert_eq(echoed.get_unchecked(0), 129);
-      std.test.assert_eq(echoed.get_unchecked(1), 5);
+      std.test.assert_eq(echoed_len, WS_HEADER_BYTES + message.length());
+      std.test.assert_eq(echoed.get_unchecked(0), WS_FIN_FLAG | WS_TEXT_OPCODE);
+      std.test.assert_eq(echoed.get_unchecked(1), _convert<u8>(message.length()));
       var text = String(alloc, "");
-      for (var ti: i64 = 2; ti < 7; ti = ti + 1) {
-        text.append_char(echoed.get_unchecked(ti));
+      for (var i: i64 = WS_HEADER_BYTES; i < echoed_len; i = i + 1) {
+        text.append_char(echoed.get_unchecked(i));
       }
-      std.test.assert(text.equals_literal("hello"), "message echoed");
+      std.test.assert(text.equals(message), "message echoed");
       stream.close();
     }
 
@@ -263,33 +296,22 @@ module hello_handler {
         head.append_char(reply.get_unchecked(hi));
       }
       std.test.assert(head.contains("permessage-deflate; server_no_context_takeover; client_no_context_takeover"), "compression negotiated");
-      var compressed = ContiguousBuffer<u8>(alloc, 7);
-      compressed.set_unchecked(0, 202);
-      compressed.set_unchecked(1, 72);
-      compressed.set_unchecked(2, 205);
-      compressed.set_unchecked(3, 201);
-      compressed.set_unchecked(4, 201);
-      compressed.set_unchecked(5, 7);
-      compressed.set_unchecked(6, 0);
-      var frame = ContiguousBuffer<u8>(alloc, 13);
-      frame.set_unchecked(0, 193);
-      frame.set_unchecked(1, 135);
-      frame.set_unchecked(2, 1);
-      frame.set_unchecked(3, 2);
-      frame.set_unchecked(4, 3);
-      frame.set_unchecked(5, 4);
-      for (var i: i64 = 0; i < 7; i = i + 1) {
-        frame.set_unchecked(6 + i, compressed.get_unchecked(i) ^ frame.get_unchecked(2 + (i % 4)));
-      }
-      stream.send_bytes(frame.raw_data(), 13);
+      var message = String(alloc, "hello");
+      var frame = masked_text_frame(alloc, "hello", true);
+      stream.send_bytes(frame.raw_data(), frame.size());
       var echoed = ContiguousBuffer<u8>(alloc, 32);
       var echoed_len: i64 = stream.recv(echoed);
-      std.test.assert_eq(echoed_len, 9);
-      std.test.assert_eq(echoed.get_unchecked(0), 193);
-      std.test.assert_eq(echoed.get_unchecked(1), 7);
-      for (var j: i64 = 0; j < 7; j = j + 1) {
-        std.test.assert_eq(echoed.get_unchecked(2 + j), compressed.get_unchecked(j));
+      std.test.assert_eq(echoed.get_unchecked(0), WS_FIN_FLAG | WS_COMPRESSED_FLAG | WS_TEXT_OPCODE);
+      var compressed_len: i64 = _convert<i64>(echoed.get_unchecked(1));
+      std.test.assert_eq(echoed_len, WS_HEADER_BYTES + compressed_len);
+      var compressed = ByteBuffer(alloc, compressed_len);
+      for (var i: i64 = WS_HEADER_BYTES; i < echoed_len; i = i + 1) {
+        compressed.append_byte(echoed.get_unchecked(i));
       }
+      var decoded = ByteBuffer(alloc, message.length());
+      std.test.assert_eq(websocket_inflate(alloc, compressed, 0, compressed.readable_len(), message.length(), decoded), 0);
+      var text: String = decoded.range_text(alloc, 0, decoded.readable_len());
+      std.test.assert(text.equals(message), "compressed message echoed");
       stream.close();
     }
 
