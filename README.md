@@ -16,17 +16,17 @@ Supports **x86_64 Linux** only
 
 ## Key Features
 
-- **Fast.** An epoll loop per worker thread and no locks on the request path:
+- ⚡ **Fast.** An epoll loop per worker thread and no locks on the request path:
   ~67k requests/s on loopback, ~1.6 GB/s on large files.
-- **Static files, done properly.** ETag and `Last-Modified` revalidation, index
+- 📁 **Static files, done properly.** ETag and `Last-Modified` revalidation, index
   files, directory redirects, MIME types, `Cache-Control`, and traversal
   protection.
-- **HTTPS included.** TLS 1.2+ with certificate and key from PEM files.
-- **Complete HTTP/1.1.** Keep-alive, pipelining, chunked bodies in both
+- 🔒 **HTTPS included.** TLS 1.2+ with certificate and key from PEM files.
+- 🌐 **Complete HTTP/1.1.** Keep-alive, pipelining, chunked bodies in both
   directions, `Expect: 100-continue`, HEAD, and streamed file responses.
-- **Hard to knock over.** Header and body size limits, per-state timeouts,
+- 🛡️ **Hard to knock over.** Header and body size limits, per-state timeouts,
   request smuggling refused, and graceful shutdown on `SIGINT`/`SIGTERM`.
-- **A binary or a library.** Serve a directory with one static binary and no
+- 📦 **A binary or a library.** Serve a directory with one static binary and no
   dependencies, or link the library and write your own handler.
 
 ## Install and try it
