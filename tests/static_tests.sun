@@ -1,0 +1,238 @@
+// static_tests.sun - Path normalization and the StaticFiles handler.
+
+public module sun_serve {
+  module static_tests {
+    using std;
+    using std.io;
+    using sun_serve.tests;
+
+    // A scratch directory under /tmp, removed with its files on drop.
+    class TempDir {
+      public var path: String;
+      var alloc: HeapAllocator;
+
+      init(allocator: ref HeapAllocator, tag: static_ptr<u8>) throws IError {
+        this.alloc = allocator.copy();
+        var p = String(allocator, "/tmp/sun_serve_test_");
+        p.append_literal(tag);
+        p.append_char(b'_');
+        p.append(std.process.pid());
+        this.path = p;
+        make_dir(this.path, 493);
+      }
+
+      // A path inside the directory.
+      public method file(name: static_ptr<u8>) String {
+        var p = this.path.clone(this.alloc);
+        p.append_char(b'/');
+        p.append_literal(name);
+        return p;
+      }
+
+      // Write a file inside the directory.
+      public method write(name: static_ptr<u8>, contents: static_ptr<u8>) void throws IError {
+        var p: String = this.file(name);
+        var text = String(this.alloc, contents);
+        write_string(p, text);
+      }
+
+      deinit() {
+        try {
+          var entries = read_dir(this.alloc, this.path);
+          for (var i: i64 = 0; i < entries.size(); i = i + 1) {
+            var entry_path = this.path.clone(this.alloc);
+            entry_path.append_char(b'/');
+            entry_path.append(entries.get_unchecked(i).name());
+            if (entries.get_unchecked(i).is_dir()) {
+              var inner = read_dir(this.alloc, entry_path);
+              for (var j: i64 = 0; j < inner.size(); j = j + 1) {
+                var inner_path = entry_path.clone(this.alloc);
+                inner_path.append_char(b'/');
+                inner_path.append(inner.get_unchecked(j).name());
+                remove_file(inner_path);
+              }
+              remove_dir(entry_path);
+            } else {
+              remove_file(entry_path);
+            }
+          }
+          remove_dir(this.path);
+        } catch (e: IError) {}
+      }
+    }
+
+    // Normalize and return the text, or "NONE" when rejected.
+    function norm(text: static_ptr<u8>) String {
+      var alloc = make_heap_allocator();
+      var input = String(alloc, text);
+      var none = String(alloc, "NONE");
+      var out: String = match normalize_path(alloc, input) {
+        Option.Some(p) => p,
+        Option.None => none
+      };
+      return out;
+    }
+
+    test_function normalize_keeps_safe_paths() {
+      std.test.assert(norm("/").equals_literal("/"), "root");
+      std.test.assert(norm("/a/b.html").equals_literal("/a/b.html"), "plain");
+      std.test.assert(norm("/a//b/./c/").equals_literal("/a/b/c"), "empty and dot segments");
+      std.test.assert(norm("/a/b/../c").equals_literal("/a/c"), "dotdot pops");
+      std.test.assert(norm("/a/../").equals_literal("/"), "pop to root");
+      std.test.assert(norm("/..a/b..").equals_literal("/..a/b.."), "dots inside names");
+    }
+
+    test_function normalize_rejects_escapes() {
+      std.test.assert(norm("/../etc/passwd").equals_literal("NONE"), "escape at root");
+      std.test.assert(norm("/a/../../x").equals_literal("NONE"), "escape after pop");
+      var alloc = make_heap_allocator();
+      var ctl = String(alloc, "/a");
+      ctl.append_char(1);
+      var rejected: bool = match normalize_path(alloc, ctl) {
+        Option.Some(p) => false,
+        Option.None => true
+      };
+      std.test.assert(rejected, "control byte rejected");
+    }
+
+    // A static server over a temp directory with a few files.
+    class StaticServer {
+      public var dir: TempDir;
+      public var server: Server;
+      public var port: i32;
+
+      init(alloc: ref HeapAllocator, tag: static_ptr<u8>) throws IError {
+        this.dir = TempDir(alloc, tag);
+        this.dir.write("index.html", "<h1>home</h1>");
+        this.dir.write("style.css", "body{}");
+        this.dir.write("data.bin", "binary");
+        var sub: String = this.dir.file("sub");
+        make_dir(sub, 493);
+        var sub_index = sub.clone(alloc);
+        sub_index.append("/index.html");
+        var sub_text = String(alloc, "sub index");
+        write_string(sub_index, sub_text);
+        var big: String = this.dir.file("big.txt");
+        var big_text = String(alloc, "");
+        for (var i: i64 = 0; i < 300000; i = i + 1) {
+          big_text.append_char(b'a' + _convert<u8>(i % 26));
+        }
+        write_string(big, big_text);
+
+        var cfg = Config(alloc);
+        cfg.add_listen(ipv4_loopback(), 0);
+        cfg.access_log = false;
+        cfg.log_level = LogLevel.Error;
+        cfg.timeouts.tick_ms = 50;
+        cfg.timeouts.drain_ms = 500;
+        var opts = StaticOptions(alloc);
+        this.server = Server(alloc, cfg, static_handlers(alloc, this.dir.path, opts, 2));
+        this.server.start();
+        this.port = this.server.port(0);
+      }
+    }
+
+    test_function serves_files_with_types_and_validators() {
+      var alloc = make_heap_allocator();
+      var ss = StaticServer(alloc, "types");
+      var c = RawClient(alloc, ss.port);
+      c.send("GET /style.css HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert(r.body.equals_literal("body{}"), "css body");
+      std.test.assert(r.has_header("content-type: text/css; charset=utf-8"), "css type with charset");
+      std.test.assert(r.has_header("etag: \""), "etag present");
+      std.test.assert(r.has_header("last-modified: "), "last-modified present");
+
+      c.send("GET /data.bin HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r2: ClientResponse = c.read_response();
+      std.test.assert(r2.has_header("content-type: application/octet-stream"), "unknown extension");
+
+      // Conditional request with the ETag we were given.
+      var etag_start: i64 = match r.head.find("ETag: ") {
+        Option.Some(v) => v + 6,
+        Option.None => -1
+      };
+      std.test.assert(etag_start > 0, "etag header found");
+      var etag = String(alloc, "");
+      var k: i64 = etag_start;
+      while (k < r.head.length() and r.head.at(k) != b'\r') {
+        etag.append_char(r.head.at(k));
+        k = k + 1;
+      }
+      var cond = String(alloc, "GET /style.css HTTP/1.1\r\nHost: a\r\nIf-None-Match: ");
+      cond.append(etag);
+      cond.append("\r\n\r\n");
+      c.send_string(cond);
+      var r3: ClientResponse = c.read_response();
+      std.test.assert_eq(r3.status, 304);
+      std.test.assert_eq(r3.body.length(), 0);
+      c.close();
+    }
+
+    test_function directories_index_redirect_and_not_found() {
+      var alloc = make_heap_allocator();
+      var ss = StaticServer(alloc, "dirs");
+      var c = RawClient(alloc, ss.port);
+      c.send("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert(r.body.equals_literal("<h1>home</h1>"), "root index");
+      std.test.assert(r.has_header("content-type: text/html; charset=utf-8"), "html type");
+
+      c.send("GET /sub?x=1 HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r2: ClientResponse = c.read_response();
+      std.test.assert_eq(r2.status, 301);
+      std.test.assert(r2.has_header("location: /sub/?x=1"), "redirect adds slash and keeps query");
+
+      c.send("GET /sub/ HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r3: ClientResponse = c.read_response();
+      std.test.assert_eq(r3.status, 200);
+      std.test.assert(r3.body.equals_literal("sub index"), "sub index");
+
+      c.send("GET /missing.txt HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r4: ClientResponse = c.read_response();
+      std.test.assert_eq(r4.status, 404);
+
+      c.send("GET /../../etc/passwd HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r5: ClientResponse = c.read_response();
+      std.test.assert_eq(r5.status, 404);
+
+      c.send("GET /%2e%2e/%2e%2e/etc/passwd HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r6: ClientResponse = c.read_response();
+      std.test.assert_eq(r6.status, 404);
+
+      c.send("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\n\r\n");
+      var r7: ClientResponse = c.read_response();
+      std.test.assert_eq(r7.status, 405);
+      std.test.assert(r7.has_header("allow: get, head"), "allow header");
+      c.close();
+    }
+
+    test_function large_file_is_streamed_intact() {
+      var alloc = make_heap_allocator();
+      var ss = StaticServer(alloc, "big");
+      var c = RawClient(alloc, ss.port);
+      c.send("GET /big.txt HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert_eq(r.body.length(), 300000);
+      var ok: bool = true;
+      for (var i: i64 = 0; i < r.body.length(); i = i + 1) {
+        if (r.body.at(i) != b'a' + _convert<u8>(i % 26)) {
+          ok = false;
+          break;
+        }
+      }
+      std.test.assert(ok, "streamed bytes match");
+      // HEAD declares the size without a body, and the connection stays usable.
+      c.send("HEAD /big.txt HTTP/1.1\r\nHost: a\r\n\r\nGET /style.css HTTP/1.1\r\nHost: a\r\n\r\n");
+      var h: ClientResponse = c.read_head_response();
+      std.test.assert_eq(h.status, 200);
+      std.test.assert(h.has_header("content-length: 300000"), "head declares length");
+      var after: ClientResponse = c.read_response();
+      std.test.assert(after.body.equals_literal("body{}"), "connection reusable after HEAD");
+      c.close();
+    }
+  }
+}

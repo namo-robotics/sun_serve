@@ -1,0 +1,106 @@
+// transport.sun - A socket that may or may not be wrapped in TLS
+//
+// The connection state machine talks to a Transport and never learns which
+// kind it has. Both kinds answer with a byte count or one of the IO_* values
+// from net.sun, and a TLS transport may ask for write readiness during a read
+// (or the reverse) while the handshake or a renegotiation-free record exchange
+// is in progress.
+
+public module sun_serve {
+  using std;
+
+  public class Transport {
+    var fd: i32;  // 0 = none
+    var tls: TlsSession;
+
+    // Start with no socket.
+    init() {
+      this.fd = 0;
+      this.tls = TlsSession();
+    }
+
+    // Close on drop.
+    deinit() {
+      this.close();
+    }
+
+    // Take over a connected, nonblocking socket. For TLS the acceptor must be
+    // ready; returns false if a session could not be created.
+    method open(fd: i32, tls: bool, acceptor: ref TlsAcceptor) bool {
+      this.close();
+      this.fd = fd;
+      if (tls) {
+        if (not this.tls.open(acceptor, fd)) {
+          return false;
+        }
+      }
+      return true;
+    }
+
+    // Report whether the socket is open.
+    public const method is_open() bool {
+      return this.fd > 0;
+    }
+
+    // Report whether the connection speaks TLS.
+    public const method is_tls() bool {
+      return this.tls.is_active();
+    }
+
+    // The socket descriptor.
+    public const method get_fd() i32 {
+      return this.fd;
+    }
+
+    // Run the TLS handshake as far as the socket allows. Plain sockets are
+    // ready immediately. Returns zero when done or an IO_* value.
+    method handshake() i64 {
+      if (this.tls.is_active()) {
+        return this.tls.handshake();
+      }
+      return 0;
+    }
+
+    // Read up to len bytes.
+    method read(buf: raw_ptr<u8>, len: i64) i64 {
+      if (this.tls.is_active()) {
+        return this.tls.read(buf, len);
+      }
+      return socket_read(this.fd, buf, len);
+    }
+
+    // Write up to len bytes.
+    method write(buf: raw_ptr<u8>, len: i64) i64 {
+      if (this.tls.is_active()) {
+        return this.tls.write(buf, len);
+      }
+      return socket_write(this.fd, buf, len);
+    }
+
+    // Decrypted bytes waiting inside TLS that epoll cannot see.
+    method pending() i64 {
+      if (this.tls.is_active()) {
+        return this.tls.pending();
+      }
+      return 0;
+    }
+
+    // The negotiated ALPN protocol, if TLS chose one.
+    method alpn(out: ref String) bool {
+      if (this.tls.is_active()) {
+        return this.tls.alpn(out);
+      }
+      return false;
+    }
+
+    // Shut the session down and close the socket.
+    public method close() void {
+      if (this.fd > 0) {
+        this.tls.shutdown();
+        unsafe { __shutdown(this.fd, SHUT_RDWR); };
+        close_fd(this.fd);
+        this.fd = 0;
+      }
+    }
+  }
+}

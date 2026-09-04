@@ -1,0 +1,101 @@
+// date.sun - The IMF-fixdate format HTTP uses for Date and Last-Modified
+//
+// Formatting is done by hand from UTC calendar fields so it is locale-proof
+// and needs no C formatting call on the hot path.
+
+public module sun_serve {
+  using std;
+  using std.time;
+
+  // Append two decimal digits with a leading zero.
+  function append_two_digits(out: ref String, value: i32) void {
+    if (value < 10) {
+      out.append_char(b'0');
+    }
+    out.append(value);
+  }
+
+  // Day name for a weekday index where zero is Sunday.
+  function day_name(weekday: i32) static_ptr<u8> {
+    return match weekday {
+      0 => "Sun",
+      1 => "Mon",
+      2 => "Tue",
+      3 => "Wed",
+      4 => "Thu",
+      5 => "Fri",
+      _ => "Sat"
+    };
+  }
+
+  // Month name for a one-based month.
+  function month_name(month: i32) static_ptr<u8> {
+    return match month {
+      1 => "Jan",
+      2 => "Feb",
+      3 => "Mar",
+      4 => "Apr",
+      5 => "May",
+      6 => "Jun",
+      7 => "Jul",
+      8 => "Aug",
+      9 => "Sep",
+      10 => "Oct",
+      11 => "Nov",
+      _ => "Dec"
+    };
+  }
+
+  // Append a Unix time as e.g. "Sun, 06 Nov 1994 08:49:37 GMT".
+  public function append_http_date(out: ref String, unix_secs: i64) void {
+    var dt: DateTime = convert_to_utc(unix_secs);
+    out.append(day_name(dt.weekday));
+    out.append(", ");
+    append_two_digits(out, dt.day);
+    out.append_char(b' ');
+    out.append(month_name(dt.month));
+    out.append_char(b' ');
+    out.append(dt.year);
+    out.append_char(b' ');
+    append_two_digits(out, dt.hour);
+    out.append_char(b':');
+    append_two_digits(out, dt.minute);
+    out.append_char(b':');
+    append_two_digits(out, dt.second);
+    out.append(" GMT");
+  }
+
+  // A formatted Date header value, rebuilt at most once per second.
+  public class DateCache {
+    var text: String;
+    var second: i64;
+
+    // Start with the current time formatted.
+    init(alloc: const ref HeapAllocator) {
+      this.text = String(alloc, "");
+      this.second = -1i64;
+      this.refresh();
+    }
+
+    // Reformat when the clock has moved to a new second.
+    public method refresh() void {
+      var now: i64 = read_unix_time();
+      if (now == this.second) {
+        return;
+      }
+      this.second = now;
+      this.text.clear();
+      append_http_date(this.text, now);
+    }
+
+    // The current formatted value.
+    public method value() ref String {
+      return this.text;
+    }
+
+    // The Unix time the value was formatted for.
+    public const method unix_secs() i64 {
+      return this.second;
+    }
+  }
+}

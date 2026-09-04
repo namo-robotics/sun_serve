@@ -1,0 +1,91 @@
+// openssl_server.sun - The server-side OpenSSL symbols sun_serve calls
+//
+// The tls bundle only binds the client half of libssl, but it carries the
+// whole library, so the server half is declared here and links against the
+// same archives. Declarations mirror the bundle's openssl.sun: module-private,
+// opaque handles as raw_ptr<u8>, macros expressed through SSL_CTX_ctrl.
+
+public module sun_serve {
+  using std;
+
+  // --- context ------------------------------------------------------------
+
+  extern "C" function ssl_tls_server_method() raw_ptr<u8> as "TLS_server_method";
+  extern "C" function ssl_ctx_new(method: raw_ptr<u8>) raw_ptr<u8> as "SSL_CTX_new";
+  extern "C" function ssl_ctx_free(ctx: raw_ptr<u8>) void as "SSL_CTX_free";
+  extern "C" function ssl_ctx_up_ref(ctx: raw_ptr<u8>) i32 as "SSL_CTX_up_ref";
+  extern "C" function ssl_ctx_use_certificate_chain_file(ctx: raw_ptr<u8>, file: raw_ptr<u8>) i32 as "SSL_CTX_use_certificate_chain_file";
+  extern "C" function ssl_ctx_use_privatekey_file(ctx: raw_ptr<u8>, file: raw_ptr<u8>, kind: i32) i32 as "SSL_CTX_use_PrivateKey_file";
+  extern "C" function ssl_ctx_check_private_key(ctx: raw_ptr<u8>) i32 as "SSL_CTX_check_private_key";
+  extern "C" function ssl_ctx_ctrl(ctx: raw_ptr<u8>, cmd: i32, larg: i64, parg: raw_ptr<u8>) i64 as "SSL_CTX_ctrl";
+  extern "C" function ssl_ctx_set_options(ctx: raw_ptr<u8>, options: u64) u64 as "SSL_CTX_set_options";
+  extern "C" function ssl_ctx_set_alpn_select_cb(ctx: raw_ptr<u8>, cb: function (raw_ptr<u8>, raw_ptr<raw_ptr<u8>>, raw_ptr<u8>, raw_ptr<u8>, u32, raw_ptr<u8>) i32, arg: raw_ptr<u8>) void as "SSL_CTX_set_alpn_select_cb";
+  extern "C" function ssl_select_next_proto(out: raw_ptr<raw_ptr<u8>>, outlen: raw_ptr<u8>, server: raw_ptr<u8>, server_len: u32, client: raw_ptr<u8>, client_len: u32) i32 as "SSL_select_next_proto";
+
+  // --- connection ----------------------------------------------------------
+
+  extern "C" function ssl_new(ctx: raw_ptr<u8>) raw_ptr<u8> as "SSL_new";
+  extern "C" function ssl_free(ssl: raw_ptr<u8>) void as "SSL_free";
+  extern "C" function ssl_set_fd(ssl: raw_ptr<u8>, fd: i32) i32 as "SSL_set_fd";
+  extern "C" function ssl_set_accept_state(ssl: raw_ptr<u8>) void as "SSL_set_accept_state";
+  extern "C" function ssl_do_handshake(ssl: raw_ptr<u8>) i32 as "SSL_do_handshake";
+  extern "C" function ssl_read(ssl: raw_ptr<u8>, buf: raw_ptr<u8>, num: i32) i32 as "SSL_read";
+  extern "C" function ssl_write(ssl: raw_ptr<u8>, buf: raw_ptr<u8>, num: i32) i32 as "SSL_write";
+  extern "C" function ssl_shutdown(ssl: raw_ptr<u8>) i32 as "SSL_shutdown";
+  extern "C" function ssl_set_quiet_shutdown(ssl: raw_ptr<u8>, mode: i32) void as "SSL_set_quiet_shutdown";
+  extern "C" function ssl_get_error(ssl: raw_ptr<u8>, ret: i32) i32 as "SSL_get_error";
+  extern "C" function ssl_pending(ssl: raw_ptr<u8>) i32 as "SSL_pending";
+  extern "C" function ssl_get_version(ssl: raw_ptr<u8>) raw_ptr<u8> as "SSL_get_version";
+  extern "C" function ssl_get0_alpn_selected(ssl: raw_ptr<u8>, data: raw_ptr<raw_ptr<u8>>, len: raw_ptr<u32>) void as "SSL_get0_alpn_selected";
+
+  // --- errors -------------------------------------------------------------
+
+  extern "C" function ssl_err_get_error() u64 as "ERR_get_error";
+  extern "C" function ssl_err_peek_error() u64 as "ERR_peek_error";
+  extern "C" function ssl_err_clear_error() void as "ERR_clear_error";
+  extern "C" function ssl_err_error_string_n(code: u64, buf: raw_ptr<u8>, len: i64) void as "ERR_error_string_n";
+
+  // --- constants (ABI-stable OpenSSL values) ------------------------------
+
+  const SSL_FILETYPE_PEM: i32 = 1;
+  const SSL_CTRL_SET_MIN_PROTO_VERSION: i32 = 123;
+  const TLS1_2_VERSION: i64 = 771;
+  const SSL_CTRL_SET_SESS_CACHE_MODE: i32 = 44;
+  const SSL_SESS_CACHE_OFF: i64 = 0;
+  const SSL_SESS_CACHE_SERVER: i64 = 2;
+  const SSL_CTRL_MODE: i32 = 33;
+  const SSL_MODE_ENABLE_PARTIAL_WRITE: i64 = 1;
+  const SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER: i64 = 2;
+  const SSL_MODE_RELEASE_BUFFERS: i64 = 16;
+  const SSL_OP_NO_COMPRESSION: u64 = 131072;
+  const SSL_OP_CIPHER_SERVER_PREFERENCE: u64 = 4194304;
+  const SSL_OP_NO_RENEGOTIATION: u64 = 1073741824;
+  const SSL_ERROR_SSL: i32 = 1;
+  const SSL_ERROR_WANT_READ: i32 = 2;
+  const SSL_ERROR_WANT_WRITE: i32 = 3;
+  const SSL_ERROR_SYSCALL: i32 = 5;
+  const SSL_ERROR_ZERO_RETURN: i32 = 6;
+  const SSL_TLSEXT_ERR_OK: i32 = 0;
+  const SSL_TLSEXT_ERR_NOACK: i32 = 3;
+  const OPENSSL_NPN_NEGOTIATED: i32 = 1;
+  // ERR_GET_REASON(code) == code & this mask (OpenSSL 3.x packing)
+  const OPENSSL_REASON_MASK: u64 = 8388607;
+  // SSL_R_UNEXPECTED_EOF_WHILE_READING
+  const SSL_REASON_UNEXPECTED_EOF: u64 = 294;
+
+  // The queued OpenSSL error as text, prefixed by context.
+  function take_openssl_error(alloc: const ref HeapAllocator, context: static_ptr<u8>) String {
+    var out = String(alloc, context);
+    var code: u64 = unsafe { ssl_err_get_error(); };
+    if (code == 0) {
+      return out;
+    }
+    var buf = ContiguousBuffer<u8>(alloc, 256);
+    buf.fill(0);
+    unsafe { ssl_err_error_string_n(code, buf.raw_data(), buf.size()); };
+    out.append(": ");
+    var text: String = from_c_str(alloc, buf.raw_data());
+    out.append(text);
+    return out;
+  }
+}

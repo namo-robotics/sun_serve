@@ -1,0 +1,87 @@
+// cli_tests.sun - Command-line parsing.
+
+module sun_serve_cli {
+  module cli_tests {
+    using std;
+    using sun_serve;
+
+    // Build an argument vector from literals.
+    function argv(alloc: ref HeapAllocator, a: static_ptr<u8>, b: static_ptr<u8>, c: static_ptr<u8>, d: static_ptr<u8>) Vec<String> {
+      var v = Vec<String>(alloc, 8);
+      v.push(String(alloc, "sun_serve"));
+      if (a.length() > 0) {
+        v.push(String(alloc, a));
+      }
+      if (b.length() > 0) {
+        v.push(String(alloc, b));
+      }
+      if (c.length() > 0) {
+        v.push(String(alloc, c));
+      }
+      if (d.length() > 0) {
+        v.push(String(alloc, d));
+      }
+      return v;
+    }
+
+    test_function defaults_when_no_flags() {
+      var alloc = make_heap_allocator();
+      var args = argv(alloc, "", "", "", "");
+      var cli: Cli = parse_cli(alloc, args);
+      std.test.assert_eq(cli.error.length(), 0);
+      std.test.assert_eq(cli.config.listen.size(), 1);
+      std.test.assert_eq(cli.config.listen.get_unchecked(0).port, 8080);
+      std.test.assert(not cli.config.listen.get_unchecked(0).tls, "plain by default");
+      std.test.assert(cli.workers >= 1, "workers from cpu count");
+      std.test.assert(cli.root.equals_literal("."), "root defaults to cwd");
+    }
+
+    test_function listen_and_values_in_both_forms() {
+      var alloc = make_heap_allocator();
+      var args = argv(alloc, "--listen=localhost:9000", "--workers", "3", "--no-access-log");
+      var cli: Cli = parse_cli(alloc, args);
+      std.test.assert_eq(cli.error.length(), 0);
+      std.test.assert_eq(cli.config.listen.get_unchecked(0).port, 9000);
+      std.test.assert_eq(cli.config.listen.get_unchecked(0).addr.octet(0), 127);
+      std.test.assert_eq(cli.workers, 3);
+      std.test.assert(not cli.config.access_log, "access log off");
+    }
+
+    test_function sizes_and_timeouts() {
+      var alloc = make_heap_allocator();
+      var args = argv(alloc, "--max-body=2m", "--max-header", "32k", "--keep-alive-timeout=7");
+      var cli: Cli = parse_cli(alloc, args);
+      std.test.assert_eq(cli.error.length(), 0);
+      std.test.assert_eq(cli.config.limits.max_body_bytes, 2097152);
+      std.test.assert_eq(cli.config.limits.max_header_bytes, 32768);
+      std.test.assert_eq(cli.config.timeouts.keep_alive_ms, 7000);
+    }
+
+    test_function tls_requires_cert_and_key() {
+      var alloc = make_heap_allocator();
+      var args = argv(alloc, "--tls-listen", "*:8443", "", "");
+      var cli: Cli = parse_cli(alloc, args);
+      std.test.assert(cli.error.contains("--cert"), "error mentions the missing flags");
+      var ok = argv(alloc, "--tls-listen=*:8443", "--cert=c.pem", "--key=k.pem", "");
+      var cli2: Cli = parse_cli(alloc, ok);
+      std.test.assert_eq(cli2.error.length(), 0);
+      std.test.assert(cli2.config.has_tls, "tls configured");
+      std.test.assert(cli2.config.tls.cert_path.equals_literal("c.pem"), "cert path");
+      std.test.assert_eq(cli2.config.listen.get_unchecked(0).addr.octet(0), 0);
+    }
+
+    test_function rejects_bad_input() {
+      var alloc = make_heap_allocator();
+      var a = argv(alloc, "--listen", "nonsense", "", "");
+      std.test.assert(parse_cli(alloc, a).error.contains("HOST:PORT"), "bad endpoint");
+      var b = argv(alloc, "--bogus", "", "", "");
+      std.test.assert(parse_cli(alloc, b).error.contains("unknown"), "unknown flag");
+      var c = argv(alloc, "--workers", "", "", "");
+      std.test.assert(parse_cli(alloc, c).error.contains("needs a value"), "missing value");
+      var d = argv(alloc, "--log-level=loud", "", "", "");
+      std.test.assert(parse_cli(alloc, d).error.contains("expects"), "bad level");
+      var e = argv(alloc, "--help", "", "", "");
+      std.test.assert(parse_cli(alloc, e).show_help, "help flag");
+    }
+  }
+}

@@ -1,0 +1,593 @@
+// connection.sun - One client connection's state machine
+//
+// A Connection owns a transport and the buffers for the request being read
+// and the response being written. The worker calls on_event() whenever epoll
+// reports the socket ready; the connection then runs as far as it can without
+// blocking and records which readiness it needs next in want(). Every request
+// on a keep-alive connection passes through the same states in turn.
+
+public module sun_serve {
+  using std;
+
+  enum ConnState { Vacant, Handshaking, ReadingHead, ReadingBody, Writing, Closed }
+
+  // The application protocol on a connection, chosen by ALPN after the TLS
+  // handshake. HTTP/2 is the seam for a future framing layer.
+  public enum Protocol { Http1, Http2 }
+
+  // How the request body is framed.
+  const BODY_NONE: i32 = 0;
+  const BODY_LENGTH: i32 = 1;
+  const BODY_CHUNKED: i32 = 2;
+
+  // Chunked decoder states.
+  const CHUNK_SIZE: i32 = 0;
+  const CHUNK_DATA: i32 = 1;
+  const CHUNK_DATA_END: i32 = 2;
+  const CHUNK_TRAILERS: i32 = 3;
+  const CHUNK_DONE: i32 = 4;
+
+  const READ_CHUNK: i64 = 16384;
+  const FILE_CHUNK: i64 = 65536;
+  const IDLE_BUFFER_CAP: i64 = 65536;
+  const MAX_CHUNK_SIZE_LINE: i64 = 64;
+
+  public class Connection {
+    var transport: Transport;
+    var state: ConnState;
+    var proto: Protocol;
+    var interest: u32;  // the mask the worker registered last
+    var want_: u32;  // the mask the connection needs now
+    var rbuf: ByteBuffer;  // inbound bytes; the current request stays put
+    var body_buf: ByteBuffer;  // decoded chunked body
+    var wbuf: ByteBuffer;  // serialized response
+    var request: Request;
+    var response: Response;
+    var keep_alive: bool;
+    var send_body: bool;
+    var body_kind: i32;
+    var raw_body_len: i64;  // bytes after the head belonging to this request
+    var chunk_state: i32;
+    var chunk_remaining: i64;
+    var continue_sent: bool;
+    var peer_closed: bool;
+    var served: i64;
+    var deadline_ms: i64;
+    var started_ms: i64;
+    var bytes_sent: i64;
+    var alloc: HeapAllocator;
+
+    // Build a vacant connection with its buffers ready.
+    init(allocator: const ref HeapAllocator) {
+      this.alloc = allocator.copy();
+      this.transport = Transport();
+      this.state = ConnState.Vacant;
+      this.proto = Protocol.Http1;
+      this.interest = 0;
+      this.want_ = 0;
+      this.rbuf = ByteBuffer(allocator, 8192);
+      this.body_buf = ByteBuffer(allocator, 16);
+      this.wbuf = ByteBuffer(allocator, 16384);
+      this.request = Request(allocator);
+      this.response = Response(allocator);
+      this.keep_alive = false;
+      this.send_body = true;
+      this.body_kind = BODY_NONE;
+      this.raw_body_len = 0;
+      this.chunk_state = CHUNK_SIZE;
+      this.chunk_remaining = 0;
+      this.continue_sent = false;
+      this.peer_closed = false;
+      this.served = 0;
+      this.deadline_ms = 0;
+      this.started_ms = 0;
+      this.bytes_sent = 0;
+    }
+
+    // Take over an accepted socket. For TLS the handshake starts on the first
+    // event. Returns false if a TLS session could not be created.
+    public method open(fd: i32, tls: bool, acceptor: ref TlsAcceptor, now_ms: i64, timeouts: const ref Timeouts) bool {
+      if (not this.transport.open(fd, tls, acceptor)) {
+        return false;
+      }
+      this.interest = 0;
+      this.want_ = EPOLLIN;
+      this.served = 0;
+      this.peer_closed = false;
+      this.proto = Protocol.Http1;
+      this.rbuf.clear();
+      this.wbuf.clear();
+      this.body_buf.clear();
+      if (tls) {
+        this.state = ConnState.Handshaking;
+        this.deadline_ms = now_ms + timeouts.handshake_ms;
+      } else {
+        this.state = ConnState.ReadingHead;
+        this.deadline_ms = now_ms + timeouts.header_ms;
+      }
+      this.started_ms = now_ms;
+      return true;
+    }
+
+    // Report whether the socket is still open.
+    public const method is_open() bool {
+      return this.transport.is_open();
+    }
+
+    // The socket descriptor.
+    public const method get_fd() i32 {
+      return this.transport.get_fd();
+    }
+
+    // The readiness mask the connection needs next.
+    public const method want() u32 {
+      return this.want_;
+    }
+
+    // The readiness mask registered with epoll.
+    public const method registered() u32 {
+      return this.interest;
+    }
+
+    // Record the mask the worker registered.
+    public method set_registered(mask: u32) void {
+      this.interest = mask;
+    }
+
+    // Report whether the connection is between requests with nothing
+    // buffered, so it can be dropped at shutdown without losing anything.
+    public const method is_idle() bool {
+      return this.state == ConnState.ReadingHead and this.rbuf.is_empty() and this.served > 0;
+    }
+
+    // Report whether the connection is sending a response.
+    public const method is_writing() bool {
+      return this.state == ConnState.Writing;
+    }
+
+    // Report whether the current state's deadline has passed.
+    public const method expired(now_ms: i64) bool {
+      return this.state != ConnState.Vacant and now_ms >= this.deadline_ms;
+    }
+
+    // Close the socket and return to the vacant state, releasing memory a
+    // large request may have grown.
+    public method close() void {
+      this.transport.close();
+      this.state = ConnState.Vacant;
+      this.want_ = 0;
+      this.interest = 0;
+      this.response.reset();
+      this.request.reset();
+      this.rbuf.clear();
+      this.wbuf.clear();
+      this.body_buf.clear();
+      this.rbuf.shrink_to(IDLE_BUFFER_CAP);
+      this.wbuf.shrink_to(IDLE_BUFFER_CAP);
+      this.body_buf.shrink_to(16);
+    }
+
+    // Run the state machine for a readiness event. peer_hup says the peer
+    // closed its side; draining says the server is shutting down and no
+    // further requests should be accepted on this connection.
+    public method on_event(mask: u32, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) void {
+      if ((mask & EPOLLERR) != 0) {
+        this.close();
+        return;
+      }
+      if ((mask & (EPOLLHUP | EPOLLRDHUP)) != 0) {
+        this.peer_closed = true;
+      }
+      this.drive(handler, date, log, cfg, now_ms, draining);
+    }
+
+    // Advance through as many states as the socket allows.
+    method drive(handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) void {
+      while (true) {
+        if (this.state == ConnState.Handshaking) {
+          var r: i64 = this.transport.handshake();
+          if (r == 0) {
+            if (not this.select_protocol()) {
+              log.log(LogLevel.Debug, "closing connection: negotiated protocol not supported");
+              this.close();
+              return;
+            }
+            this.state = ConnState.ReadingHead;
+            this.deadline_ms = now_ms + cfg.timeouts.header_ms;
+            continue;
+          }
+          if (not this.wait_for(r)) {
+            this.close();
+          }
+          return;
+        }
+        if (this.state == ConnState.ReadingHead) {
+          if (this.rbuf.readable_len() > 0) {
+            var st: ParseStatus = this.request.parse_head(this.rbuf.readable_ptr(), this.rbuf.readable_len(), cfg.limits);
+            if (st == ParseStatus.Complete) {
+              this.started_ms = now_ms;
+              this.begin_body();
+              this.state = ConnState.ReadingBody;
+              this.deadline_ms = now_ms + cfg.timeouts.body_ms;
+              continue;
+            }
+            if (st == ParseStatus.Failed) {
+              this.started_ms = now_ms;
+              this.send_error(this.request.error_status(), date, cfg);
+              this.deadline_ms = now_ms + cfg.timeouts.write_ms;
+              continue;
+            }
+          }
+          if (not this.fill_rbuf()) {
+            return;
+          }
+          continue;
+        }
+        if (this.state == ConnState.ReadingBody) {
+          var body_status: i32 = this.advance_body(cfg);
+          if (body_status == 0) {
+            this.handle_request(handler, date, cfg, draining);
+            this.state = ConnState.Writing;
+            this.deadline_ms = now_ms + cfg.timeouts.write_ms;
+            continue;
+          }
+          if (body_status > 0) {
+            this.send_error(body_status, date, cfg);
+            this.deadline_ms = now_ms + cfg.timeouts.write_ms;
+            continue;
+          }
+          if (this.request.expects_continue() and not this.continue_sent) {
+            this.continue_sent = true;
+            this.wbuf.append_literal("HTTP/1.1 100 Continue\r\n\r\n");
+            var fr: i64 = this.flush_wbuf();
+            if (fr == IO_ERROR) {
+              this.close();
+              return;
+            }
+          }
+          if (not this.fill_rbuf()) {
+            return;
+          }
+          continue;
+        }
+        if (this.state == ConnState.Writing) {
+          var w: i64 = this.write_response();
+          if (w == 0) {
+            this.served = this.served + 1;
+            this.log_access(log, now_ms);
+            if (not this.keep_alive or this.peer_closed) {
+              this.close();
+              return;
+            }
+            this.finish_request();
+            this.deadline_ms = now_ms + cfg.timeouts.keep_alive_ms;
+            continue;
+          }
+          if (not this.wait_for(w)) {
+            this.close();
+          }
+          return;
+        }
+        return;
+      }
+    }
+
+    // Translate an IO_* wait value into the next interest mask. Returns false
+    // when the value means the connection is finished.
+    method wait_for(r: i64) bool {
+      if (r == IO_WANT_READ) {
+        this.want_ = EPOLLIN | EPOLLRDHUP;
+        return true;
+      }
+      if (r == IO_WANT_WRITE) {
+        this.want_ = EPOLLOUT;
+        return true;
+      }
+      return false;
+    }
+
+    // After a TLS handshake, adopt the negotiated protocol. Only HTTP/1.1 is
+    // implemented; a client that insisted on another protocol is refused.
+    method select_protocol() bool {
+      var name = String(this.alloc, "");
+      if (this.transport.alpn(name)) {
+        if (name.equals_literal("h2")) {
+          this.proto = Protocol.Http2;
+          return false;
+        }
+      }
+      this.proto = Protocol.Http1;
+      return true;
+    }
+
+    // Read more bytes into rbuf. Returns true when bytes arrived, false when
+    // the caller must return to the event loop (want() is set) or the
+    // connection was closed.
+    method fill_rbuf() bool {
+      this.rbuf.reserve(READ_CHUNK);
+      var n: i64 = this.transport.read(this.rbuf.writable_ptr(), this.rbuf.writable_len());
+      if (n > 0) {
+        this.rbuf.commit(n);
+        // TLS may hold decrypted bytes that epoll will never announce.
+        while (this.transport.pending() > 0) {
+          this.rbuf.reserve(READ_CHUNK);
+          var more: i64 = this.transport.read(this.rbuf.writable_ptr(), this.rbuf.writable_len());
+          if (more <= 0) {
+            break;
+          }
+          this.rbuf.commit(more);
+        }
+        return true;
+      }
+      if (n == IO_CLOSED) {
+        this.close();
+        return false;
+      }
+      if (not this.wait_for(n)) {
+        this.close();
+      }
+      return false;
+    }
+
+    // Set up body reading after the head parsed.
+    method begin_body() void {
+      this.raw_body_len = 0;
+      this.continue_sent = false;
+      this.body_buf.clear();
+      this.chunk_state = CHUNK_SIZE;
+      this.chunk_remaining = 0;
+      if (this.request.is_chunked()) {
+        this.body_kind = BODY_CHUNKED;
+      } else if (this.request.content_length() > 0) {
+        this.body_kind = BODY_LENGTH;
+        this.raw_body_len = this.request.content_length();
+      } else {
+        this.body_kind = BODY_NONE;
+      }
+    }
+
+    // Make progress on the body from what rbuf holds. Returns zero when the
+    // body is complete, a negative number when more bytes are needed, or an
+    // error status.
+    method advance_body(cfg: const ref Config) i32 {
+      var head: i64 = this.request.head_len();
+      if (this.body_kind == BODY_NONE) {
+        this.request.rebase(this.rbuf.readable_ptr());
+        this.request.set_body(null, 0);
+        return 0;
+      }
+      if (this.body_kind == BODY_LENGTH) {
+        if (this.rbuf.readable_len() < head + this.raw_body_len) {
+          return -1;
+        }
+        var base: raw_ptr<u8> = this.rbuf.readable_ptr();
+        this.request.rebase(base);
+        this.request.set_body(unsafe { _ptr_offset(base, head); }, this.raw_body_len);
+        return 0;
+      }
+      return this.decode_chunks(cfg);
+    }
+
+    // Decode chunked framing from rbuf into body_buf. Same results as
+    // advance_body().
+    method decode_chunks(cfg: const ref Config) i32 {
+      var base: raw_ptr<u8> = this.rbuf.readable_ptr();
+      var avail: i64 = this.rbuf.readable_len();
+      var head: i64 = this.request.head_len();
+      while (true) {
+        var pos: i64 = head + this.raw_body_len;
+        if (this.chunk_state == CHUNK_DONE) {
+          this.request.rebase(base);
+          this.request.set_body(this.body_buf.readable_ptr(), this.body_buf.readable_len());
+          return 0;
+        }
+        if (this.chunk_state == CHUNK_SIZE) {
+          var eol: i64 = find_crlf(base, pos, avail);
+          if (eol < 0) {
+            if (avail - pos > MAX_CHUNK_SIZE_LINE) {
+              return 400;
+            }
+            return -1;
+          }
+          var size: i64 = 0;
+          var digits: i64 = 0;
+          var i: i64 = pos;
+          while (i < eol) {
+            var d: i32 = hex_value(unsafe { _load<u8>(base, i); });
+            if (d < 0) {
+              break;
+            }
+            size = size * 16 + _convert<i64>(d);
+            digits = digits + 1;
+            if (digits > 15) {
+              return 400;
+            }
+            i = i + 1;
+          }
+          if (digits == 0) {
+            return 400;
+          }
+          // Anything after the digits up to the line end is a chunk
+          // extension, which is ignored.
+          this.raw_body_len = eol + 2 - head;
+          if (size == 0) {
+            this.chunk_state = CHUNK_TRAILERS;
+          } else {
+            if (this.body_buf.readable_len() + size > cfg.limits.max_body_bytes) {
+              return 413;
+            }
+            this.chunk_remaining = size;
+            this.chunk_state = CHUNK_DATA;
+          }
+          continue;
+        }
+        if (this.chunk_state == CHUNK_DATA) {
+          var have: i64 = avail - pos;
+          if (have <= 0) {
+            return -1;
+          }
+          var take: i64 = have;
+          if (take > this.chunk_remaining) {
+            take = this.chunk_remaining;
+          }
+          this.body_buf.append_bytes(unsafe { _ptr_offset(base, pos); }, take);
+          this.raw_body_len = this.raw_body_len + take;
+          this.chunk_remaining = this.chunk_remaining - take;
+          if (this.chunk_remaining == 0) {
+            this.chunk_state = CHUNK_DATA_END;
+          }
+          continue;
+        }
+        if (this.chunk_state == CHUNK_DATA_END) {
+          if (avail - pos < 2) {
+            return -1;
+          }
+          if (unsafe { _load<u8>(base, pos); } != 13 or unsafe { _load<u8>(base, pos + 1); } != 10) {
+            return 400;
+          }
+          this.raw_body_len = this.raw_body_len + 2;
+          this.chunk_state = CHUNK_SIZE;
+          continue;
+        }
+        // Trailers: lines up to and including an empty one.
+        var teol: i64 = find_crlf(base, pos, avail);
+        if (teol < 0) {
+          if (avail - pos > cfg.limits.max_header_bytes) {
+            return 431;
+          }
+          return -1;
+        }
+        this.raw_body_len = teol + 2 - head;
+        if (teol == pos) {
+          this.chunk_state = CHUNK_DONE;
+        }
+      }
+      return -1;
+    }
+
+    // Run the handler and serialize its response into wbuf.
+    method handle_request(handler: ref IHandler, date: ref DateCache, cfg: const ref Config, draining: bool) void {
+      this.response.reset();
+      this.keep_alive = this.request.keep_alive() and not draining;
+      this.send_body = not this.request.is_head();
+      handler.handle(this.request, this.response);
+      if (this.response.wants_close()) {
+        this.keep_alive = false;
+      }
+      if (status_has_no_body(this.response.status)) {
+        this.send_body = false;
+      }
+      this.bytes_sent = 0;
+      this.response.serialize_head(this.wbuf, date.value(), this.keep_alive, cfg.server_header);
+      if (this.send_body) {
+        var body: ref ByteBuffer = this.response.body_buffer();
+        this.wbuf.append_bytes(body.readable_ptr(), body.readable_len());
+      }
+    }
+
+    // Answer a malformed or oversized request and close afterwards.
+    method send_error(status: i32, date: ref DateCache, cfg: const ref Config) void {
+      this.response.reset();
+      this.response.set_status(status);
+      this.response.set_content_type("text/plain");
+      this.response.set_body(reason_phrase(status));
+      this.response.append_body("\n");
+      this.keep_alive = false;
+      this.send_body = true;
+      this.bytes_sent = 0;
+      this.response.serialize_head(this.wbuf, date.value(), false, cfg.server_header);
+      var body: ref ByteBuffer = this.response.body_buffer();
+      this.wbuf.append_bytes(body.readable_ptr(), body.readable_len());
+      this.state = ConnState.Writing;
+    }
+
+    // Write wbuf out. Returns zero when empty, else an IO_* value.
+    method flush_wbuf() i64 {
+      while (this.wbuf.readable_len() > 0) {
+        var n: i64 = this.transport.write(this.wbuf.readable_ptr(), this.wbuf.readable_len());
+        if (n > 0) {
+          this.wbuf.consume(n);
+          this.bytes_sent = this.bytes_sent + n;
+          continue;
+        }
+        if (n == IO_CLOSED) {
+          return IO_ERROR;
+        }
+        return n;
+      }
+      return 0;
+    }
+
+    // Write the response head, body, and any streamed file. Returns zero when
+    // everything was sent, else an IO_* value.
+    method write_response() i64 {
+      while (true) {
+        var r: i64 = this.flush_wbuf();
+        if (r != 0) {
+          return r;
+        }
+        if (this.send_body and this.response.has_file_body()) {
+          var before: i64 = this.response.file_bytes_remaining();
+          var n: i64 = this.response.read_file_chunk(this.wbuf, FILE_CHUNK);
+          if (n == 0 and before > 0) {
+            // The file shrank or failed mid-stream; the response is short,
+            // so the connection must not be reused.
+            this.keep_alive = false;
+            return 0;
+          }
+          continue;
+        }
+        return 0;
+      }
+      return 0;
+    }
+
+    // Discard the finished request's bytes and get ready for the next one.
+    method finish_request() void {
+      var used: i64 = this.request.head_len() + this.raw_body_len;
+      this.rbuf.consume(used);
+      this.rbuf.compact();
+      this.rbuf.shrink_to(IDLE_BUFFER_CAP);
+      this.wbuf.clear();
+      this.wbuf.shrink_to(IDLE_BUFFER_CAP);
+      this.body_buf.clear();
+      this.body_buf.shrink_to(16);
+      this.response.reset();
+      this.request.reset();
+      this.continue_sent = false;
+      this.state = ConnState.ReadingHead;
+      this.want_ = EPOLLIN | EPOLLRDHUP;
+    }
+
+    // Write one access log line for the response just sent.
+    method log_access(log: ref Logger, now_ms: i64) void {
+      if (not log.access_enabled()) {
+        return;
+      }
+      var entry = ByteBuffer(this.alloc, 256);
+      if (this.transport.is_tls()) {
+        entry.append_literal("https ");
+      } else {
+        entry.append_literal("http ");
+      }
+      entry.append_byte(b'"');
+      var method: String = this.request.method_text(this.alloc);
+      if (method.length() == 0) {
+        entry.append_literal("-");
+      } else {
+        entry.append_string(method);
+        entry.append_byte(b' ');
+        var target: String = this.request.raw_target(this.alloc);
+        entry.append_string(target);
+      }
+      entry.append_literal("\" ");
+      entry.append_i64(_convert<i64>(this.response.status));
+      entry.append_byte(b' ');
+      entry.append_i64(this.bytes_sent);
+      entry.append_byte(b' ');
+      entry.append_i64(now_ms - this.started_ms);
+      entry.append_literal("ms");
+      log.access(entry);
+    }
+  }
+}

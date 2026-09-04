@@ -1,0 +1,650 @@
+// request.sun - The parsed HTTP/1.1 request handed to handlers
+//
+// A Request is a view over the connection's read buffer: the request line and
+// headers stay where they arrived and the parser only records where each
+// piece sits. Nothing is copied until a handler asks for a String. The view is
+// valid for the duration of one handle() call.
+
+public module sun_serve {
+  using std;
+
+  const CR: u8 = 13;
+  const LF: u8 = 10;
+  const SP: u8 = 32;
+  const HT: u8 = 9;
+
+  // What parse_head found in the bytes so far.
+  public enum ParseStatus { Incomplete, Complete, Failed }
+
+  // Where one header's name and value sit, as offsets from the head start.
+  public class HeaderSpan {
+    public var name_off: i64;
+    public var name_len: i64;
+    public var value_off: i64;
+    public var value_len: i64;
+
+    // Record a header's position.
+    init(name_off: i64, name_len: i64, value_off: i64, value_len: i64) {
+      this.name_off = name_off;
+      this.name_len = name_len;
+      this.value_off = value_off;
+      this.value_len = value_len;
+    }
+  }
+
+  // Lowercase one ASCII byte.
+  function lower_ascii(c: u8) u8 {
+    if (c >= b'A' and c <= b'Z') {
+      return c + 32;
+    }
+    return c;
+  }
+
+  // Report whether a byte may appear in an HTTP token.
+  function is_tchar(c: u8) bool {
+    if (c >= b'a' and c <= b'z') {
+      return true;
+    }
+    if (c >= b'A' and c <= b'Z') {
+      return true;
+    }
+    if (c >= b'0' and c <= b'9') {
+      return true;
+    }
+    return c == b'!' or c == b'#' or c == b'$' or c == b'%' or c == b'&' or c == b'\'' or c == b'*' or c == b'+' or c == b'-' or c == b'.' or c == b'^' or c == b'_' or c == b'`' or c == b'|' or c == b'~';
+  }
+
+  // The value of a hex digit, or a negative number for anything else.
+  function hex_value(c: u8) i32 {
+    if (c >= b'0' and c <= b'9') {
+      return _convert<i32>(c - b'0');
+    }
+    if (c >= b'a' and c <= b'f') {
+      return _convert<i32>(c - b'a') + 10;
+    }
+    if (c >= b'A' and c <= b'F') {
+      return _convert<i32>(c - b'A') + 10;
+    }
+    return -1;
+  }
+
+  // Compare len bytes at base+off with a literal, byte for byte.
+  function bytes_equal(base: raw_ptr<u8>, off: i64, len: i64, lit: static_ptr<u8>) bool {
+    if (len != lit.length()) {
+      return false;
+    }
+    var p: raw_ptr<u8> = lit.raw();
+    for (var i: i64 = 0; i < len; i = i + 1) {
+      if (unsafe { _load<u8>(base, off + i); } != unsafe { _load<u8>(p, i); }) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Compare len bytes at base+off with a lowercase literal, ignoring case.
+  function bytes_equal_ci(base: raw_ptr<u8>, off: i64, len: i64, lit: static_ptr<u8>) bool {
+    if (len != lit.length()) {
+      return false;
+    }
+    var p: raw_ptr<u8> = lit.raw();
+    for (var i: i64 = 0; i < len; i = i + 1) {
+      if (lower_ascii(unsafe { _load<u8>(base, off + i); }) != unsafe { _load<u8>(p, i); }) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // Report whether the bytes at base+off end with a lowercase literal,
+  // ignoring case.
+  function bytes_end_with_ci(base: raw_ptr<u8>, off: i64, len: i64, lit: static_ptr<u8>) bool {
+    if (len < lit.length()) {
+      return false;
+    }
+    return bytes_equal_ci(base, off + len - lit.length(), lit.length(), lit);
+  }
+
+  // Index of the first CRLF at or after from, or a negative number.
+  function find_crlf(base: raw_ptr<u8>, from: i64, len: i64) i64 {
+    var i: i64 = from;
+    while (i + 1 < len) {
+      if (unsafe { _load<u8>(base, i); } == CR and unsafe { _load<u8>(base, i + 1); } == LF) {
+        return i;
+      }
+      i = i + 1;
+    }
+    return -1;
+  }
+
+  // Copy len bytes at base+off into a new String.
+  function bytes_to_string(alloc: const ref HeapAllocator, base: raw_ptr<u8>, off: i64, len: i64) String {
+    var s = String(alloc, "");
+    s.reserve(len);
+    for (var i: i64 = 0; i < len; i = i + 1) {
+      s.append_char(unsafe { _load<u8>(base, off + i); });
+    }
+    return s;
+  }
+
+  // Percent-decode len bytes at base+off into out. Plus signs become spaces
+  // when plus_is_space is set (form queries). Returns false for a malformed
+  // escape, an encoded NUL, or a control byte.
+  function percent_decode(base: raw_ptr<u8>, off: i64, len: i64, plus_is_space: bool, out: ref String) bool {
+    var i: i64 = 0;
+    while (i < len) {
+      var c: u8 = unsafe { _load<u8>(base, off + i); };
+      if (c == b'%') {
+        if (i + 2 >= len) {
+          return false;
+        }
+        var hi: i32 = hex_value(unsafe { _load<u8>(base, off + i + 1); });
+        var lo: i32 = hex_value(unsafe { _load<u8>(base, off + i + 2); });
+        if (hi < 0 or lo < 0) {
+          return false;
+        }
+        var decoded: i32 = hi * 16 + lo;
+        if (decoded == 0) {
+          return false;
+        }
+        out.append_char(_convert<u8>(decoded));
+        i = i + 3;
+      } else if (c == b'+' and plus_is_space) {
+        out.append_char(SP);
+        i = i + 1;
+      } else {
+        if (c < SP or c == 127) {
+          return false;
+        }
+        out.append_char(c);
+        i = i + 1;
+      }
+    }
+    return true;
+  }
+
+  public class Request {
+    var base: raw_ptr<u8>;
+    var head_len_: i64;
+    var method_off: i64;
+    var method_len: i64;
+    var target_off: i64;
+    var target_len: i64;
+    var query_off: i64;
+    var query_len: i64;
+    var version_minor_: i32;
+    var headers: Vec<HeaderSpan>;
+    var path_: String;
+    var body_ptr_: raw_ptr<u8>;
+    var body_len_: i64;
+    var content_length_: i64;
+    var chunked_: bool;
+    var expect_continue_: bool;
+    var conn_close_: bool;
+    var conn_keep_alive_: bool;
+    var has_host_: bool;
+    var error_status_: i32;
+    var alloc: HeapAllocator;
+
+    // Build an empty request that a connection fills by parsing.
+    init(allocator: const ref HeapAllocator) {
+      this.alloc = allocator.copy();
+      this.headers = Vec<HeaderSpan>(allocator, 32);
+      this.path_ = String(allocator, "");
+      this.base = null;
+      this.body_ptr_ = null;
+      this.reset();
+    }
+
+    // Forget the previous request. The header list keeps its capacity.
+    public method reset() void {
+      this.base = null;
+      this.head_len_ = 0;
+      this.method_off = 0;
+      this.method_len = 0;
+      this.target_off = 0;
+      this.target_len = 0;
+      this.query_off = 0;
+      this.query_len = 0;
+      this.version_minor_ = 1;
+      this.headers.clear();
+      this.path_.clear();
+      this.body_ptr_ = null;
+      this.body_len_ = 0;
+      this.content_length_ = -1i64;
+      this.chunked_ = false;
+      this.expect_continue_ = false;
+      this.conn_close_ = false;
+      this.conn_keep_alive_ = false;
+      this.has_host_ = false;
+      this.error_status_ = 0;
+    }
+
+    // --- accessors for handlers ------------------------------------------
+
+    // Report whether the request method equals a literal such as "GET".
+    public const method method_is(lit: static_ptr<u8>) bool {
+      return bytes_equal(this.base, this.method_off, this.method_len, lit);
+    }
+
+    // The request method as an owned String.
+    public const method method_text(allocator: const ref HeapAllocator) String {
+      return bytes_to_string(allocator, this.base, this.method_off, this.method_len);
+    }
+
+    // Report whether this is a HEAD request.
+    public const method is_head() bool {
+      return this.method_is("HEAD");
+    }
+
+    // The percent-decoded path, without the query string.
+    public const method path() ref String {
+      return this.path_;
+    }
+
+    // Report whether the path equals a literal.
+    public const method path_is(lit: static_ptr<u8>) bool {
+      return this.path_.equals_literal(lit);
+    }
+
+    // The raw request target as sent by the client.
+    public const method raw_target(allocator: const ref HeapAllocator) String {
+      return bytes_to_string(allocator, this.base, this.target_off, this.target_len);
+    }
+
+    // Report whether the target carried a query string.
+    public const method has_query() bool {
+      return this.query_len > 0;
+    }
+
+    // The raw query string, without the question mark.
+    public const method query(allocator: const ref HeapAllocator) String {
+      return bytes_to_string(allocator, this.base, this.query_off, this.query_len);
+    }
+
+    // The decoded value of the first query parameter with this name.
+    public const method query_param(name: static_ptr<u8>, allocator: const ref HeapAllocator) Option<String> {
+      var i: i64 = 0;
+      var end: i64 = this.query_len;
+      while (i < end) {
+        // One pair spans up to the next ampersand.
+        var pair_end: i64 = i;
+        while (pair_end < end and unsafe { _load<u8>(this.base, this.query_off + pair_end); } != b'&') {
+          pair_end = pair_end + 1;
+        }
+        var eq: i64 = i;
+        while (eq < pair_end and unsafe { _load<u8>(this.base, this.query_off + eq); } != b'=') {
+          eq = eq + 1;
+        }
+        if (bytes_equal(this.base, this.query_off + i, eq - i, name)) {
+          var value = String(allocator, "");
+          var vstart: i64 = eq;
+          if (vstart < pair_end) {
+            vstart = vstart + 1;
+          }
+          if (percent_decode(this.base, this.query_off + vstart, pair_end - vstart, true, value)) {
+            return Option.Some(value);
+          }
+          return Option.None;
+        }
+        i = pair_end + 1;
+      }
+      return Option.None;
+    }
+
+    // The minor HTTP version: zero for HTTP/1.0, one for HTTP/1.1.
+    public const method version_minor() i32 {
+      return this.version_minor_;
+    }
+
+    // How many headers were sent.
+    public const method header_count() i64 {
+      return this.headers.size();
+    }
+
+    // Index of the first header with this lowercase name, or a negative
+    // number when absent.
+    const method find_header(name: static_ptr<u8>) i64 {
+      for (var i: i64 = 0; i < this.headers.size(); i = i + 1) {
+        var h: const ref HeaderSpan = this.headers.get_unchecked(i);
+        if (bytes_equal_ci(this.base, h.name_off, h.name_len, name)) {
+          return i;
+        }
+      }
+      return -1;
+    }
+
+    // The value of the first header with this lowercase name.
+    public const method header(name: static_ptr<u8>, allocator: const ref HeapAllocator) Option<String> {
+      var i: i64 = this.find_header(name);
+      if (i < 0) {
+        return Option.None;
+      }
+      var h: const ref HeaderSpan = this.headers.get_unchecked(i);
+      return Option.Some(bytes_to_string(allocator, this.base, h.value_off, h.value_len));
+    }
+
+    // Report whether a header with this lowercase name was sent.
+    public const method has_header(name: static_ptr<u8>) bool {
+      return this.find_header(name) >= 0;
+    }
+
+    // Report whether the named header's value equals a literal, ignoring
+    // ASCII case. The literal must be lowercase.
+    public const method header_equals(name: static_ptr<u8>, value: static_ptr<u8>) bool {
+      var i: i64 = this.find_header(name);
+      if (i < 0) {
+        return false;
+      }
+      var h: const ref HeaderSpan = this.headers.get_unchecked(i);
+      return bytes_equal_ci(this.base, h.value_off, h.value_len, value);
+    }
+
+    // The name of the i-th header as sent.
+    public const method header_name_at(i: i64, allocator: const ref HeapAllocator) String {
+      var h: const ref HeaderSpan = this.headers.get_unchecked(i);
+      return bytes_to_string(allocator, this.base, h.name_off, h.name_len);
+    }
+
+    // The value of the i-th header.
+    public const method header_value_at(i: i64, allocator: const ref HeapAllocator) String {
+      var h: const ref HeaderSpan = this.headers.get_unchecked(i);
+      return bytes_to_string(allocator, this.base, h.value_off, h.value_len);
+    }
+
+    // The request body bytes, decoded if the client used chunked encoding.
+    public const method body_ptr() raw_ptr<u8> {
+      return this.body_ptr_;
+    }
+
+    // Length of the body in bytes.
+    public const method body_len() i64 {
+      return this.body_len_;
+    }
+
+    // The body as an owned String.
+    public const method body_text(allocator: const ref HeapAllocator) String {
+      return bytes_to_string(allocator, this.body_ptr_, 0, this.body_len_);
+    }
+
+    // The declared Content-Length, or a negative number when absent.
+    public const method content_length() i64 {
+      return this.content_length_;
+    }
+
+    // Report whether the body arrives with chunked transfer encoding.
+    public const method is_chunked() bool {
+      return this.chunked_;
+    }
+
+    // Report whether the client asked for a 100 Continue before its body.
+    public const method expects_continue() bool {
+      return this.expect_continue_;
+    }
+
+    // Report whether the connection may serve another request afterwards,
+    // by the HTTP/1.0 and HTTP/1.1 defaults and the Connection header.
+    public const method keep_alive() bool {
+      if (this.conn_close_) {
+        return false;
+      }
+      if (this.version_minor_ == 0) {
+        return this.conn_keep_alive_;
+      }
+      return true;
+    }
+
+    // The status a failed parse should answer with.
+    public const method error_status() i32 {
+      return this.error_status_;
+    }
+
+    // Bytes the request line and headers occupy, including the blank line.
+    public const method head_len() i64 {
+      return this.head_len_;
+    }
+
+    // Point the view at the head's new address after the read buffer moved.
+    public method rebase(base: raw_ptr<u8>) void {
+      this.base = base;
+    }
+
+    // Record where the body was collected.
+    public method set_body(data: raw_ptr<u8>, len: i64) void {
+      this.body_ptr_ = data;
+      this.body_len_ = len;
+    }
+
+    // --- parsing --------------------------------------------------------
+
+    // Mark the parse as failed with a status code.
+    method fail(status: i32) ParseStatus {
+      this.error_status_ = status;
+      return ParseStatus.Failed;
+    }
+
+    // Parse the request line and headers from len bytes at base. Returns
+    // Incomplete when more bytes are needed, Failed with error_status() set,
+    // or Complete with every accessor ready and head_len() set.
+    public method parse_head(base: raw_ptr<u8>, len: i64, limits: const ref Limits) ParseStatus {
+      this.reset();
+      this.base = base;
+      var i: i64 = 0;
+      while (i + 1 < len and unsafe { _load<u8>(base, i); } == CR and unsafe { _load<u8>(base, i + 1); } == LF) {
+        i = i + 2;
+      }
+      var start: i64 = i;
+
+      // Request line
+      var eol: i64 = find_crlf(base, i, len);
+      if (eol < 0) {
+        if (len - start >= limits.max_header_bytes) {
+          return this.fail(431);
+        }
+        return ParseStatus.Incomplete;
+      }
+      var j: i64 = i;
+      while (j < eol and is_tchar(unsafe { _load<u8>(base, j); })) {
+        j = j + 1;
+      }
+      if (j == i or j >= eol or unsafe { _load<u8>(base, j); } != SP) {
+        return this.fail(400);
+      }
+      this.method_off = i;
+      this.method_len = j - i;
+      j = j + 1;
+      var t: i64 = j;
+      while (j < eol and unsafe { _load<u8>(base, j); } != SP) {
+        j = j + 1;
+      }
+      if (j == t or j >= eol) {
+        return this.fail(400);
+      }
+      this.target_off = t;
+      this.target_len = j - t;
+      j = j + 1;
+      if (eol - j != 8 or not bytes_equal(base, j, 7, "HTTP/1.")) {
+        if (eol - j >= 5 and bytes_equal(base, j, 5, "HTTP/")) {
+          return this.fail(505);
+        }
+        return this.fail(400);
+      }
+      var minor: u8 = unsafe { _load<u8>(base, j + 7); };
+      if (minor == b'1') {
+        this.version_minor_ = 1;
+      } else if (minor == b'0') {
+        this.version_minor_ = 0;
+      } else {
+        return this.fail(505);
+      }
+      i = eol + 2;
+
+      // Header lines
+      while (true) {
+        eol = find_crlf(base, i, len);
+        if (eol < 0) {
+          if (len - start >= limits.max_header_bytes) {
+            return this.fail(431);
+          }
+          return ParseStatus.Incomplete;
+        }
+        if (eol == i) {
+          this.head_len_ = eol + 2;
+          break;
+        }
+        if (eol + 2 - start > limits.max_header_bytes) {
+          return this.fail(431);
+        }
+        var first: u8 = unsafe { _load<u8>(base, i); };
+        if (first == SP or first == HT) {
+          return this.fail(400);
+        }
+        j = i;
+        while (j < eol and is_tchar(unsafe { _load<u8>(base, j); })) {
+          j = j + 1;
+        }
+        if (j == i or j >= eol or unsafe { _load<u8>(base, j); } != b':') {
+          return this.fail(400);
+        }
+        var name_off: i64 = i;
+        var name_len: i64 = j - i;
+        j = j + 1;
+        while (j < eol and (unsafe { _load<u8>(base, j); } == SP or unsafe { _load<u8>(base, j); } == HT)) {
+          j = j + 1;
+        }
+        var vend: i64 = eol;
+        while (vend > j and (unsafe { _load<u8>(base, vend - 1); } == SP or unsafe { _load<u8>(base, vend - 1); } == HT)) {
+          vend = vend - 1;
+        }
+        for (var k: i64 = j; k < vend; k = k + 1) {
+          var c: u8 = unsafe { _load<u8>(base, k); };
+          if ((c < SP and c != HT) or c == 127) {
+            return this.fail(400);
+          }
+        }
+        if (this.headers.size() >= limits.max_headers) {
+          return this.fail(431);
+        }
+        this.headers.push(HeaderSpan(name_off, name_len, j, vend - j));
+        i = eol + 2;
+      }
+
+      // Framing and connection headers
+      for (var h: i64 = 0; h < this.headers.size(); h = h + 1) {
+        var span: ref HeaderSpan = this.headers.get_unchecked(h);
+        if (bytes_equal_ci(base, span.name_off, span.name_len, "content-length")) {
+          if (span.value_len == 0 or span.value_len > 18) {
+            return this.fail(400);
+          }
+          var value: i64 = 0;
+          for (var k: i64 = 0; k < span.value_len; k = k + 1) {
+            var d: u8 = unsafe { _load<u8>(base, span.value_off + k); };
+            if (d < b'0' or d > b'9') {
+              return this.fail(400);
+            }
+            value = value * 10 + _convert<i64>(d - b'0');
+          }
+          if (this.content_length_ >= 0 and this.content_length_ != value) {
+            return this.fail(400);
+          }
+          this.content_length_ = value;
+        } else if (bytes_equal_ci(base, span.name_off, span.name_len, "transfer-encoding")) {
+          if (bytes_equal_ci(base, span.value_off, span.value_len, "chunked")) {
+            this.chunked_ = true;
+          } else {
+            return this.fail(501);
+          }
+        } else if (bytes_equal_ci(base, span.name_off, span.name_len, "connection")) {
+          this.scan_connection_tokens(span.value_off, span.value_len);
+        } else if (bytes_equal_ci(base, span.name_off, span.name_len, "expect")) {
+          if (bytes_equal_ci(base, span.value_off, span.value_len, "100-continue")) {
+            this.expect_continue_ = true;
+          } else {
+            return this.fail(417);
+          }
+        } else if (bytes_equal_ci(base, span.name_off, span.name_len, "host")) {
+          this.has_host_ = true;
+        }
+      }
+      if (this.chunked_ and this.content_length_ >= 0) {
+        return this.fail(400);
+      }
+      if (this.version_minor_ == 1 and not this.has_host_) {
+        return this.fail(400);
+      }
+      if (this.content_length_ > limits.max_body_bytes) {
+        return this.fail(413);
+      }
+
+      // Target: origin-form, asterisk-form, or absolute-form with the
+      // scheme and authority dropped.
+      var toff: i64 = this.target_off;
+      var tlen: i64 = this.target_len;
+      if (tlen >= 7 and bytes_equal_ci(base, toff, 7, "http://")) {
+        this.strip_authority(7);
+        toff = this.target_off;
+        tlen = this.target_len;
+      } else if (tlen >= 8 and bytes_equal_ci(base, toff, 8, "https://")) {
+        this.strip_authority(8);
+        toff = this.target_off;
+        tlen = this.target_len;
+      }
+      if (tlen == 1 and unsafe { _load<u8>(base, toff); } == b'*') {
+        this.path_.append_char(b'*');
+        return ParseStatus.Complete;
+      }
+      if (tlen == 0 or unsafe { _load<u8>(base, toff); } != b'/') {
+        return this.fail(400);
+      }
+      var plen: i64 = 0;
+      while (plen < tlen and unsafe { _load<u8>(base, toff + plen); } != b'?') {
+        plen = plen + 1;
+      }
+      if (plen < tlen) {
+        this.query_off = toff + plen + 1;
+        this.query_len = tlen - plen - 1;
+      }
+      if (not percent_decode(base, toff, plen, false, this.path_)) {
+        return this.fail(400);
+      }
+      return ParseStatus.Complete;
+    }
+
+    // Drop "scheme://authority" from the target, leaving the path. A target
+    // with no path after the authority becomes "/".
+    method strip_authority(scheme_len: i64) void {
+      var off: i64 = this.target_off + scheme_len;
+      var end: i64 = this.target_off + this.target_len;
+      while (off < end and unsafe { _load<u8>(this.base, off); } != b'/') {
+        off = off + 1;
+      }
+      if (off >= end) {
+        // Point at a slash inside the scheme prefix so the path reads "/".
+        this.target_off = this.target_off + scheme_len - 1;
+        this.target_len = 1;
+        return;
+      }
+      this.target_len = end - off;
+      this.target_off = off;
+    }
+
+    // Note "close" and "keep-alive" tokens in a Connection header value.
+    method scan_connection_tokens(off: i64, len: i64) void {
+      var i: i64 = 0;
+      while (i < len) {
+        while (i < len and (unsafe { _load<u8>(this.base, off + i); } == b',' or unsafe { _load<u8>(this.base, off + i); } == SP or unsafe { _load<u8>(this.base, off + i); } == HT)) {
+          i = i + 1;
+        }
+        var tstart: i64 = i;
+        while (i < len and unsafe { _load<u8>(this.base, off + i); } != b',' and unsafe { _load<u8>(this.base, off + i); } != SP and unsafe { _load<u8>(this.base, off + i); } != HT) {
+          i = i + 1;
+        }
+        if (bytes_equal_ci(this.base, off + tstart, i - tstart, "close")) {
+          this.conn_close_ = true;
+        } else if (bytes_equal_ci(this.base, off + tstart, i - tstart, "keep-alive")) {
+          this.conn_keep_alive_ = true;
+        }
+      }
+    }
+  }
+}

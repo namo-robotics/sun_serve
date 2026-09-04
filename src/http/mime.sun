@@ -1,0 +1,132 @@
+// mime.sun - Media types by file extension
+
+public module sun_serve {
+  using std;
+
+  // Compare the bytes from start to the end of path with a lowercase literal,
+  // ignoring ASCII case in the path.
+  function extension_is(path: const ref String, start: i64, lit: static_ptr<u8>) bool {
+    var n: i64 = path.length() - start;
+    if (n != lit.length()) {
+      return false;
+    }
+    for (var i: i64 = 0; i < n; i = i + 1) {
+      var c: u8 = path.at(start + i);
+      if (c >= b'A' and c <= b'Z') {
+        c = c + 32;
+      }
+      if (c != unsafe { _load<u8>(lit.raw(), i); }) {
+        return false;
+      }
+    }
+    return true;
+  }
+
+  // The media type for a file path, judged by its extension. Unknown
+  // extensions and files without one are served as generic bytes.
+  public function mime_for_path(path: const ref String) static_ptr<u8> {
+    var dot: i64 = -1;
+    for (var i: i64 = path.length() - 1; i >= 0; i = i - 1) {
+      var c: u8 = path.at(i);
+      if (c == b'/') {
+        break;
+      }
+      if (c == b'.') {
+        dot = i;
+        break;
+      }
+    }
+    if (dot < 0) {
+      return "application/octet-stream";
+    }
+    var s: i64 = dot + 1;
+    if (extension_is(path, s, "html") or extension_is(path, s, "htm")) {
+      return "text/html";
+    }
+    if (extension_is(path, s, "css")) {
+      return "text/css";
+    }
+    if (extension_is(path, s, "js") or extension_is(path, s, "mjs")) {
+      return "text/javascript";
+    }
+    if (extension_is(path, s, "json") or extension_is(path, s, "map")) {
+      return "application/json";
+    }
+    if (extension_is(path, s, "txt") or extension_is(path, s, "md")) {
+      return "text/plain";
+    }
+    if (extension_is(path, s, "xml")) {
+      return "application/xml";
+    }
+    if (extension_is(path, s, "svg")) {
+      return "image/svg+xml";
+    }
+    if (extension_is(path, s, "png")) {
+      return "image/png";
+    }
+    if (extension_is(path, s, "jpg") or extension_is(path, s, "jpeg")) {
+      return "image/jpeg";
+    }
+    if (extension_is(path, s, "gif")) {
+      return "image/gif";
+    }
+    if (extension_is(path, s, "webp")) {
+      return "image/webp";
+    }
+    if (extension_is(path, s, "avif")) {
+      return "image/avif";
+    }
+    if (extension_is(path, s, "ico")) {
+      return "image/x-icon";
+    }
+    if (extension_is(path, s, "woff")) {
+      return "font/woff";
+    }
+    if (extension_is(path, s, "woff2")) {
+      return "font/woff2";
+    }
+    if (extension_is(path, s, "ttf")) {
+      return "font/ttf";
+    }
+    if (extension_is(path, s, "otf")) {
+      return "font/otf";
+    }
+    if (extension_is(path, s, "pdf")) {
+      return "application/pdf";
+    }
+    if (extension_is(path, s, "wasm")) {
+      return "application/wasm";
+    }
+    if (extension_is(path, s, "mp4")) {
+      return "video/mp4";
+    }
+    if (extension_is(path, s, "webm")) {
+      return "video/webm";
+    }
+    if (extension_is(path, s, "mp3")) {
+      return "audio/mpeg";
+    }
+    if (extension_is(path, s, "ogg")) {
+      return "audio/ogg";
+    }
+    if (extension_is(path, s, "zip")) {
+      return "application/zip";
+    }
+    if (extension_is(path, s, "gz")) {
+      return "application/gzip";
+    }
+    if (extension_is(path, s, "tar")) {
+      return "application/x-tar";
+    }
+    return "application/octet-stream";
+  }
+
+  // Report whether a media type is text, which gets a charset parameter.
+  public function mime_is_text(mime: static_ptr<u8>) bool {
+    if (mime.length() < 5) {
+      return false;
+    }
+    var p: raw_ptr<u8> = mime.raw();
+    return unsafe { _load<u8>(p, 0); } == b't' and unsafe { _load<u8>(p, 1); } == b'e' and unsafe { _load<u8>(p, 2); } == b'x' and unsafe { _load<u8>(p, 3); } == b't' and unsafe { _load<u8>(p, 4); } == b'/';
+  }
+}

@@ -1,0 +1,10 @@
+// version.sun - The library version string
+
+public module sun_serve {
+  using std;
+
+  // The sun_serve version.
+  public function version() static_ptr<u8> {
+    return "0.1.0";
+  }
+}

@@ -1,0 +1,87 @@
+// abi_linux.sun - Kernel structure layouts that differ between architectures
+//
+// struct epoll_event is packed on x86_64 but naturally aligned on aarch64, and
+// the Sun compiler has no architecture intrinsic, so the layout is measured
+// once at startup by round-tripping a known event through a real epoll
+// instance. struct stat's mode offset is picked from the machine name.
+
+public module sun_serve {
+  using std;
+
+  // Where the kernel puts the fields of struct epoll_event on this machine.
+  public class EpollLayout {
+    public var stride: i64;  // bytes per event
+    public var data_offset: i64;  // byte offset of the 64-bit user data
+
+    // Build a layout from measured values.
+    init(stride: i64, data_offset: i64) {
+      this.stride = stride;
+      this.data_offset = data_offset;
+    }
+  }
+
+  // Marker written into the user-data slot during the probe. Its two 32-bit
+  // halves are equal, so the overlapping candidate slots agree byte for byte.
+  const PROBE_MARKER: u64 = 8844188892681527024;
+
+  // Measure the epoll_event layout by registering a writable pipe end with a
+  // known user-data value and reading it back from epoll_wait.
+  public function probe_epoll_layout(alloc: const ref HeapAllocator) EpollLayout throws IError {
+    var epfd: i32 = unsafe { sys_epoll_create1(EPOLL_CLOEXEC); };
+    if (epfd < 0) {
+      throw Error(last_errno(), "epoll_create1 failed");
+    }
+    var pipe_alloc: HeapAllocator = alloc.copy();
+    var pipe: std.process.Pipe = std.process.open_pipe(pipe_alloc);
+    var write_end: i32 = pipe.write_fd();
+
+    // The registration uses the wider layout with the marker in both
+    // candidate slots, so either kernel reading sees it.
+    var ev = ContiguousBuffer<u8>(alloc, 16);
+    ev.fill(0);
+    unsafe { _store<u32>(ev.raw_data(), 0, EPOLLOUT); };
+    unsafe { _store<u64>(_ptr_offset(ev.raw_data(), 4), 0, PROBE_MARKER); };
+    unsafe { _store<u64>(_ptr_offset(ev.raw_data(), 8), 0, PROBE_MARKER); };
+    var rc: i32 = unsafe { sys_epoll_ctl(epfd, EPOLL_CTL_ADD, write_end, ev.raw_data()); };
+    var out = ContiguousBuffer<u8>(alloc, 32);
+    out.fill(0);
+    var ready: i32 = 0;
+    if (rc == 0) {
+      ready = unsafe { sys_epoll_wait(epfd, out.raw_data(), 1, 1000); };
+    }
+    close_fd(epfd);
+    if (rc != 0 or ready != 1) {
+      throw Error(-1, "epoll layout probe failed");
+    }
+    var at8: u64 = unsafe { _load<u64>(_ptr_offset(out.raw_data(), 8), 0); };
+    if (at8 == PROBE_MARKER) {
+      return EpollLayout(16, 8);
+    }
+    var at4: u64 = unsafe { _load<u64>(_ptr_offset(out.raw_data(), 4), 0); };
+    if (at4 == PROBE_MARKER) {
+      return EpollLayout(12, 4);
+    }
+    throw Error(-1, "epoll layout probe saw no marker");
+  }
+
+  // The machine name reported by uname(2), e.g. "x86_64".
+  public function machine_name(alloc: const ref HeapAllocator) String {
+    // struct utsname is six fixed-width text fields; machine is the fifth.
+    var field_width: i64 = 65;
+    var buf = ContiguousBuffer<u8>(alloc, field_width * 6);
+    buf.fill(0);
+    if (unsafe { sys_uname(buf.raw_data()); } != 0) {
+      return String(alloc, "unknown");
+    }
+    return from_c_str(alloc, unsafe { _ptr_offset(buf.raw_data(), field_width * 4); });
+  }
+
+  // Byte offset of st_mode inside struct stat for this machine.
+  public function stat_mode_offset(alloc: const ref HeapAllocator) i64 {
+    var machine: String = machine_name(alloc);
+    if (machine.equals_literal("aarch64")) {
+      return 16;
+    }
+    return 24;
+  }
+}

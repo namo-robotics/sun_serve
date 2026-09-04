@@ -1,0 +1,292 @@
+// response.sun - The response a handler builds and the connection sends
+//
+// Headers are framed straight into a byte buffer as they are added, so
+// serializing a response is a handful of appends. Bodies are either bytes
+// held in memory, a file streamed by the connection, or a sequence of chunks
+// written with chunked transfer encoding when the length is unknown up front.
+
+public module sun_serve {
+  using std;
+  using std.io;
+
+  public class Response {
+    public var status: i32;
+    var header_lines: ByteBuffer;  // extra headers, each already "Name: value\r\n"
+    var body: ByteBuffer;
+    var content_type_: String;
+    var has_content_type: bool;
+    var file: File;
+    var file_remaining: i64;
+    var has_file: bool;
+    var chunked: bool;  // body holds chunk-framed data
+    var chunks_ended: bool;
+    var close_after: bool;
+    var alloc: HeapAllocator;
+
+    // Build an empty 200 response.
+    init(allocator: const ref HeapAllocator) {
+      this.alloc = allocator.copy();
+      this.status = 200;
+      this.header_lines = ByteBuffer(allocator, 256);
+      this.body = ByteBuffer(allocator, 1024);
+      this.content_type_ = String(allocator, "");
+      this.has_content_type = false;
+      this.file = File();
+      this.file_remaining = 0;
+      this.has_file = false;
+      this.chunked = false;
+      this.chunks_ended = false;
+      this.close_after = false;
+    }
+
+    // Return to the empty 200 state for the next request on a connection.
+    public method reset() void {
+      this.status = 200;
+      this.header_lines.clear();
+      this.body.clear();
+      this.content_type_.clear();
+      this.has_content_type = false;
+      if (this.has_file) {
+        this.file.close();
+      }
+      this.file_remaining = 0;
+      this.has_file = false;
+      this.chunked = false;
+      this.chunks_ended = false;
+      this.close_after = false;
+    }
+
+    // Set the status code.
+    public method set_status(code: i32) void {
+      this.status = code;
+    }
+
+    // Add a header line. Headers are sent in the order they were added, and
+    // adding the same name twice sends it twice.
+    public method add_header(name: static_ptr<u8>, value: static_ptr<u8>) void {
+      this.header_lines.append_literal(name);
+      this.header_lines.append_literal(": ");
+      this.header_lines.append_literal(value);
+      this.header_lines.append_literal("\r\n");
+    }
+
+    // Add a header whose value was built at runtime.
+    public method add_header_string(name: static_ptr<u8>, value: ref String) void {
+      this.header_lines.append_literal(name);
+      this.header_lines.append_literal(": ");
+      this.header_lines.append_string(value);
+      this.header_lines.append_literal("\r\n");
+    }
+
+    // Add a header with a numeric value.
+    public method add_header_i64(name: static_ptr<u8>, value: i64) void {
+      this.header_lines.append_literal(name);
+      this.header_lines.append_literal(": ");
+      this.header_lines.append_i64(value);
+      this.header_lines.append_literal("\r\n");
+    }
+
+    // Set the Content-Type header.
+    public method set_content_type(value: static_ptr<u8>) void {
+      this.content_type_.clear();
+      this.content_type_.append(value);
+      this.has_content_type = true;
+    }
+
+    // Set the Content-Type header from a runtime value.
+    public method set_content_type_string(value: const ref String) void {
+      this.content_type_.clear();
+      this.content_type_.append(value);
+      this.has_content_type = true;
+    }
+
+    // Replace the body with a literal.
+    public method set_body(text: static_ptr<u8>) void {
+      this.body.clear();
+      this.body.append_literal(text);
+    }
+
+    // Replace the body with a String's contents.
+    public method set_body_string(text: ref String) void {
+      this.body.clear();
+      this.body.append_string(text);
+    }
+
+    // Replace the body with raw bytes.
+    public method set_body_bytes(data: raw_ptr<u8>, len: i64) void {
+      this.body.clear();
+      this.body.append_bytes(data, len);
+    }
+
+    // Append a literal to the body.
+    public method append_body(text: static_ptr<u8>) void {
+      this.body.append_literal(text);
+    }
+
+    // Append a String to the body.
+    public method append_body_string(text: ref String) void {
+      this.body.append_string(text);
+    }
+
+    // Append raw bytes to the body.
+    public method append_body_bytes(data: raw_ptr<u8>, len: i64) void {
+      this.body.append_bytes(data, len);
+    }
+
+    // Current body length in bytes, not counting a streamed file.
+    public const method body_len() i64 {
+      return this.body.readable_len();
+    }
+
+    // Stream size bytes from an open file after any in-memory body. The
+    // response takes ownership of the file and closes it when done.
+    public method send_file(f: File, size: i64) void {
+      if (this.has_file) {
+        this.file.close();
+      }
+      this.file = f;
+      this.file_remaining = size;
+      this.has_file = true;
+    }
+
+    // Write one chunk of a body whose total length is unknown. The response
+    // switches to chunked transfer encoding; finish with end_chunks().
+    public method write_chunk(data: raw_ptr<u8>, len: i64) void {
+      if (len <= 0) {
+        return;
+      }
+      this.chunked = true;
+      this.body.append_hex_u64(_convert<u64>(len));
+      this.body.append_literal("\r\n");
+      this.body.append_bytes(data, len);
+      this.body.append_literal("\r\n");
+    }
+
+    // Write a literal as one chunk.
+    public method write_chunk_literal(text: static_ptr<u8>) void {
+      this.write_chunk(text.raw(), text.length());
+    }
+
+    // Finish a chunked body.
+    public method end_chunks() void {
+      this.chunked = true;
+      if (not this.chunks_ended) {
+        this.body.append_literal("0\r\n\r\n");
+        this.chunks_ended = true;
+      }
+    }
+
+    // Answer with a redirect to a location.
+    public method redirect(location: static_ptr<u8>, code: i32) void {
+      this.status = code;
+      this.add_header("Location", location);
+      this.body.clear();
+    }
+
+    // Answer with a redirect to a runtime location.
+    public method redirect_string(location: ref String, code: i32) void {
+      this.status = code;
+      this.add_header_string("Location", location);
+      this.body.clear();
+    }
+
+    // Ask the connection to close after this response.
+    public method close_connection() void {
+      this.close_after = true;
+    }
+
+    // Report whether the handler asked for the connection to close.
+    public const method wants_close() bool {
+      return this.close_after;
+    }
+
+    // Report whether a file is queued for streaming.
+    public const method has_file_body() bool {
+      return this.has_file;
+    }
+
+    // Bytes of the queued file still to send.
+    public const method file_bytes_remaining() i64 {
+      return this.file_remaining;
+    }
+
+    // Report whether the body uses chunked transfer encoding.
+    public const method is_chunked() bool {
+      return this.chunked;
+    }
+
+    // The in-memory body buffer, for the connection to send.
+    public method body_buffer() ref ByteBuffer {
+      return this.body;
+    }
+
+    // Read the next piece of the queued file into out, up to max bytes.
+    // Returns how many bytes were read; zero means the file is finished or
+    // unreadable, and the file is closed either way.
+    public method read_file_chunk(out: ref ByteBuffer, max: i64) i64 {
+      if (not this.has_file or this.file_remaining <= 0) {
+        return 0;
+      }
+      var want: i64 = max;
+      if (want > this.file_remaining) {
+        want = this.file_remaining;
+      }
+      out.reserve(want);
+      var n: i64 = this.file.read_into(out.writable_ptr(), want);
+      if (n <= 0) {
+        this.file.close();
+        this.has_file = false;
+        this.file_remaining = 0;
+        return 0;
+      }
+      out.commit(n);
+      this.file_remaining = this.file_remaining - n;
+      if (this.file_remaining == 0) {
+        this.file.close();
+        this.has_file = false;
+      }
+      return n;
+    }
+
+    // Total body length to declare in Content-Length.
+    const method declared_length() i64 {
+      return this.body.readable_len() + this.file_remaining;
+    }
+
+    // Write the status line and headers into out. head_only is set for HEAD
+    // requests, which still declare the length of the body they omit.
+    public method serialize_head(out: ref ByteBuffer, date: ref String, keep_alive: bool, server_header: bool) void {
+      if (this.chunked and not this.chunks_ended) {
+        this.end_chunks();
+      }
+      append_status_line(out, this.status);
+      out.append_literal("Date: ");
+      out.append_string(date);
+      out.append_literal("\r\n");
+      if (server_header) {
+        out.append_literal("Server: sun_serve\r\n");
+      }
+      if (this.has_content_type) {
+        out.append_literal("Content-Type: ");
+        out.append_string(this.content_type_);
+        out.append_literal("\r\n");
+      }
+      out.append_bytes(this.header_lines.readable_ptr(), this.header_lines.readable_len());
+      if (not status_has_no_body(this.status)) {
+        if (this.chunked) {
+          out.append_literal("Transfer-Encoding: chunked\r\n");
+        } else {
+          out.append_literal("Content-Length: ");
+          out.append_i64(this.declared_length());
+          out.append_literal("\r\n");
+        }
+      }
+      if (keep_alive) {
+        out.append_literal("Connection: keep-alive\r\n");
+      } else {
+        out.append_literal("Connection: close\r\n");
+      }
+      out.append_literal("\r\n");
+    }
+  }
+}

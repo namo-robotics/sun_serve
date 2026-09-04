@@ -1,0 +1,55 @@
+// handler.sun - The contract between the server and application code
+//
+// A handler receives each parsed request and fills in the response. Every
+// worker thread owns its own handler instance, so a handler may keep state
+// without locking as long as that state is per-instance. Handlers run on the
+// event loop and must not block.
+
+public module sun_serve {
+  using std;
+
+  public interface IHandler {
+    // Fill resp for req. The request view is valid only during this call.
+    public method handle(req: const ref Request, resp: ref Response) void;
+  }
+
+  // The signature of a plain-function handler.
+  public declare HandlerFn = function (const ref Request, ref Response) void;
+
+  // Adapts a module-level function to the handler interface.
+  public class FnHandler implements IHandler {
+    var fn: function (const ref Request, ref Response) void;
+
+    // Wrap a function.
+    init(fn: function (const ref Request, ref Response) void) {
+      this.fn = fn;
+    }
+
+    // Forward to the wrapped function.
+    public method handle(req: const ref Request, resp: ref Response) void {
+      this.fn(req, resp);
+    }
+  }
+
+  // Answers every request with 404. Useful as a placeholder.
+  public class NotFoundHandler implements IHandler {
+    // Nothing to set up.
+    init() {}
+
+    // Send a plain-text 404.
+    public method handle(req: const ref Request, resp: ref Response) void {
+      resp.set_status(404);
+      resp.set_content_type("text/plain");
+      resp.set_body("Not Found\n");
+    }
+  }
+
+  // Build one FnHandler per worker, as a Server expects.
+  public function fn_handlers(alloc: const ref HeapAllocator, fn: function (const ref Request, ref Response) void, count: i32) Vec<IHandler> {
+    var out = Vec<IHandler>(alloc, _convert<i64>(count));
+    for (var i: i32 = 0; i < count; i = i + 1) {
+      out.push(FnHandler(fn));
+    }
+    return out;
+  }
+}

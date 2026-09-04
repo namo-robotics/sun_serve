@@ -1,0 +1,50 @@
+name: release-dev
+
+on:
+  push:
+    branches: [main]
+
+permissions:
+  contents: write
+
+concurrency:
+  group: release-dev
+  cancel-in-progress: true
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Build the toolchain image
+        run: docker build -t sun_serve-release .
+
+      - name: Build and test sun_serve
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace sun_serve-release \
+            bash -c "scripts/build.sh && scripts/test.sh"
+
+      - name: Package the release
+        run: |
+          mkdir -p release/sun_serve-dev-linux-x86_64
+          cp build/sun_serve README.md LICENSE release/sun_serve-dev-linux-x86_64/
+          tar -C release -czf release/sun_serve-dev-linux-x86_64.tar.gz \
+            sun_serve-dev-linux-x86_64
+          cd release
+          sha256sum sun_serve-dev-linux-x86_64.tar.gz > SHA256SUMS
+
+      - name: Replace the dev release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete dev --cleanup-tag --yes || true
+          gh api --method DELETE "repos/${GITHUB_REPOSITORY}/git/refs/tags/dev" || true
+          gh release create dev \
+            release/sun_serve-dev-linux-x86_64.tar.gz \
+            release/SHA256SUMS \
+            --target "$GITHUB_SHA" \
+            --title "Development build" \
+            --notes "Rolling development build from commit ${GITHUB_SHA}." \
+            --prerelease \
+            --latest=false

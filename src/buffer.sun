@@ -1,0 +1,221 @@
+// buffer.sun - Growable byte buffer with a read cursor
+//
+// ByteBuffer is the workhorse behind every connection: the inbound bytes a
+// request is parsed from, the serialized response waiting to be written, and
+// the decoded request body. Bytes live in [pos, len) of a heap block; the
+// parser reads through raw pointers into that block, so the block only moves
+// when reserve() grows it, never behind a reader's back.
+
+public module sun_serve {
+  using std;
+
+  public class ByteBuffer {
+    var data: ContiguousBuffer<u8>;
+    var alloc: HeapAllocator;
+    var len: i64;  // bytes stored from the start of the block
+    var pos: i64;  // bytes already consumed from the front
+
+    // Build an empty buffer with room for capacity bytes.
+    init(allocator: const ref HeapAllocator, capacity: i64) {
+      this.alloc = allocator.copy();
+      this.data = ContiguousBuffer<u8>(allocator, capacity);
+      this.len = 0;
+      this.pos = 0;
+    }
+
+    // Bytes available to read.
+    public const method readable_len() i64 {
+      return this.len - this.pos;
+    }
+
+    // Start of the unread bytes.
+    public const method readable_ptr() raw_ptr<u8> {
+      return unsafe { _ptr_offset(this.data.raw_data(), this.pos); };
+    }
+
+    // The unread byte at index i, counted from the read cursor.
+    public const method byte_at(i: i64) u8 {
+      return unsafe { _load<u8>(this.data.raw_data(), this.pos + i); };
+    }
+
+    // Total bytes the block can hold.
+    public const method capacity() i64 {
+      return this.data.size();
+    }
+
+    // Free bytes after the stored data.
+    public const method writable_len() i64 {
+      return this.data.size() - this.len;
+    }
+
+    // Where the next appended bytes go.
+    public method writable_ptr() raw_ptr<u8> {
+      return unsafe { _ptr_offset(this.data.raw_data(), this.len); };
+    }
+
+    // Report whether nothing is left to read.
+    public const method is_empty() bool {
+      return this.len == this.pos;
+    }
+
+    // Make room for at least extra more bytes after the stored data, doubling
+    // the block as needed. Stored bytes keep their offsets.
+    public method reserve(extra: i64) void {
+      var needed: i64 = this.len + extra;
+      if (needed <= this.data.size()) {
+        return;
+      }
+      var new_size: i64 = this.data.size() * 2;
+      if (new_size < 16) {
+        new_size = 16;
+      }
+      while (new_size < needed) {
+        new_size = new_size * 2;
+      }
+      var grown = ContiguousBuffer<u8>(this.alloc, new_size);
+      if (this.len > 0) {
+        unsafe { _memcpy(grown.raw_data(), this.data.raw_data(), this.len); };
+      }
+      this.data = grown;
+    }
+
+    // Record that n bytes were written at writable_ptr().
+    public method commit(n: i64) void {
+      this.len = this.len + n;
+    }
+
+    // Mark n unread bytes as consumed.
+    public method consume(n: i64) void {
+      this.pos = this.pos + n;
+      if (this.pos >= this.len) {
+        this.pos = 0;
+        this.len = 0;
+      }
+    }
+
+    // Move the unread bytes to the front of the block so the space behind the
+    // cursor can be reused. Offsets taken before this call are invalid after.
+    public method compact() void {
+      if (this.pos == 0) {
+        return;
+      }
+      var remaining: i64 = this.len - this.pos;
+      if (remaining > 0) {
+        // Ranges may overlap, so copy through a temporary block.
+        var tmp = ContiguousBuffer<u8>(this.alloc, remaining);
+        unsafe { _memcpy(tmp.raw_data(), this.readable_ptr(), remaining); };
+        unsafe { _memcpy(this.data.raw_data(), tmp.raw_data(), remaining); };
+      }
+      this.len = remaining;
+      this.pos = 0;
+    }
+
+    // Forget everything stored.
+    public method clear() void {
+      this.len = 0;
+      this.pos = 0;
+    }
+
+    // Drop the block down to cap bytes when it grew past that and now sits
+    // empty, so an idle connection does not pin a large request's memory.
+    public method shrink_to(cap: i64) void {
+      if (this.len == 0 and this.data.size() > cap) {
+        this.data = ContiguousBuffer<u8>(this.alloc, cap);
+        this.pos = 0;
+      }
+    }
+
+    // Append n raw bytes.
+    public method append_bytes(src: raw_ptr<u8>, n: i64) void {
+      if (n <= 0) {
+        return;
+      }
+      this.reserve(n);
+      unsafe { _memcpy(this.writable_ptr(), src, n); };
+      this.len = this.len + n;
+    }
+
+    // Append a string literal.
+    public method append_literal(s: static_ptr<u8>) void {
+      this.append_bytes(s.raw(), s.length());
+    }
+
+    // Append a String's bytes. Takes ref because c_str() may add a NUL.
+    public method append_string(s: ref String) void {
+      this.append_bytes(s.c_str(), s.length());
+    }
+
+    // Append one byte.
+    public method append_byte(b: u8) void {
+      this.reserve(1);
+      unsafe { _store<u8>(this.data.raw_data(), this.len, b); };
+      this.len = this.len + 1;
+    }
+
+    // Append a signed integer in decimal.
+    public method append_i64(value: i64) void {
+      if (value < 0) {
+        this.append_byte(b'-');
+        this.append_u64(_convert<u64>(0 - value));
+        return;
+      }
+      this.append_u64(_convert<u64>(value));
+    }
+
+    // Append an unsigned integer in decimal.
+    public method append_u64(value: u64) void {
+      var digits = ContiguousBuffer<u8>(this.alloc, 24);
+      var n: i64 = 0;
+      var v: u64 = value;
+      if (v == 0) {
+        this.append_byte(b'0');
+        return;
+      }
+      while (v > 0) {
+        digits.set_unchecked(n, _convert<u8>(v % 10) + b'0');
+        v = v / 10;
+        n = n + 1;
+      }
+      while (n > 0) {
+        n = n - 1;
+        this.append_byte(digits.get_unchecked(n));
+      }
+    }
+
+    // Append an unsigned integer in lowercase hex.
+    public method append_hex_u64(value: u64) void {
+      var digits = ContiguousBuffer<u8>(this.alloc, 16);
+      var n: i64 = 0;
+      var v: u64 = value;
+      if (v == 0) {
+        this.append_byte(b'0');
+        return;
+      }
+      while (v > 0) {
+        var d: u8 = _convert<u8>(v % 16);
+        if (d < 10) {
+          digits.set_unchecked(n, d + b'0');
+        } else {
+          digits.set_unchecked(n, d - 10 + b'a');
+        }
+        v = v / 16;
+        n = n + 1;
+      }
+      while (n > 0) {
+        n = n - 1;
+        this.append_byte(digits.get_unchecked(n));
+      }
+    }
+
+    // Copy the unread bytes into a new String.
+    public const method to_string(allocator: const ref HeapAllocator) String {
+      var s = String(allocator, "");
+      var n: i64 = this.readable_len();
+      s.reserve(n);
+      for (var i: i64 = 0; i < n; i = i + 1) {
+        s.append_char(this.byte_at(i));
+      }
+      return s;
+    }
+  }
+}

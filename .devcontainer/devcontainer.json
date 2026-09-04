@@ -1,0 +1,46 @@
+{
+	"name": "sun_serve",
+	"build": {
+		"context": "..",
+		"dockerfile": "../Dockerfile"
+	},
+	// Bind mounts fail if the host source path is missing, so create the
+	// optional ones on the host before the container starts.
+	"initializeCommand": "mkdir -p \"${localEnv:HOME}${localEnv:USERPROFILE}/.codex\"",
+	"remoteUser": "ubuntu",
+	"updateRemoteUserUID": true,
+	"workspaceFolder": "/workspace",
+	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
+	"mounts": [
+		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.ssh,target=/home/ubuntu/.ssh,type=bind,readonly",
+		"source=sun-ccache,target=/home/ubuntu/.cache/ccache,type=volume",
+		"source=sun-claude,target=/home/ubuntu/.claude,type=volume",
+		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.config/gh,target=/home/ubuntu/.config/gh,type=bind",
+		"source=${localEnv:HOME}${localEnv:USERPROFILE}/.codex,target=/home/ubuntu/.codex,type=bind"
+	],
+	// Host networking so servers started in the container (build/sun_serve,
+	// build/hello_handler) are reachable from the host at localhost:PORT
+	// without forwarding each port by hand.
+	"runArgs": [
+		"--network=host",
+		"--cap-drop=ALL",
+		"--security-opt=no-new-privileges"
+	],
+	"customizations": {
+		"vscode": {
+			"extensions": [
+				"Anthropic.claude-code",
+				"timonwong.shellcheck",
+				"namo-robotics.sun-language",
+				"yzhang.markdown-all-in-one",
+				"openai.chatgpt"
+			],
+			"settings": {
+				"terminal.integrated.defaultProfile.linux": "bash",
+				"files.eol": "\n",
+				"claudeCode.allowDangerouslySkipPermissions": true,
+				"claudeCode.initialPermissionMode": "bypassPermissions"
+			}
+		}
+	}
+}

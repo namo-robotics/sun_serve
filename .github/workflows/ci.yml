@@ -1,0 +1,17 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  build-and-test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build the toolchain image
+        run: docker build -t sun_serve-ci .
+      - name: Format check, build, and test
+        run: |
+          docker run --rm -v "$PWD:/workspace" -w /workspace sun_serve-ci \
+            bash -c "scripts/build.sh && scripts/test.sh"

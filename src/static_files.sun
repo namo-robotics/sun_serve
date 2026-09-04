@@ -1,0 +1,280 @@
+// static_files.sun - Serving a directory tree over HTTP
+//
+// Paths are normalized before touching the filesystem so a request can never
+// escape the root. Files are opened first and inspected through the open
+// descriptor, so there is no window between a check and the read. Small files
+// are copied into the response; large ones are streamed by the connection.
+
+public module sun_serve {
+  using std;
+  using std.io;
+
+  // Files up to this size are read into memory rather than streamed.
+  const SMALL_FILE_MAX: i64 = 65536;
+
+  // Tunable behaviour of a StaticFiles handler.
+  public class StaticOptions {
+    public var index_name: String;  // file served for a directory
+    public var cache_control: String;  // Cache-Control value, empty for none
+    public var add_charset: bool;  // append charset=utf-8 to text types
+
+    // Defaults: index.html, no Cache-Control, charset on text.
+    init(alloc: const ref HeapAllocator) {
+      this.index_name = String(alloc, "index.html");
+      this.cache_control = String(alloc, "");
+      this.add_charset = true;
+    }
+
+    // An independent copy.
+    public const method clone(alloc: const ref HeapAllocator) StaticOptions {
+      var copy = StaticOptions(alloc);
+      copy.index_name.clear();
+      copy.index_name.append(this.index_name);
+      copy.cache_control.clear();
+      copy.cache_control.append(this.cache_control);
+      copy.add_charset = this.add_charset;
+      return copy;
+    }
+  }
+
+  // Reduce a decoded request path to a safe path relative to the root:
+  // empty and "." segments vanish, ".." pops a segment, and a ".." with
+  // nothing left to pop means the client tried to escape, which yields None.
+  // The result starts with a slash and never ends with one (root is "/").
+  public function normalize_path(alloc: const ref HeapAllocator, path: const ref String) Option<String> {
+    var out = String(alloc, "");
+    var ends = Vec<i64>(alloc, 8);  // length of out after each kept segment
+    var n: i64 = path.length();
+    var i: i64 = 0;
+    while (i <= n) {
+      var start: i64 = i;
+      while (i < n and path.at(i) != b'/') {
+        i = i + 1;
+      }
+      var len: i64 = i - start;
+      if (len == 1 and path.at(start) == b'.') {
+        // current directory
+      } else if (len == 2 and path.at(start) == b'.' and path.at(start + 1) == b'.') {
+        if (ends.size() == 0) {
+          return Option.None;
+        }
+        ends.pop();
+        var back: i64 = match ends.last() {
+          Option.Some(v) => v,
+          Option.None => 0
+        };
+        out.truncate(back);
+      } else if (len > 0) {
+        for (var k: i64 = start; k < i; k = k + 1) {
+          var c: u8 = path.at(k);
+          if (c < 32 or c == 127) {
+            return Option.None;
+          }
+        }
+        out.append_char(b'/');
+        for (var k: i64 = start; k < i; k = k + 1) {
+          out.append_char(path.at(k));
+        }
+        ends.push(out.length());
+      }
+      i = i + 1;
+    }
+    if (out.length() == 0) {
+      out.append_char(b'/');
+    }
+    return Option.Some(out);
+  }
+
+  public class StaticFiles implements IHandler {
+    var root: String;  // absolute or relative directory, no trailing slash
+    var opts: StaticOptions;
+    var alloc: HeapAllocator;
+    var mode_offset: i64;
+    var stat_buf: ContiguousBuffer<u8>;
+    var full_path: String;
+    var etag: String;
+    var last_modified: String;
+
+    // Serve files under root. Throws if root is not a directory.
+    init(allocator: const ref HeapAllocator, root: const ref String, opts: StaticOptions) throws IError {
+      this.alloc = allocator.copy();
+      this.root = root.clone(allocator);
+      while (this.root.length() > 1 and this.root.at(this.root.length() - 1) == b'/') {
+        this.root.truncate(this.root.length() - 1);
+      }
+      if (not is_dir(this.root)) {
+        var msg = String(allocator, "not a directory: ");
+        msg.append(this.root);
+        throw Error(-1, msg);
+      }
+      this.opts = opts;
+      this.mode_offset = stat_mode_offset(allocator);
+      this.stat_buf = ContiguousBuffer<u8>(allocator, 256);
+      this.full_path = String(allocator, "");
+      this.etag = String(allocator, "");
+      this.last_modified = String(allocator, "");
+    }
+
+    // Answer GET and HEAD from the tree; everything else gets 405.
+    public method handle(req: const ref Request, resp: ref Response) void {
+      if (not req.method_is("GET") and not req.method_is("HEAD")) {
+        resp.set_status(405);
+        resp.add_header("Allow", "GET, HEAD");
+        resp.set_content_type("text/plain");
+        resp.set_body("Method Not Allowed\n");
+        return;
+      }
+      // Fallbacks are built before the match; see SUN_FEEDBACK.md on
+      // temporaries inside match arms.
+      var no_path = String(this.alloc, "");
+      var rel: String = match normalize_path(this.alloc, req.path()) {
+        Option.Some(p) => p,
+        Option.None => no_path
+      };
+      if (rel.length() == 0) {
+        this.not_found(resp);
+        return;
+      }
+      this.full_path.clear();
+      this.full_path.append(this.root);
+      if (not rel.equals_literal("/")) {
+        this.full_path.append(rel);
+      }
+      var f = File();
+      try {
+        f.open(this.full_path, FileMode.Read);
+      } catch (e: IError) {
+        this.not_found(resp);
+        return;
+      }
+      if (unsafe { sys_fstat(f.get_fd(), this.stat_buf.raw_data()); } != 0) {
+        f.close();
+        this.not_found(resp);
+        return;
+      }
+      var mode: u32 = unsafe { _load<u32>(_ptr_offset(this.stat_buf.raw_data(), this.mode_offset), 0); };
+      if ((mode & S_IFMT) == S_IFDIR) {
+        f.close();
+        var path: const ref String = req.path();
+        if (path.at(path.length() - 1) != b'/') {
+          // Redirect so relative links inside the index resolve correctly.
+          var location: String = path.clone(this.alloc);
+          location.append_char(b'/');
+          if (req.has_query()) {
+            location.append_char(b'?');
+            var q: String = req.query(this.alloc);
+            location.append(q);
+          }
+          resp.redirect_string(location, 301);
+          return;
+        }
+        this.full_path.append_char(b'/');
+        this.full_path.append(this.opts.index_name);
+        var index = File();
+        try {
+          index.open(this.full_path, FileMode.Read);
+        } catch (e: IError) {
+          resp.set_status(403);
+          resp.set_content_type("text/plain");
+          resp.set_body("Forbidden\n");
+          return;
+        }
+        if (unsafe { sys_fstat(index.get_fd(), this.stat_buf.raw_data()); } != 0) {
+          index.close();
+          this.not_found(resp);
+          return;
+        }
+        var index_mode: u32 = unsafe { _load<u32>(_ptr_offset(this.stat_buf.raw_data(), this.mode_offset), 0); };
+        if ((index_mode & S_IFMT) != S_IFREG) {
+          index.close();
+          this.not_found(resp);
+          return;
+        }
+        this.serve_file(req, resp, index);
+        return;
+      }
+      if ((mode & S_IFMT) != S_IFREG) {
+        f.close();
+        this.not_found(resp);
+        return;
+      }
+      this.serve_file(req, resp, f);
+    }
+
+    // A plain-text 404.
+    method not_found(resp: ref Response) void {
+      resp.set_status(404);
+      resp.set_content_type("text/plain");
+      resp.set_body("Not Found\n");
+    }
+
+    // Send an open regular file whose stat block is in stat_buf.
+    method serve_file(req: const ref Request, resp: ref Response, f: File) void {
+      var size: i64 = unsafe { _load<i64>(_ptr_offset(this.stat_buf.raw_data(), STAT_SIZE_OFFSET), 0); };
+      var mtime: i64 = unsafe { _load<i64>(_ptr_offset(this.stat_buf.raw_data(), STAT_MTIME_OFFSET), 0); };
+      this.etag.clear();
+      this.etag.append_char(b'"');
+      this.etag.append_hex(mtime);
+      this.etag.append_char(b'-');
+      this.etag.append_hex(size);
+      this.etag.append_char(b'"');
+      this.last_modified.clear();
+      append_http_date(this.last_modified, mtime);
+
+      var fresh: bool = false;
+      var no_inm = String(this.alloc, "");
+      var inm: String = match req.header("if-none-match", this.alloc) {
+        Option.Some(v) => v,
+        Option.None => no_inm
+      };
+      if (inm.length() > 0) {
+        fresh = inm.equals_literal("*") or inm.contains(this.etag);
+      } else {
+        var no_ims = String(this.alloc, "");
+        var ims: String = match req.header("if-modified-since", this.alloc) {
+          Option.Some(v) => v,
+          Option.None => no_ims
+        };
+        fresh = ims.length() > 0 and ims.equals(this.last_modified);
+      }
+      resp.add_header_string("ETag", this.etag);
+      resp.add_header_string("Last-Modified", this.last_modified);
+      if (this.opts.cache_control.length() > 0) {
+        resp.add_header_string("Cache-Control", this.opts.cache_control);
+      }
+      if (fresh) {
+        resp.set_status(304);
+        return;
+      }
+      var mime: static_ptr<u8> = mime_for_path(this.full_path);
+      if (this.opts.add_charset and mime_is_text(mime)) {
+        var ct = String(this.alloc, mime);
+        ct.append("; charset=utf-8");
+        resp.set_content_type_string(ct);
+      } else {
+        resp.set_content_type(mime);
+      }
+      resp.add_header("Accept-Ranges", "bytes");
+      if (size <= SMALL_FILE_MAX) {
+        var body: ref ByteBuffer = resp.body_buffer();
+        body.clear();
+        body.reserve(size);
+        var got: i64 = f.read_into(body.writable_ptr(), size);
+        if (got > 0) {
+          body.commit(got);
+        }
+        return;
+      }
+      resp.send_file(f, size);
+    }
+  }
+
+  // Build one StaticFiles handler per worker, as a Server expects.
+  public function static_handlers(alloc: const ref HeapAllocator, root: const ref String, opts: const ref StaticOptions, count: i32) Vec<IHandler> throws IError {
+    var out = Vec<IHandler>(alloc, _convert<i64>(count));
+    for (var i: i32 = 0; i < count; i = i + 1) {
+      out.push(StaticFiles(alloc, root, opts.clone(alloc)));
+    }
+    return out;
+  }
+}

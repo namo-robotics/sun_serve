@@ -1,0 +1,47 @@
+// sun_serve.sun - Library entrypoint and manifest for sun_serve.moon
+//
+// sun_serve is an HTTP/1.1 server: one epoll event loop per worker thread,
+// nonblocking sockets, optional TLS through the tls bundle's OpenSSL, and a
+// handler interface for application code. See README.md for the tour.
+
+public module sun_serve {
+  using std;
+}
+
+manifest {
+  source_files: [
+    "version.sun",
+    "sys_ffi.sun",
+    "abi_linux.sun",
+    "buffer.sun",
+    "net.sun",
+    "epoll.sun",
+    "log.sun",
+    "config.sun",
+    "http/status.sun",
+    "http/date.sun",
+    "http/mime.sun",
+    "http/request.sun",
+    "http/response.sun",
+    "handler.sun",
+    "tls/openssl_server.sun",
+    "tls/tls_context.sun",
+    "tls/tls_session.sun",
+    "transport.sun",
+    "signals.sun",
+    "connection.sun",
+    "worker.sun",
+    "server.sun",
+    "static_files.sun"
+  ]
+  test_files: [
+    "../tests/buffer_tests.sun",
+    "../tests/epoll_tests.sun",
+    "../tests/http_tests.sun",
+    "../tests/test_client.sun",
+    "../tests/server_http_tests.sun",
+    "../tests/static_tests.sun",
+    "../tests/server_tls_tests.sun"
+  ]
+  libraries: ["stdlib.moon", "tls.moon"]
+}

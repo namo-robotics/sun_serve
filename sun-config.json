@@ -1,0 +1,25 @@
+{
+  "sun_path": ["build"],
+  "path_variables": { "SUN_SERVE_SRC": "src" },
+  "root": true,
+  "entrypoints": [
+    {
+      "path": "src/sun_serve.sun",
+      "type": "library",
+      "output_name": "build/sun_serve.moon",
+      "test_binary_name": "build/sun_serve_lib_test"
+    },
+    {
+      "path": "cmd/sun_serve/main.sun",
+      "type": "binary",
+      "output_name": "build/sun_serve",
+      "test_binary_name": "build/sun_serve_test"
+    },
+    {
+      "path": "examples/hello_handler.sun",
+      "type": "binary",
+      "output_name": "build/hello_handler",
+      "test_binary_name": "build/hello_handler_test"
+    }
+  ]
+}

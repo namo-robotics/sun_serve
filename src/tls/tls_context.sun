@@ -1,0 +1,171 @@
+// tls_context.sun - The server certificate, key, and protocol settings
+//
+// One SSL_CTX is built when the server starts and shared by every worker
+// through reference-counted acceptors. OpenSSL guards the context with its
+// own locks, so workers create sessions from it without coordinating.
+
+public module sun_serve {
+  using std;
+
+  // ALPN protocol list in wire form: each name prefixed with its length.
+  // Built once because the callback below runs inside OpenSSL and must not
+  // allocate. HTTP/2 is added here when its framing exists.
+  var alpn_protocols: String = String("");
+
+  // Fill the ALPN list on first use.
+  function ensure_alpn_list() void {
+    if (alpn_protocols.length() == 0) {
+      alpn_protocols.append_char(8);
+      alpn_protocols.append("http/1.1");
+    }
+  }
+
+  // OpenSSL calls this during the handshake to pick an application protocol
+  // from the client's list. Only module-level functions can cross to C.
+  function alpn_select(ssl: raw_ptr<u8>, out: raw_ptr<raw_ptr<u8>>, outlen: raw_ptr<u8>, client: raw_ptr<u8>, client_len: u32, arg: raw_ptr<u8>) i32 {
+    var rc: i32 = unsafe {
+      ssl_select_next_proto(out, outlen, alpn_protocols.c_str(), _convert<u32>(alpn_protocols.length()), client, client_len);
+    };
+    if (rc == OPENSSL_NPN_NEGOTIATED) {
+      return SSL_TLSEXT_ERR_OK;
+    }
+    return SSL_TLSEXT_ERR_NOACK;
+  }
+
+  // Error carrying OpenSSL's explanation of what failed.
+  public class TlsError implements IError {
+    var message_: String;
+
+    // Keep a copy of the explanation.
+    init(message: const ref String) {
+      var alloc: HeapAllocator = HeapAllocator();
+      this.message_ = message.clone(alloc);
+    }
+
+    // TLS errors share one code; the message carries the detail.
+    public method code() i32 {
+      return 70;
+    }
+
+    // A fresh copy of the explanation.
+    public method message() String {
+      var alloc: HeapAllocator = HeapAllocator();
+      return this.message_.clone(alloc);
+    }
+  }
+
+  // Owns the SSL_CTX built from a TlsSpec.
+  public class TlsServerContext {
+    var ctx: raw_ptr<u8>;
+
+    // Load the certificate chain and key and apply the protocol policy:
+    // TLS 1.2 or newer, no renegotiation, no compression, server-preferred
+    // ciphers, partial writes allowed for the nonblocking loop.
+    init(alloc: const ref HeapAllocator, spec: const ref TlsSpec) throws IError {
+      this.ctx = null;
+      var cert_path: String = spec.cert_path.clone(alloc);
+      var key_path: String = spec.key_path.clone(alloc);
+      ensure_alpn_list();
+      var method: raw_ptr<u8> = unsafe { ssl_tls_server_method(); };
+      var ctx: raw_ptr<u8> = unsafe { ssl_ctx_new(method); };
+      if (ctx == null) {
+        throw TlsError(take_openssl_error(alloc, "SSL_CTX_new failed"));
+      }
+      this.ctx = ctx;
+      unsafe { ssl_ctx_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_2_VERSION, null); };
+      unsafe { ssl_ctx_set_options(ctx, SSL_OP_NO_RENEGOTIATION | SSL_OP_NO_COMPRESSION | SSL_OP_CIPHER_SERVER_PREFERENCE); };
+      unsafe {
+        ssl_ctx_ctrl(ctx, SSL_CTRL_MODE, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_RELEASE_BUFFERS, null);
+      };
+      unsafe { ssl_ctx_ctrl(ctx, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_SESS_CACHE_SERVER, null); };
+      if (unsafe { ssl_ctx_use_certificate_chain_file(ctx, cert_path.c_str()); } != 1) {
+        var cert_err: String = take_openssl_error(alloc, "failed to load certificate chain");
+        cert_err.append(" (");
+        cert_err.append(cert_path);
+        cert_err.append(")");
+        this.release();
+        throw TlsError(cert_err);
+      }
+      if (unsafe { ssl_ctx_use_privatekey_file(ctx, key_path.c_str(), SSL_FILETYPE_PEM); } != 1) {
+        var key_err: String = take_openssl_error(alloc, "failed to load private key");
+        key_err.append(" (");
+        key_err.append(key_path);
+        key_err.append(")");
+        this.release();
+        throw TlsError(key_err);
+      }
+      if (unsafe { ssl_ctx_check_private_key(ctx); } != 1) {
+        var match_err: String = take_openssl_error(alloc, "private key does not match certificate");
+        this.release();
+        throw TlsError(match_err);
+      }
+      unsafe { ssl_ctx_set_alpn_select_cb(ctx, alpn_select, null); };
+    }
+
+    // A context with no certificate, for servers without TLS listeners.
+    init() {
+      this.ctx = null;
+    }
+
+    // Drop this owner's reference.
+    deinit() {
+      this.release();
+    }
+
+    // Free the context reference held here, if any.
+    method release() void {
+      if (this.ctx != null) {
+        unsafe { ssl_ctx_free(this.ctx); };
+        this.ctx = null;
+      }
+    }
+
+    // Another reference to the context for a worker to accept with.
+    public method acceptor() TlsAcceptor {
+      if (this.ctx == null) {
+        return TlsAcceptor(null);
+      }
+      unsafe { ssl_ctx_up_ref(this.ctx); };
+      return TlsAcceptor(this.ctx);
+    }
+
+    // Report whether a certificate is loaded.
+    public const method is_ready() bool {
+      return this.ctx != null;
+    }
+  }
+
+  // A worker's counted reference to the shared SSL_CTX. A null acceptor
+  // means the worker has no TLS listeners.
+  public class TlsAcceptor {
+    var ctx: raw_ptr<u8>;
+
+    // Adopt a reference the caller already counted.
+    init(ctx: raw_ptr<u8>) {
+      this.ctx = ctx;
+    }
+
+    // Drop the reference.
+    deinit() {
+      if (this.ctx != null) {
+        unsafe { ssl_ctx_free(this.ctx); };
+        this.ctx = null;
+      }
+    }
+
+    // Report whether TLS sessions can be created.
+    public const method is_ready() bool {
+      return this.ctx != null;
+    }
+
+    // The raw context for TlsSession.
+    method raw() raw_ptr<u8> {
+      return this.ctx;
+    }
+  }
+
+  // An acceptor that cannot accept, for workers without TLS.
+  public function no_tls_acceptor() TlsAcceptor {
+    return TlsAcceptor(null);
+  }
+}

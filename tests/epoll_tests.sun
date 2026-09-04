@@ -1,0 +1,39 @@
+// epoll_tests.sun - Layout probe and event round trips through Epoll.
+
+public module sun_serve {
+  module epoll_tests {
+    using std;
+
+    test_function probe_matches_machine() {
+      var alloc = make_heap_allocator();
+      var layout: EpollLayout = probe_epoll_layout(alloc);
+      var machine: String = machine_name(alloc);
+      if (machine.equals_literal("x86_64")) {
+        std.test.assert_eq(layout.stride, 12);
+        std.test.assert_eq(layout.data_offset, 4);
+      } else {
+        std.test.assert_eq(layout.stride, 16);
+        std.test.assert_eq(layout.data_offset, 8);
+      }
+    }
+
+    test_function pipe_readiness_carries_token() {
+      var alloc = make_heap_allocator();
+      var layout: EpollLayout = probe_epoll_layout(alloc);
+      var ep = Epoll(alloc, layout, 8);
+      var pipe = std.process.open_pipe(alloc);
+      ep.add(pipe.write_fd(), EPOLLOUT, 77);
+      var n: i64 = ep.wait(1000);
+      std.test.assert_eq(n, 1);
+      std.test.assert_eq(ep.event_token(0), 77);
+      std.test.assert((ep.event_mask(0) & EPOLLOUT) != 0, "write end is writable");
+      ep.modify(pipe.write_fd(), EPOLLIN, 78);
+      std.test.assert_eq(ep.wait(0), 0);
+      ep.remove(pipe.write_fd());
+    }
+
+    test_function online_cpus_is_positive() {
+      std.test.assert(online_cpus() >= 1, "at least one cpu");
+    }
+  }
+}

@@ -1,0 +1,148 @@
+// tls_session.sun - One nonblocking TLS connection
+//
+// Every call maps OpenSSL's outcome onto the same numbers the plain socket
+// path uses: a byte count, IO_CLOSED, IO_WANT_READ, IO_WANT_WRITE, or
+// IO_ERROR. A session whose handle is null stands for a plain connection.
+
+public module sun_serve {
+  using std;
+
+  public class TlsSession {
+    var ssl: raw_ptr<u8>;  // null = no TLS on this connection
+
+    // Start without a session.
+    init() {
+      this.ssl = null;
+    }
+
+    // Free the session.
+    deinit() {
+      this.free();
+    }
+
+    // Attach a fresh server-side session to a socket.
+    method open(acceptor: ref TlsAcceptor, fd: i32) bool {
+      this.free();
+      var s: raw_ptr<u8> = unsafe { ssl_new(acceptor.raw()); };
+      if (s == null) {
+        return false;
+      }
+      if (unsafe { ssl_set_fd(s, fd); } != 1) {
+        unsafe { ssl_free(s); };
+        return false;
+      }
+      unsafe { ssl_set_accept_state(s); };
+      this.ssl = s;
+      return true;
+    }
+
+    // Report whether a session is attached.
+    public const method is_active() bool {
+      return this.ssl != null;
+    }
+
+    // Translate a non-positive SSL call result into an IO_* value.
+    method map_result(ret: i32) i64 {
+      var reason: i32 = unsafe { ssl_get_error(this.ssl, ret); };
+      if (reason == SSL_ERROR_WANT_READ) {
+        return IO_WANT_READ;
+      }
+      if (reason == SSL_ERROR_WANT_WRITE) {
+        return IO_WANT_WRITE;
+      }
+      if (reason == SSL_ERROR_ZERO_RETURN) {
+        return IO_CLOSED;
+      }
+      // A peer that drops the socket without close_notify shows up as a
+      // syscall error with an empty queue or as an unexpected-EOF reason.
+      if (reason == SSL_ERROR_SYSCALL and unsafe { ssl_err_peek_error(); } == 0) {
+        return IO_CLOSED;
+      }
+      if (reason == SSL_ERROR_SSL) {
+        var peeked: u64 = unsafe { ssl_err_peek_error(); };
+        if ((peeked & OPENSSL_REASON_MASK) == SSL_REASON_UNEXPECTED_EOF) {
+          return IO_CLOSED;
+        }
+      }
+      unsafe { ssl_err_clear_error(); };
+      return IO_ERROR;
+    }
+
+    // Advance the handshake. Returns zero when complete, or an IO_* value.
+    method handshake() i64 {
+      unsafe { ssl_err_clear_error(); };
+      var r: i32 = unsafe { ssl_do_handshake(this.ssl); };
+      if (r == 1) {
+        return 0;
+      }
+      var mapped: i64 = this.map_result(r);
+      if (mapped == IO_CLOSED) {
+        return IO_ERROR;
+      }
+      return mapped;
+    }
+
+    // Read decrypted bytes into buf.
+    method read(buf: raw_ptr<u8>, len: i64) i64 {
+      unsafe { ssl_err_clear_error(); };
+      var r: i32 = unsafe { ssl_read(this.ssl, buf, _convert<i32>(len)); };
+      if (r > 0) {
+        return _convert<i64>(r);
+      }
+      return this.map_result(r);
+    }
+
+    // Encrypt and write bytes from buf.
+    method write(buf: raw_ptr<u8>, len: i64) i64 {
+      unsafe { ssl_err_clear_error(); };
+      var r: i32 = unsafe { ssl_write(this.ssl, buf, _convert<i32>(len)); };
+      if (r > 0) {
+        return _convert<i64>(r);
+      }
+      return this.map_result(r);
+    }
+
+    // Decrypted bytes already buffered inside OpenSSL, which no socket
+    // readiness event will announce.
+    method pending() i64 {
+      return _convert<i64>(unsafe { ssl_pending(this.ssl); });
+    }
+
+    // Copy the negotiated ALPN protocol into out; false when none was chosen.
+    method alpn(out: ref String) bool {
+      var data: raw_ptr<u8> = null;
+      var len: u32 = 0;
+      unsafe { ssl_get0_alpn_selected(this.ssl, _address_of<raw_ptr<u8>>(data), _address_of<u32>(len)); };
+      out.clear();
+      if (data == null or len == 0) {
+        return false;
+      }
+      for (var i: i64 = 0; i < _convert<i64>(len); i = i + 1) {
+        out.append_char(unsafe { _load<u8>(data, i); });
+      }
+      return true;
+    }
+
+    // The protocol version text, e.g. "TLSv1.3".
+    method version(alloc: const ref HeapAllocator) String {
+      return from_c_str(alloc, unsafe { ssl_get_version(this.ssl); });
+    }
+
+    // Send close_notify without waiting for the peer's, then free.
+    method shutdown() void {
+      if (this.ssl != null) {
+        unsafe { ssl_set_quiet_shutdown(this.ssl, 1); };
+        unsafe { ssl_shutdown(this.ssl); };
+      }
+      this.free();
+    }
+
+    // Free the session handle.
+    method free() void {
+      if (this.ssl != null) {
+        unsafe { ssl_free(this.ssl); };
+        this.ssl = null;
+      }
+    }
+  }
+}

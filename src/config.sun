@@ -1,0 +1,189 @@
+// config.sun - Everything a Server needs to know before it starts
+//
+// Config is plain data. Every worker receives its own clone, so nothing in
+// here is shared between threads once the server is running.
+
+public module sun_serve {
+  using std;
+
+  // One address to listen on and whether it speaks TLS.
+  public class ListenSpec {
+    public var addr: Ipv4Addr;
+    public var port: i32;
+    public var tls: bool;
+
+    // Describe a listener.
+    init(addr: Ipv4Addr, port: i32, tls: bool) {
+      this.addr = addr;
+      this.port = port;
+      this.tls = tls;
+    }
+
+    // An independent copy.
+    public const method clone() ListenSpec {
+      return ListenSpec(this.addr.clone(), this.port, this.tls);
+    }
+  }
+
+  // Where the server certificate chain and private key live.
+  public class TlsSpec {
+    public var cert_path: String;
+    public var key_path: String;
+    public var alpn_h2: bool;  // advertise HTTP/2 over ALPN (not implemented yet)
+
+    // Point at PEM files on disk.
+    init(alloc: const ref HeapAllocator, cert_path: const ref String, key_path: const ref String) {
+      this.cert_path = cert_path.clone(alloc);
+      this.key_path = key_path.clone(alloc);
+      this.alpn_h2 = false;
+    }
+
+    // No files yet; Config starts with this.
+    init(alloc: const ref HeapAllocator) {
+      this.cert_path = String(alloc, "");
+      this.key_path = String(alloc, "");
+      this.alpn_h2 = false;
+    }
+
+    // An independent copy.
+    public const method clone(alloc: const ref HeapAllocator) TlsSpec {
+      var copy = TlsSpec(alloc, this.cert_path, this.key_path);
+      copy.alpn_h2 = this.alpn_h2;
+      return copy;
+    }
+  }
+
+  // Caps that keep one client from exhausting a worker.
+  public class Limits {
+    public var max_header_bytes: i64;
+    public var max_body_bytes: i64;
+    public var max_headers: i64;
+    public var max_connections_per_worker: i64;
+    public var max_pipelined: i64;  // requests served per readiness event on one connection
+
+    // Sensible defaults for a general-purpose server.
+    init() {
+      this.max_header_bytes = 16384;
+      this.max_body_bytes = 8388608;
+      this.max_headers = 100;
+      this.max_connections_per_worker = 8192;
+      this.max_pipelined = 16;
+    }
+
+    // An independent copy.
+    public const method clone() Limits {
+      var copy = Limits();
+      copy.max_header_bytes = this.max_header_bytes;
+      copy.max_body_bytes = this.max_body_bytes;
+      copy.max_headers = this.max_headers;
+      copy.max_connections_per_worker = this.max_connections_per_worker;
+      copy.max_pipelined = this.max_pipelined;
+      return copy;
+    }
+  }
+
+  // How long a connection may sit in each state, in milliseconds.
+  public class Timeouts {
+    public var handshake_ms: i64;
+    public var header_ms: i64;
+    public var body_ms: i64;
+    public var keep_alive_ms: i64;
+    public var write_ms: i64;
+    public var drain_ms: i64;  // grace period for in-flight requests at shutdown
+    public var tick_ms: i64;  // how often idle workers wake to sweep and check for stop
+
+    // Defaults tuned for browsers and command-line clients.
+    init() {
+      this.handshake_ms = 10000;
+      this.header_ms = 30000;
+      this.body_ms = 60000;
+      this.keep_alive_ms = 75000;
+      this.write_ms = 60000;
+      this.drain_ms = 5000;
+      this.tick_ms = 250;
+    }
+
+    // An independent copy.
+    public const method clone() Timeouts {
+      var copy = Timeouts();
+      copy.handshake_ms = this.handshake_ms;
+      copy.header_ms = this.header_ms;
+      copy.body_ms = this.body_ms;
+      copy.keep_alive_ms = this.keep_alive_ms;
+      copy.write_ms = this.write_ms;
+      copy.drain_ms = this.drain_ms;
+      copy.tick_ms = this.tick_ms;
+      return copy;
+    }
+  }
+
+  public class Config {
+    public var listen: Vec<ListenSpec>;
+    public var tls: TlsSpec;  // meaningful only when has_tls is set
+    public var has_tls: bool;
+    public var backlog: i32;
+    public var limits: Limits;
+    public var timeouts: Timeouts;
+    public var log_level: LogLevel;
+    public var access_log: bool;
+    public var server_header: bool;  // send a Server header
+    var alloc: HeapAllocator;
+
+    // Start from defaults with no listeners.
+    init(allocator: const ref HeapAllocator) {
+      this.alloc = allocator.copy();
+      this.listen = Vec<ListenSpec>(allocator, 4);
+      this.tls = TlsSpec(allocator);
+      this.has_tls = false;
+      this.backlog = 1024;
+      this.limits = Limits();
+      this.timeouts = Timeouts();
+      this.log_level = LogLevel.Info;
+      this.access_log = true;
+      this.server_header = true;
+    }
+
+    // Add a plain HTTP listener.
+    public method add_listen(addr: const ref Ipv4Addr, port: i32) void {
+      this.listen.push(ListenSpec(addr.clone(), port, false));
+    }
+
+    // Add an HTTPS listener. set_tls() must also be called.
+    public method add_tls_listen(addr: const ref Ipv4Addr, port: i32) void {
+      this.listen.push(ListenSpec(addr.clone(), port, true));
+    }
+
+    // Provide the certificate chain and key for TLS listeners.
+    public method set_tls(cert_path: const ref String, key_path: const ref String) void {
+      this.tls = TlsSpec(this.alloc, cert_path, key_path);
+      this.has_tls = true;
+    }
+
+    // Report whether any listener speaks TLS.
+    public const method has_tls_listener() bool {
+      for (var i: i64 = 0; i < this.listen.size(); i = i + 1) {
+        if (this.listen.get_unchecked(i).tls) {
+          return true;
+        }
+      }
+      return false;
+    }
+
+    // An independent copy for a worker.
+    public const method clone() Config {
+      var copy = Config(this.alloc);
+      for (var i: i64 = 0; i < this.listen.size(); i = i + 1) {
+        copy.listen.push(this.listen.get_unchecked(i).clone());
+      }
+      copy.tls = this.tls.clone(this.alloc);
+      copy.has_tls = this.has_tls;
+      copy.backlog = this.backlog;
+      copy.limits = this.limits.clone();
+      copy.timeouts = this.timeouts.clone();
+      copy.log_level = this.log_level;
+      copy.access_log = this.access_log;
+      copy.server_header = this.server_header;
+      return copy;
+    }
+  }
+}

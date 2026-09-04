@@ -1,0 +1,9 @@
+{
+  "permissions": {
+    "defaultMode": "bypassPermissions",
+    "allow": [
+      "WebFetch(domain:namo-robotics.github.io)"
+    ]
+  },
+  "skipDangerousModePermissionPrompt": true
+}

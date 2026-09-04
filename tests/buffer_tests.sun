@@ -1,0 +1,67 @@
+// buffer_tests.sun - ByteBuffer growth, cursors, and number formatting.
+
+public module sun_serve {
+  module buffer_tests {
+    using std;
+
+    test_function append_and_read_back() {
+      var alloc = make_heap_allocator();
+      var b = ByteBuffer(alloc, 4);
+      b.append_literal("hello, ");
+      b.append_literal("world");
+      std.test.assert_eq(b.readable_len(), 12);
+      std.test.assert(b.capacity() >= 12, "buffer grew");
+      var text: String = b.to_string(alloc);
+      std.test.assert(text.equals_literal("hello, world"), "bytes preserved across growth");
+    }
+
+    test_function consume_and_compact() {
+      var alloc = make_heap_allocator();
+      var b = ByteBuffer(alloc, 16);
+      b.append_literal("abcdef");
+      b.consume(2);
+      std.test.assert_eq(b.readable_len(), 4);
+      std.test.assert_eq(b.byte_at(0), b'c');
+      b.compact();
+      std.test.assert_eq(b.readable_len(), 4);
+      std.test.assert_eq(b.byte_at(0), b'c');
+      b.consume(4);
+      std.test.assert(b.is_empty(), "fully consumed buffer is empty");
+      std.test.assert_eq(b.readable_len(), 0);
+    }
+
+    test_function commit_after_reserve() {
+      var alloc = make_heap_allocator();
+      var b = ByteBuffer(alloc, 2);
+      b.reserve(3);
+      std.test.assert(b.writable_len() >= 3, "reserve makes room");
+      unsafe { _store<u8>(b.writable_ptr(), 0, b'x'); };
+      b.commit(1);
+      std.test.assert_eq(b.readable_len(), 1);
+      std.test.assert_eq(b.byte_at(0), b'x');
+    }
+
+    test_function number_formatting() {
+      var alloc = make_heap_allocator();
+      var b = ByteBuffer(alloc, 8);
+      b.append_i64(0);
+      b.append_byte(b' ');
+      b.append_i64(-42);
+      b.append_byte(b' ');
+      b.append_u64(9223372036854775807);
+      b.append_byte(b' ');
+      b.append_hex_u64(48879);
+      var text: String = b.to_string(alloc);
+      std.test.assert(text.equals_literal("0 -42 9223372036854775807 beef"), "decimal and hex formatting");
+    }
+
+    test_function shrink_when_empty() {
+      var alloc = make_heap_allocator();
+      var b = ByteBuffer(alloc, 8);
+      b.reserve(4096);
+      std.test.assert(b.capacity() >= 4096, "grew");
+      b.shrink_to(64);
+      std.test.assert_eq(b.capacity(), 64);
+    }
+  }
+}

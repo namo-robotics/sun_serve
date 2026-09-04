@@ -1,0 +1,146 @@
+// log.sun - Per-worker logging that never needs a lock
+//
+// Every log call formats one complete line and hands it to the kernel in a
+// single write, so lines from different workers interleave whole rather than
+// mid-line. Diagnostics go to stderr; access log lines go to stdout.
+
+public module sun_serve {
+  using std;
+
+  // How much to say. Each level includes the ones before it.
+  public enum LogLevel { Error, Warn, Info, Debug }
+
+  // Order levels so they can be compared.
+  function level_rank(level: LogLevel) i32 {
+    return match level {
+      LogLevel.Error => 0,
+      LogLevel.Warn => 1,
+      LogLevel.Info => 2,
+      LogLevel.Debug => 3
+    };
+  }
+
+  // Parse a level name; unknown names come back as None.
+  public function parse_log_level(name: const ref String) Option<LogLevel> {
+    if (name.equals_literal("error")) {
+      return Option.Some(LogLevel.Error);
+    }
+    if (name.equals_literal("warn")) {
+      return Option.Some(LogLevel.Warn);
+    }
+    if (name.equals_literal("info")) {
+      return Option.Some(LogLevel.Info);
+    }
+    if (name.equals_literal("debug")) {
+      return Option.Some(LogLevel.Debug);
+    }
+    return Option.None;
+  }
+
+  public class Logger {
+    var level: i32;
+    var worker: i32;
+    var line: ByteBuffer;
+    var access_enabled: bool;
+
+    // Build a logger tagged with a worker id.
+    init(alloc: const ref HeapAllocator, level: LogLevel, worker: i32, access_enabled: bool) {
+      this.level = level_rank(level);
+      this.worker = worker;
+      this.line = ByteBuffer(alloc, 512);
+      this.access_enabled = access_enabled;
+    }
+
+    // Report whether messages at level would be written.
+    public const method enabled(level: LogLevel) bool {
+      return level_rank(level) <= this.level;
+    }
+
+    // Report whether access log lines are written.
+    public const method access_enabled() bool {
+      return this.access_enabled;
+    }
+
+    // Start a diagnostic line with its level tag and worker id.
+    method begin(tag: static_ptr<u8>) void {
+      this.line.clear();
+      this.line.append_literal(tag);
+      this.line.append_literal(" w");
+      this.line.append_i64(_convert<i64>(this.worker));
+      this.line.append_literal(" ");
+    }
+
+    // Finish the current line and write it to fd.
+    method flush(fd: i32) void {
+      this.line.append_byte(b'\n');
+      write_all(fd, this.line.readable_ptr(), this.line.readable_len());
+      this.line.clear();
+    }
+
+    // Write one diagnostic line made of a message and an optional detail.
+    method emit(level: LogLevel, tag: static_ptr<u8>, message: static_ptr<u8>, detail: ref String) void {
+      if (not this.enabled(level)) {
+        return;
+      }
+      this.begin(tag);
+      this.line.append_literal(message);
+      if (detail.length() > 0) {
+        this.line.append_literal(": ");
+        this.line.append_string(detail);
+      }
+      this.flush(std.io.STDERR_FD);
+    }
+
+    // Log an error with a detail string.
+    public method error(message: static_ptr<u8>, detail: ref String) void {
+      this.emit(LogLevel.Error, "error", message, detail);
+    }
+
+    // Log a warning with a detail string.
+    public method warn(message: static_ptr<u8>, detail: ref String) void {
+      this.emit(LogLevel.Warn, "warn", message, detail);
+    }
+
+    // Log an informational message with a detail string.
+    public method info(message: static_ptr<u8>, detail: ref String) void {
+      this.emit(LogLevel.Info, "info", message, detail);
+    }
+
+    // Log a debug message with a detail string.
+    public method debug(message: static_ptr<u8>, detail: ref String) void {
+      this.emit(LogLevel.Debug, "debug", message, detail);
+    }
+
+    // Log a literal message at the given level with no detail.
+    public method log(level: LogLevel, message: static_ptr<u8>) void {
+      var empty = String("");
+      var tag: static_ptr<u8> = match level {
+        LogLevel.Error => "error",
+        LogLevel.Warn => "warn",
+        LogLevel.Info => "info",
+        LogLevel.Debug => "debug"
+      };
+      this.emit(level, tag, message, empty);
+    }
+
+    // Log the message text of a caught error.
+    public method error_caught(message: static_ptr<u8>, e: ref IError) void {
+      var text: String = e.message();
+      this.error(message, text);
+    }
+
+    // Write an access log line to stdout. The caller formats the request
+    // part; this adds the worker id and a newline.
+    public method access(entry: ref ByteBuffer) void {
+      if (not this.access_enabled) {
+        return;
+      }
+      this.line.clear();
+      this.line.append_literal("w");
+      this.line.append_i64(_convert<i64>(this.worker));
+      this.line.append_literal(" ");
+      this.line.append_bytes(entry.readable_ptr(), entry.readable_len());
+      this.flush(std.io.STDOUT_FD);
+    }
+  }
+}

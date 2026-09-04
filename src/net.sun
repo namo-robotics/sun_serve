@@ -1,0 +1,151 @@
+// net.sun - Nonblocking listener and socket calls shaped for an event loop
+//
+// The stdlib's TcpListener and TcpStream report readiness by throwing, which
+// is the wrong shape for a loop that expects "would block" thousands of times
+// a second. These wrappers return plain numbers instead and never own a
+// descriptor they did not create.
+
+public module sun_serve {
+  using std;
+
+  // Results of a nonblocking read or write, alongside a positive byte count.
+  public const IO_CLOSED: i64 = 0;
+  public const IO_WANT_READ: i64 = -1;
+  public const IO_WANT_WRITE: i64 = -2;
+  public const IO_ERROR: i64 = -3;
+
+  // A listening TCP socket bound with SO_REUSEPORT so every worker can own
+  // one on the same address and let the kernel spread connections.
+  public class ListenerSocket {
+    var fd: i32;  // 0 = holds nothing
+    public var tls: bool;  // whether accepted connections speak TLS
+    public var spec_index: i64;  // which Config.listen entry this serves
+
+    // Build a listener that is not bound yet.
+    init(tls: bool, spec_index: i64) {
+      this.fd = 0;
+      this.tls = tls;
+      this.spec_index = spec_index;
+    }
+
+    // Release the descriptor.
+    deinit() {
+      this.close();
+    }
+
+    // Create, configure, bind, and start listening on addr:port. Port zero
+    // lets the kernel choose; read the choice back with local_port().
+    public method bind(addr: const ref Ipv4Addr, port: i32, backlog: i32) void throws IError {
+      var sock: i32 = unsafe { __socket(AF_INET, SOCK_STREAM, 0); };
+      if (sock < 0) {
+        throw Error(last_errno(), "failed to create socket");
+      }
+      this.fd = sock;
+      var one: i32 = 1;
+      unsafe { __setsockopt(this.fd, SOL_SOCKET, SO_REUSEADDR, _address_of<i32>(one), 4); };
+      unsafe { __setsockopt(this.fd, SOL_SOCKET, SO_REUSEPORT, _address_of<i32>(one), 4); };
+      if (unsafe { __bind_ipv4(this.fd, addr.to_network_i32(), port); } < 0) {
+        var bind_err: i32 = last_errno();
+        this.close();
+        throw Error(bind_err, "failed to bind socket");
+      }
+      if (unsafe { __listen(this.fd, backlog); } < 0) {
+        var listen_err: i32 = last_errno();
+        this.close();
+        throw Error(listen_err, "failed to listen");
+      }
+      set_nonblocking(this.fd);
+    }
+
+    // The port actually bound.
+    public method local_port() i32 throws IError {
+      var ip: i32 = 0;
+      var port: i32 = 0;
+      var rc: i32 = unsafe { __getsockname_ipv4(this.fd, _address_of<i32>(ip), _address_of<i32>(port)); };
+      if (rc < 0) {
+        throw Error(last_errno(), "failed to read socket address");
+      }
+      return port;
+    }
+
+    // Accept one pending connection as a nonblocking, close-on-exec socket.
+    // Returns the new descriptor, zero when none is pending, or the negated
+    // errno when the accept itself failed.
+    public method accept() i32 {
+      var client: i32 = unsafe { sys_accept4(this.fd, null, null, SOCK_NONBLOCK | SOCK_CLOEXEC); };
+      if (client >= 0) {
+        return client;
+      }
+      var code: i32 = last_errno();
+      if (errno_would_block(code) or code == EINTR or code == ECONNABORTED) {
+        return 0;
+      }
+      return 0 - code;
+    }
+
+    // The listening descriptor, for epoll registration.
+    public method get_fd() i32 {
+      return this.fd;
+    }
+
+    // Report whether the listener holds a live descriptor.
+    public method is_open() bool {
+      return this.fd > 0;
+    }
+
+    // Close the listening socket.
+    public method close() void {
+      if (this.fd > 0) {
+        unsafe { __shutdown(this.fd, SHUT_RDWR); };
+        close_fd(this.fd);
+        this.fd = 0;
+      }
+    }
+  }
+
+  // Disable Nagle's algorithm so small responses leave immediately.
+  function set_tcp_nodelay(fd: i32) void {
+    var one: i32 = 1;
+    unsafe { __setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, _address_of<i32>(one), 4); };
+  }
+
+  // Read into buf from a nonblocking socket: bytes read, IO_CLOSED at end of
+  // stream, IO_WANT_READ when nothing is pending, IO_ERROR otherwise.
+  function socket_read(fd: i32, buf: raw_ptr<u8>, len: i64) i64 {
+    while (true) {
+      var n: i64 = unsafe { __recv(fd, buf, len, 0); };
+      if (n >= 0) {
+        return n;
+      }
+      var code: i32 = last_errno();
+      if (code == EINTR) {
+        continue;
+      }
+      if (errno_would_block(code)) {
+        return IO_WANT_READ;
+      }
+      return IO_ERROR;
+    }
+    return IO_ERROR;
+  }
+
+  // Write from buf to a nonblocking socket: bytes written, IO_WANT_WRITE when
+  // the send buffer is full, IO_ERROR otherwise.
+  function socket_write(fd: i32, buf: raw_ptr<u8>, len: i64) i64 {
+    while (true) {
+      var n: i64 = unsafe { __send(fd, buf, len, MSG_NOSIGNAL); };
+      if (n >= 0) {
+        return n;
+      }
+      var code: i32 = last_errno();
+      if (code == EINTR) {
+        continue;
+      }
+      if (errno_would_block(code)) {
+        return IO_WANT_WRITE;
+      }
+      return IO_ERROR;
+    }
+    return IO_ERROR;
+  }
+}

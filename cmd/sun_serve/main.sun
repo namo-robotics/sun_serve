@@ -1,0 +1,393 @@
+// main.sun - The sun_serve command: serve a directory over HTTP and HTTPS
+//
+// Usage: sun_serve [--root DIR] [--listen HOST:PORT] [--tls-listen HOST:PORT
+//        --cert FILE --key FILE] [options]
+//
+// Exit status: 0 after a clean shutdown, 1 if a worker failed, 2 for a usage
+// error, 3 when the server could not start.
+
+using std;
+using sun_serve;
+
+module sun_serve_cli {
+  using std;
+  using sun_serve;
+
+  // Everything the command line decided.
+  public class Cli {
+    public var config: Config;
+    public var static_opts: StaticOptions;
+    public var root: String;
+    public var workers: i32;
+    public var show_help: bool;
+    public var show_version: bool;
+    public var error: String;  // empty when parsing succeeded
+    var alloc: HeapAllocator;
+
+    // Defaults before any flag is read.
+    init(allocator: const ref HeapAllocator) {
+      this.alloc = allocator.copy();
+      this.config = Config(allocator);
+      this.static_opts = StaticOptions(allocator);
+      this.root = String(allocator, ".");
+      this.workers = 0;
+      this.show_help = false;
+      this.show_version = false;
+      this.error = String(allocator, "");
+    }
+
+    // Record a usage error mentioning the flag.
+    method fail(flag: const ref String, why: static_ptr<u8>) void {
+      this.error.clear();
+      this.error.append(flag);
+      this.error.append(": ");
+      this.error.append(why);
+    }
+  }
+
+  // The usage text.
+  public function usage() static_ptr<u8> {
+    return "usage: sun_serve [options]\n\nServe a directory over HTTP/1.1, with TLS when a certificate is given.\n\n  --root DIR                directory to serve (default: current directory)\n  --listen HOST:PORT        plain HTTP listener; repeatable (default 0.0.0.0:8080\n                            when no --tls-listen is given)\n  --tls-listen HOST:PORT    HTTPS listener; repeatable; needs --cert and --key\n  --cert FILE               PEM certificate chain for TLS listeners\n  --key FILE                PEM private key for TLS listeners\n  --workers N               worker threads (default: online CPUs)\n  --log-level LEVEL         error, warn, info, or debug (default: info)\n  --no-access-log           do not write one line per request to stdout\n  --max-body BYTES          largest request body, with optional k or m suffix\n  --max-header BYTES        largest request head, with optional k or m suffix\n  --keep-alive-timeout SEC  idle time before a keep-alive connection closes\n  --index NAME              directory index file (default: index.html)\n  --cache-control VALUE     Cache-Control header to send with files\n  --backlog N               listen backlog\n  --version                 print the version and exit\n  --help                    print this text and exit\n\nHOST may be an IPv4 address, localhost, or * for every interface.\n";
+  }
+
+  // Parse a byte count with an optional k or m suffix.
+  function parse_size(text: const ref String) Option<i64> {
+    var alloc = make_heap_allocator();
+    var digits = String(alloc, "");
+    var multiplier: i64 = 1;
+    for (var i: i64 = 0; i < text.length(); i = i + 1) {
+      var c: u8 = text.at(i);
+      if (c >= b'0' and c <= b'9') {
+        digits.append_char(c);
+      } else if ((c == b'k' or c == b'K') and i == text.length() - 1) {
+        multiplier = 1024;
+      } else if ((c == b'm' or c == b'M') and i == text.length() - 1) {
+        multiplier = 1048576;
+      } else {
+        return Option.None;
+      }
+    }
+    if (digits.length() == 0) {
+      return Option.None;
+    }
+    var value: i64 = match digits.parse_i64() {
+      Option.Some(v) => v,
+      Option.None => -1
+    };
+    if (value < 0) {
+      return Option.None;
+    }
+    return Option.Some(value * multiplier);
+  }
+
+  // Split HOST:PORT into an address and port. Returns false when malformed.
+  function parse_endpoint(text: const ref String, addr: ref Ipv4Addr, port: ref i32) bool {
+    var alloc = make_heap_allocator();
+    var colon: i64 = match text.rfind_char(b':') {
+      Option.Some(i) => i,
+      Option.None => -1
+    };
+    if (colon < 0) {
+      return false;
+    }
+    var host: String = String(alloc, "");
+    for (var i: i64 = 0; i < colon; i = i + 1) {
+      host.append_char(text.at(i));
+    }
+    var port_text = String(alloc, "");
+    for (var i: i64 = colon + 1; i < text.length(); i = i + 1) {
+      port_text.append_char(text.at(i));
+    }
+    var p: i64 = match port_text.parse_i64() {
+      Option.Some(v) => v,
+      Option.None => -1
+    };
+    if (p < 0 or p > 65535 or port_text.length() == 0) {
+      return false;
+    }
+    port = _convert<i32>(p);
+    if (host.length() == 0 or host.equals_literal("*")) {
+      addr = ipv4_any();
+      return true;
+    }
+    if (host.equals_literal("localhost")) {
+      addr = ipv4_loopback();
+      return true;
+    }
+    try {
+      addr = parse_ipv4(host);
+    } catch (e: IError) {
+      return false;
+    }
+    return true;
+  }
+
+  // Report whether a flag is one that takes a value.
+  function takes_value(flag: const ref String) bool {
+    return flag.equals_literal("--listen") or flag.equals_literal("--tls-listen") or flag.equals_literal("--cert") or flag.equals_literal("--key") or flag.equals_literal("--root") or flag.equals_literal("--workers") or flag.equals_literal("--log-level") or flag.equals_literal("--max-body") or flag.equals_literal("--max-header") or flag.equals_literal("--keep-alive-timeout") or flag.equals_literal("--index") or flag.equals_literal("--cache-control") or flag.equals_literal("--backlog");
+  }
+
+  // Interpret the command line. args includes the program name first.
+  public function parse_cli(alloc: const ref HeapAllocator, args: ref Vec<String>) Cli {
+    var cli = Cli(alloc);
+    var cert = String(alloc, "");
+    var key = String(alloc, "");
+    var i: i64 = 1;
+    while (i < args.size()) {
+      var arg: String = args.get_unchecked(i).clone(alloc);
+      i = i + 1;
+      // Split --flag=value.
+      var flag: String = arg.clone(alloc);
+      var value = String(alloc, "");
+      var has_value: bool = false;
+      var eq: i64 = match arg.find_char(b'=') {
+        Option.Some(v) => v,
+        Option.None => -1
+      };
+      if (eq > 0 and arg.starts_with("--")) {
+        flag.clear();
+        for (var k: i64 = 0; k < eq; k = k + 1) {
+          flag.append_char(arg.at(k));
+        }
+        for (var k: i64 = eq + 1; k < arg.length(); k = k + 1) {
+          value.append_char(arg.at(k));
+        }
+        has_value = true;
+      }
+      if (flag.equals_literal("--help") or flag.equals_literal("-h")) {
+        cli.show_help = true;
+        return cli;
+      }
+      if (flag.equals_literal("--version")) {
+        cli.show_version = true;
+        return cli;
+      }
+      if (flag.equals_literal("--no-access-log")) {
+        cli.config.access_log = false;
+        continue;
+      }
+      if (not takes_value(flag)) {
+        cli.fail(flag, "unknown option");
+        return cli;
+      }
+      if (not has_value) {
+        if (i >= args.size()) {
+          cli.fail(flag, "needs a value");
+          return cli;
+        }
+        value.clear();
+        value.append(args.get_unchecked(i));
+        i = i + 1;
+      }
+      if (flag.equals_literal("--listen") or flag.equals_literal("--tls-listen")) {
+        var addr: Ipv4Addr = ipv4_any();
+        var port: i32 = 0;
+        if (not parse_endpoint(value, addr, port)) {
+          cli.fail(flag, "expects HOST:PORT");
+          return cli;
+        }
+        if (flag.equals_literal("--listen")) {
+          cli.config.add_listen(addr, port);
+        } else {
+          cli.config.add_tls_listen(addr, port);
+        }
+      } else if (flag.equals_literal("--cert")) {
+        cert.clear();
+        cert.append(value);
+      } else if (flag.equals_literal("--key")) {
+        key.clear();
+        key.append(value);
+      } else if (flag.equals_literal("--root")) {
+        cli.root.clear();
+        cli.root.append(value);
+      } else if (flag.equals_literal("--workers")) {
+        var n: i64 = match value.parse_i64() {
+          Option.Some(v) => v,
+          Option.None => -1
+        };
+        if (n < 1 or n > 4096) {
+          cli.fail(flag, "expects a number of threads");
+          return cli;
+        }
+        cli.workers = _convert<i32>(n);
+      } else if (flag.equals_literal("--log-level")) {
+        var level: LogLevel = match parse_log_level(value) {
+          Option.Some(l) => l,
+          Option.None => LogLevel.Info
+        };
+        var known: bool = match parse_log_level(value) {
+          Option.Some(l) => true,
+          Option.None => false
+        };
+        if (not known) {
+          cli.fail(flag, "expects error, warn, info, or debug");
+          return cli;
+        }
+        cli.config.log_level = level;
+      } else if (flag.equals_literal("--max-body")) {
+        var size: i64 = match parse_size(value) {
+          Option.Some(v) => v,
+          Option.None => -1
+        };
+        if (size < 0) {
+          cli.fail(flag, "expects a byte count");
+          return cli;
+        }
+        cli.config.limits.max_body_bytes = size;
+      } else if (flag.equals_literal("--max-header")) {
+        var size: i64 = match parse_size(value) {
+          Option.Some(v) => v,
+          Option.None => -1
+        };
+        if (size < 1024) {
+          cli.fail(flag, "expects a byte count of at least 1k");
+          return cli;
+        }
+        cli.config.limits.max_header_bytes = size;
+      } else if (flag.equals_literal("--keep-alive-timeout")) {
+        var secs: i64 = match value.parse_i64() {
+          Option.Some(v) => v,
+          Option.None => -1
+        };
+        if (secs < 0) {
+          cli.fail(flag, "expects seconds");
+          return cli;
+        }
+        cli.config.timeouts.keep_alive_ms = secs * 1000;
+      } else if (flag.equals_literal("--index")) {
+        cli.static_opts.index_name.clear();
+        cli.static_opts.index_name.append(value);
+      } else if (flag.equals_literal("--cache-control")) {
+        cli.static_opts.cache_control.clear();
+        cli.static_opts.cache_control.append(value);
+      } else if (flag.equals_literal("--backlog")) {
+        var n: i64 = match value.parse_i64() {
+          Option.Some(v) => v,
+          Option.None => -1
+        };
+        if (n < 1) {
+          cli.fail(flag, "expects a positive number");
+          return cli;
+        }
+        cli.config.backlog = _convert<i32>(n);
+      }
+    }
+    if (cli.config.has_tls_listener()) {
+      if (cert.length() == 0 or key.length() == 0) {
+        var which = String(alloc, "--tls-listen");
+        cli.fail(which, "needs --cert and --key");
+        return cli;
+      }
+      cli.config.set_tls(cert, key);
+    }
+    if (cli.config.listen.size() == 0) {
+      cli.config.add_listen(ipv4_any(), 8080);
+    }
+    if (cli.workers == 0) {
+      cli.workers = online_cpus();
+    }
+    return cli;
+  }
+
+  // Print one "listening on" line per listener.
+  function announce(alloc: const ref HeapAllocator, server: const ref Server, cfg: const ref Config, workers: i32) void {
+    for (var i: i64 = 0; i < cfg.listen.size(); i = i + 1) {
+      var spec: const ref ListenSpec = cfg.listen.get_unchecked(i);
+      var line = String(alloc, "listening on ");
+      if (spec.tls) {
+        line.append("https://");
+      } else {
+        line.append("http://");
+      }
+      var host: String = spec.addr.to_string(alloc);
+      line.append(host);
+      line.append_char(b':');
+      line.append(server.port(i));
+      if (i == 0) {
+        line.append(" with ");
+        line.append(workers);
+        line.append(" workers");
+      }
+      eprintln(line);
+    }
+  }
+
+  // Run the command; returns the process exit status.
+  public function run(argc: i32, argv: raw_ptr<raw_ptr<i8>>) i32 {
+    var alloc = make_heap_allocator();
+    var env = std.env.Env(alloc);
+    var args: Vec<String> = env.args(argc, argv);
+    var cli: Cli = parse_cli(alloc, args);
+    if (cli.show_help) {
+      print(usage());
+      return 0;
+    }
+    if (cli.show_version) {
+      print("sun_serve ");
+      println(sun_serve.version());
+      return 0;
+    }
+    if (cli.error.length() > 0) {
+      eprint("sun_serve: ");
+      eprintln(cli.error);
+      eprint(usage());
+      return 2;
+    }
+    try {
+      install_signal_handlers();
+      var handlers: Vec<IHandler> = static_handlers(alloc, cli.root, cli.static_opts, cli.workers);
+      var server = Server(alloc, cli.config.clone(), handlers);
+      server.start();
+      announce(alloc, server, cli.config, cli.workers);
+      var tick = std.time.create_duration_millis(cli.config.timeouts.tick_ms);
+      while (not shutdown_requested()) {
+        std.time.sleep(tick);
+      }
+      eprintln("shutting down");
+      server.stop();
+      if (server.join() != 0) {
+        return 1;
+      }
+      return 0;
+    } catch (e: IError) {
+      var msg: String = e.message();
+      eprint("sun_serve: ");
+      eprintln(msg);
+      return 3;
+    }
+  }
+}
+
+function main(argc: i32, argv: raw_ptr<raw_ptr<i8>>) i32 {
+  return sun_serve_cli.run(argc, argv);
+}
+
+manifest {
+  source_files: [
+    "$SUN_SERVE_SRC/version.sun",
+    "$SUN_SERVE_SRC/sys_ffi.sun",
+    "$SUN_SERVE_SRC/abi_linux.sun",
+    "$SUN_SERVE_SRC/buffer.sun",
+    "$SUN_SERVE_SRC/net.sun",
+    "$SUN_SERVE_SRC/epoll.sun",
+    "$SUN_SERVE_SRC/log.sun",
+    "$SUN_SERVE_SRC/config.sun",
+    "$SUN_SERVE_SRC/http/status.sun",
+    "$SUN_SERVE_SRC/http/date.sun",
+    "$SUN_SERVE_SRC/http/mime.sun",
+    "$SUN_SERVE_SRC/http/request.sun",
+    "$SUN_SERVE_SRC/http/response.sun",
+    "$SUN_SERVE_SRC/handler.sun",
+    "$SUN_SERVE_SRC/tls/openssl_server.sun",
+    "$SUN_SERVE_SRC/tls/tls_context.sun",
+    "$SUN_SERVE_SRC/tls/tls_session.sun",
+    "$SUN_SERVE_SRC/transport.sun",
+    "$SUN_SERVE_SRC/signals.sun",
+    "$SUN_SERVE_SRC/connection.sun",
+    "$SUN_SERVE_SRC/worker.sun",
+    "$SUN_SERVE_SRC/server.sun",
+    "$SUN_SERVE_SRC/static_files.sun"
+  ]
+  test_files: ["cli_tests.sun"]
+  libraries: ["stdlib.moon", "tls.moon"]
+}

@@ -1,0 +1,138 @@
+// sys_ffi.sun - The libc boundary sun_serve adds on top of the stdlib
+//
+// Every C symbol this library calls directly is declared here once, following
+// the stdlib's sys.sun convention: the declarations stay module-private and the
+// `sys_` prefix only marks call sites. Anything the stdlib already wraps
+// (sockets, files, time) is reached through the stdlib instead.
+
+public module sun_serve {
+  using std;
+
+  // --- readiness and descriptors -----------------------------------------
+
+  extern "C" function sys_epoll_create1(flags: i32) i32 as "epoll_create1";
+  extern "C" function sys_epoll_ctl(epfd: i32, op: i32, fd: i32, event: raw_ptr<u8>) i32 as "epoll_ctl";
+  extern "C" function sys_epoll_wait(epfd: i32, events: raw_ptr<u8>, max_events: i32, timeout_ms: i32) i32 as "epoll_wait";
+  extern "C" function sys_accept4(fd: i32, addr: raw_ptr<u8>, len: raw_ptr<u8>, flags: i32) i32 as "accept4";
+  extern "C" function sys_fcntl(fd: i32, command: i32, ...) i32 as "fcntl";
+  extern "C" function sys_close(fd: i32) i32 as "close";
+  extern "C" function sys_write(fd: i32, buf: raw_ptr<u8>, count: i64) i64 as "write";
+  extern "C" function sys_fstat(fd: i32, buf: raw_ptr<u8>) i32 as "fstat";
+
+  // --- process and platform ----------------------------------------------
+
+  extern "C" function sys_sysconf(name: i32) i64 as "sysconf";
+  extern "C" function sys_uname(buf: raw_ptr<u8>) i32 as "uname";
+  extern "C" function sys_errno_location() raw_ptr<i32> as "__errno_location";
+  extern "C" function sys_sigaction(sig: i32, act: ref SigAction, old: raw_ptr<u8>) i32 as "sigaction";
+  extern "C" function sys_signal(sig: i32, handler: i64) i64 as "signal";
+
+  // --- constants (Linux ABI values) --------------------------------------
+
+  public const EPOLLIN: u32 = 1;
+  public const EPOLLOUT: u32 = 4;
+  public const EPOLLERR: u32 = 8;
+  public const EPOLLHUP: u32 = 16;
+  public const EPOLLRDHUP: u32 = 8192;
+  const EPOLL_CTL_ADD: i32 = 1;
+  const EPOLL_CTL_DEL: i32 = 2;
+  const EPOLL_CTL_MOD: i32 = 3;
+  const EPOLL_CLOEXEC: i32 = 524288;
+
+  const SOCK_NONBLOCK: i32 = 2048;
+  const SOCK_CLOEXEC: i32 = 524288;
+  const O_NONBLOCK: i32 = 2048;
+  const F_GETFL: i32 = 3;
+  const F_SETFL: i32 = 4;
+
+  const SO_REUSEPORT: i32 = 15;
+  const IPPROTO_TCP: i32 = 6;
+  const TCP_NODELAY: i32 = 1;
+
+  const EINTR: i32 = 4;
+  const EAGAIN: i32 = 11;
+  const ENFILE: i32 = 23;
+  const EMFILE: i32 = 24;
+  const ECONNABORTED: i32 = 103;
+
+  const SC_NPROCESSORS_ONLN: i32 = 84;
+  const SIGPIPE: i32 = 13;
+  const SIG_IGN: i64 = 1;
+
+  // struct stat field offsets shared by x86_64 and aarch64
+  const STAT_SIZE_OFFSET: i64 = 48;
+  const STAT_MTIME_OFFSET: i64 = 88;
+  const S_IFMT: u32 = 61440;
+  const S_IFDIR: u32 = 16384;
+  const S_IFREG: u32 = 32768;
+
+  // Mirrors struct sigaction on x86_64 and aarch64 for both glibc and musl.
+  class SigAction {
+    var handler: function (i32) void;
+    var mask: array<u64, 16>;
+    var flags: i32;
+    var restorer: raw_ptr<u8>;
+  }
+
+  // The calling thread's errno after a failed C call.
+  function last_errno() i32 {
+    return unsafe { _load<i32>(sys_errno_location(), 0); };
+  }
+
+  // Report whether an errno value means a nonblocking call should be retried
+  // once the descriptor is ready.
+  function errno_would_block(code: i32) bool {
+    return code == EAGAIN;
+  }
+
+  // Switch a descriptor to nonblocking mode, keeping its other flags.
+  function set_nonblocking(fd: i32) void throws IError {
+    var flags: i32 = unsafe { sys_fcntl(fd, F_GETFL); };
+    if (flags < 0) {
+      throw Error(last_errno(), "failed to read descriptor flags");
+    }
+    var result: i32 = unsafe { sys_fcntl(fd, F_SETFL, flags | O_NONBLOCK); };
+    if (result < 0) {
+      throw Error(last_errno(), "failed to set descriptor flags");
+    }
+  }
+
+  // Close a descriptor, ignoring errors. Only positive descriptors are closed,
+  // so a zeroed (moved-from) owner never touches stdin.
+  function close_fd(fd: i32) void {
+    if (fd > 0) {
+      unsafe { sys_close(fd); };
+    }
+  }
+
+  // Write a whole buffer to a descriptor, retrying on partial writes. Errors
+  // are ignored: this backs logging, which must never fail the caller.
+  function write_all(fd: i32, data: raw_ptr<u8>, len: i64) void {
+    var done: i64 = 0;
+    while (done < len) {
+      var n: i64 = unsafe { sys_write(fd, _ptr_offset(data, done), len - done); };
+      if (n <= 0) {
+        if (n < 0 and last_errno() == EINTR) {
+          continue;
+        }
+        return;
+      }
+      done = done + n;
+    }
+  }
+
+  // The number of CPUs currently online, or one if the system will not say.
+  public function online_cpus() i32 {
+    var n: i64 = unsafe { sys_sysconf(SC_NPROCESSORS_ONLN); };
+    if (n < 1) {
+      return 1;
+    }
+    return _convert<i32>(n);
+  }
+
+  // Stop a write to a closed socket from killing the process. OpenSSL writes
+  // straight to the descriptor, so MSG_NOSIGNAL alone is not enough.
+  public function ignore_sigpipe() void {
+    unsafe { sys_signal(SIGPIPE, SIG_IGN); };
+  }
+}
