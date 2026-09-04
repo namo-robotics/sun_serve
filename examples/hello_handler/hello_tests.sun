@@ -1,0 +1,127 @@
+// hello_tests.sun - The example handler, exercised end to end over loopback
+//
+// Each test starts a real server on a kernel-picked port, sends one request
+// with a plain TCP socket, and checks the reply. The same pattern works for
+// testing any handler built on sun_serve.
+
+module hello_handler {
+  module tests {
+    using std;
+    using sun_serve;
+
+    // struct timeval for SO_RCVTIMEO.
+    class Timeval {
+      var sec: i64;
+      var usec: i64;
+      init(sec: i64) {
+        this.sec = sec;
+        this.usec = 0;
+      }
+    }
+
+    // A HelloHandler server on loopback with one worker, so /stats counts
+    // every request the test sends.
+    class TestServer {
+      public var server: Server;
+      public var port: i32;
+
+      init(alloc: ref HeapAllocator) throws IError {
+        var cfg = Config(alloc);
+        cfg.add_listen(ipv4_loopback(), 0);
+        cfg.timeouts.drain_ms = 500;
+        cfg.timeouts.tick_ms = 50;
+        cfg.access_log = false;
+        cfg.log_level = LogLevel.Error;
+        this.server = Server(alloc, cfg, hello_handlers(alloc, 1));
+        this.server.start();
+        this.port = this.server.port(0);
+      }
+
+      // Send one request with Connection: close and return the whole reply.
+      // A receive timeout turns a server that never answers into a failure
+      // instead of a hang.
+      public method exchange(alloc: ref HeapAllocator, request: static_ptr<u8>) String throws IError {
+        var stream = TcpStream();
+        stream.connect_local(this.port);
+        var tv = Timeval(10);
+        unsafe { __setsockopt(stream.get_fd(), SOL_SOCKET, SO_RCVTIMEO, _address_of<Timeval>(tv), 16); };
+        stream.send_str(request);
+        var reply = String(alloc, "");
+        var chunk = ContiguousBuffer<u8>(alloc, 4096);
+        while (true) {
+          var n: i64 = stream.recv(chunk);
+          if (n <= 0) {
+            break;
+          }
+          for (var i: i64 = 0; i < n; i = i + 1) {
+            reply.append_char(chunk.get_unchecked(i));
+          }
+        }
+        stream.close();
+        return reply;
+      }
+    }
+
+    // The body is everything after the blank line that ends the head.
+    function body_of(alloc: ref HeapAllocator, reply: const ref String) String {
+      var start: i64 = find_header_end(reply) + 4;
+      var body = String(alloc, "");
+      for (var i: i64 = start; i < reply.length(); i = i + 1) {
+        body.append_char(reply.at(i));
+      }
+      return body;
+    }
+
+    test_function greets_by_name() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(alloc, "GET /hi?name=sun HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      std.test.assert(reply.starts_with("HTTP/1.1 200 "), "status");
+      std.test.assert(reply.contains("Content-Type: text/plain"), "content type");
+      var body: String = body_of(alloc, reply);
+      std.test.assert(body.equals_literal("hello, sun\n"), "greeting");
+    }
+
+    test_function greets_the_world_without_a_name() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var body: String = body_of(alloc, reply);
+      std.test.assert(body.equals_literal("hello, world\n"), "default greeting");
+    }
+
+    test_function echoes_a_posted_body() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(alloc, "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nping");
+      std.test.assert(reply.starts_with("HTTP/1.1 200 "), "status");
+      var body: String = body_of(alloc, reply);
+      std.test.assert(body.equals_literal("ping"), "echoed body");
+    }
+
+    test_function echo_rejects_other_methods() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(alloc, "GET /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      std.test.assert(reply.starts_with("HTTP/1.1 405 "), "method not allowed");
+      std.test.assert(reply.contains("Allow: POST"), "allow header");
+    }
+
+    test_function counts_requests_per_worker() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc);
+      ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var reply: String = ts.exchange(alloc, "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var body: String = body_of(alloc, reply);
+      std.test.assert(body.equals_literal("requests handled by this worker: 3\n"), "third request");
+    }
+
+    test_function unknown_paths_are_404() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(alloc, "GET /missing HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      std.test.assert(reply.starts_with("HTTP/1.1 404 "), "not found");
+    }
+  }
+}

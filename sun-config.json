@@ -16,7 +16,7 @@
       "test_binary_name": "build/sun_serve_test"
     },
     {
-      "path": "examples/hello_handler.sun",
+      "path": "examples/hello_handler/main.sun",
       "type": "binary",
       "output_name": "build/hello_handler",
       "test_binary_name": "build/hello_handler_test"

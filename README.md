@@ -51,8 +51,9 @@ curl http://127.0.0.1:8080/
 ```
 
 **A custom handler** is a program that links the library and answers requests
-itself. `examples/hello_handler.sun` is a complete one; building it needs the
-`sun` toolchain (see [Build and run](#build-and-run)):
+itself. [examples/hello_handler](examples/hello_handler) is a complete one,
+with tests; building it needs the `sun` toolchain (see
+[Build and run](#build-and-run)):
 
 ```sh
 sun -c sun-config.json           # produces build/hello_handler
@@ -67,7 +68,7 @@ handler the binary uses. [Using the library](#using-the-library) shows the code.
 
 Requires the `sun` toolchain (see the `Dockerfile` for the exact image).
 
-```
+```bash
 scripts/build.sh          # format check + sun -c sun-config.json -> build/
 scripts/test.sh           # compiled test suites (add --jit to run under the JIT)
 scripts/mkcert.sh build   # self-signed localhost certificate for local use
@@ -105,11 +106,13 @@ function main() i32 throws IError {
 }
 ```
 
-`examples/hello_handler.sun` is the complete version of that program. For
-richer handlers implement `IHandler` directly, which is what `StaticFiles` in
-`src/static_files.sun` does; a handler can also hold a `StaticFiles` and
-delegate to it for the paths it does not serve itself. The devcontainer uses
-host networking, so ports bound inside it are reachable from the host as is.
+For richer handlers implement [`IHandler`](src/handler.sun) directly, which
+is what [`StaticFiles`](src/static_files.sun) does; a handler can also hold a
+`StaticFiles` and delegate to it for the paths it does not serve itself.
+[examples/hello_handler](examples/hello_handler) is a complete program built
+this way: a handler class with per-worker state, query parameters, request
+bodies, and end-to-end tests that CI runs. The devcontainer uses host
+networking, so ports bound inside it are reachable from the host as is.
 
 Request accessors (`path()`, `query_param()`, `header()`, `body_ptr()`, ...)
 are views into the connection's buffer and are valid only during `handle()`;
@@ -130,7 +133,7 @@ src/            the library: sys_ffi (libc boundary), epoll, net, buffer,
                 machine), worker (event loop), server, static_files
 cmd/sun_serve/  the command
 tests/          unit and loopback integration tests, incl. HTTPS
-examples/       hello_handler.sun
+examples/       hello_handler/, a custom handler with its own tests
 scripts/        build.sh, test.sh, bench.sh, mkcert.sh
 ```
 
@@ -166,15 +169,16 @@ The small-file numbers are bounded by the Python client, not the server.
 `scripts/test.sh` runs the unit tests (buffer, epoll, parser, response,
 dates, MIME, path normalization), the loopback integration tests (keep-alive,
 pipelining, large bodies, chunked both ways, limits, HEAD, `Connection:
-close`, `Expect`, idle timeout, graceful stop, static files), and the HTTPS tests,
+close`, `Expect`, idle timeout, graceful stop, static files), the HTTPS tests,
 which mint a certificate with the `openssl` tool and use it as the client so
-they run in parallel with the rest. The VS Code test explorer runs the same
+they run in parallel with the rest, and the example's tests. The VS Code test explorer runs the same
 suites through `sun-config.json`.
 
 ## Status and roadmap
 
 - Linux x86_64. The installed Sun stdlib and TLS moons are x86_64-only, so
   the aarch64 cross build in the Dockerfile waits on per-target moons.
-- Not yet: `Range` requests, `sendfile`, directory listings, HTTP/2.
+- Not yet: `Range` requests, `sendfile`, directory listings, HTTP/2. See
+  [ROADMAP.md](ROADMAP.md) for the full list, in order of importance.
 - `SUN_FEEDBACK.md` lists the compiler and stdlib issues found while
   building this, with reproductions.
