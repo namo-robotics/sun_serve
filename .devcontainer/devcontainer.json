@@ -2,7 +2,8 @@
 	"name": "sun_serve",
 	"build": {
 		"context": "..",
-		"dockerfile": "../Dockerfile"
+		"dockerfile": "../Dockerfile",
+		"target": "dev"
 	},
 	// Bind mounts fail if the host source path is missing, so create the
 	// optional ones on the host before the container starts.

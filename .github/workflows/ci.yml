@@ -16,6 +16,7 @@ jobs:
         uses: docker/build-push-action@v6
         with:
           context: .
+          target: toolchain
           load: true
           tags: sun_serve-ci
           cache-from: type=gha

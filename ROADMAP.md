@@ -59,5 +59,6 @@ self-contained piece of work; nothing here is scheduled.
   - A structured access log format alongside the current one-line form.
 
 - **aarch64 builds**
-  - The Dockerfile has the cross toolchain, but the installed Sun stdlib and
-    TLS moons are x86_64 only. Waits on per-target moons upstream.
+  - The Dockerfile's dev stage has Ubuntu's aarch64 cross toolchain, but the
+    installed Sun stdlib and TLS moons are x86_64 only. Waits on per-target
+    moons upstream.
