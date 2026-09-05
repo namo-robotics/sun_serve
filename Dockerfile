@@ -31,7 +31,7 @@ ENV PATH="/opt/cross/x86_64-linux-musl-cross/bin:${PATH}"
 ARG ZLIB_VERSION=1.3.2
 ARG ZLIB_SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
 
-# Build zlib with the same musl compiler Sun uses for static binaries.
+# Build zlib with musl's compiler and archive tools before installing Sun.
 RUN curl -fSL --connect-timeout 10 --max-time 300 \
       --retry 3 --retry-all-errors --retry-delay 2 \
       -o /tmp/zlib.tar.gz \
@@ -40,7 +40,9 @@ RUN curl -fSL --connect-timeout 10 --max-time 300 \
  && mkdir -p /tmp/zlib-src \
  && tar xzf /tmp/zlib.tar.gz -C /tmp/zlib-src --strip-components=1 \
  && cd /tmp/zlib-src \
- && CC=x86_64-linux-musl-gcc ./configure --static \
+ && CC=x86_64-linux-musl-gcc \
+      AR=x86_64-linux-musl-ar \
+      RANLIB=x86_64-linux-musl-ranlib ./configure --static \
       --prefix=/opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl \
  && make -j2 \
  && make install \
