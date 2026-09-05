@@ -11,6 +11,7 @@ public module sun_serve {
    */
   module protocol_tests {
     using std;
+    using std.thread;
     using sun_serve;
 
     // Send one message through a handle owned by another thread.

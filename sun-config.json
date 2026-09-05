@@ -1,6 +1,7 @@
 {
   "sun_path": [
-    "build"
+    "build",
+    "/usr/lib/sun"
   ],
   "path_variables": {
     "ZLIB_LIB": "/opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib"
