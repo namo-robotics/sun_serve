@@ -314,7 +314,10 @@ consumer keeps `sun_serve/libz.a` but drops `tls/libssl.a` and
 comment in any library source flips the outcome (34 builds, no exception).
 Listing `tls.moon` before or after `sun_serve.moon` in the consumer manifest,
 or omitting it, makes no difference. Consumers should collect the archives of
-every moon in the import graph regardless of module order.
+every moon in the import graph regardless of module order. Workaround in
+sun_serve: the library manifest lists its own static OpenSSL archives (built
+in the Dockerfile with the musl toolchain), which reach every consumer's link
+line no matter how the hashes sort.
 
 ---
 

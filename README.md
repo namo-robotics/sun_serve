@@ -123,8 +123,11 @@ in-memory body, a file to stream (`send_file`), or chunks (`write_chunk`).
 
 The build produces `build/sun_serve.moon`. Consumers add its directory to
 `sun_path` and list `stdlib.moon`, `tls.moon`, and `sun_serve.moon` in their
-manifest's `libraries`. The Moon files carry their required native archives.
-The hello example uses this setup directly.
+manifest's `libraries`. The Moon files carry their required native archives;
+`sun_serve.moon` also carries its own copies of zlib and OpenSSL, built with
+the musl toolchain in the `Dockerfile`, because the Sun linker can drop a
+dependency's archives (see `SUN_FEEDBACK.md`). The hello example uses this
+setup directly.
 
 ## Layout
 

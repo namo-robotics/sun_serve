@@ -49,6 +49,30 @@ RUN curl -fSL --connect-timeout 10 --max-time 300 \
  && test -f /opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib/libz.a \
  && rm -rf /tmp/zlib-src /tmp/zlib.tar.gz
 
+ARG OPENSSL_VERSION=3.3.7
+ARG OPENSSL_SHA256=4900be54e81c4dfe00bb1a10dad33fd8414833573c40d0e9e3274d4ed32e53a2
+
+# Build static OpenSSL with musl's compiler. tls.moon carries the same version,
+# but the Sun linker drops a dependency's archives when module hashes sort in
+# an unlucky order (SUN_FEEDBACK.md, issue 218), so sun_serve.moon carries its
+# own copies of libssl.a and libcrypto.a.
+RUN curl -fSL --connect-timeout 10 --max-time 300 \
+      --retry 3 --retry-all-errors --retry-delay 2 \
+      -o /tmp/openssl.tar.gz \
+      "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" \
+ && echo "${OPENSSL_SHA256}  /tmp/openssl.tar.gz" | sha256sum -c - \
+ && mkdir -p /tmp/openssl-src \
+ && tar xzf /tmp/openssl.tar.gz -C /tmp/openssl-src --strip-components=1 \
+ && cd /tmp/openssl-src \
+ && ./Configure linux-x86_64 no-shared no-dso no-tests no-apps no-docs \
+      --cross-compile-prefix=x86_64-linux-musl- \
+      --prefix=/opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl --libdir=lib \
+ && make -j2 build_libs \
+ && make install_dev \
+ && test -f /opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib/libssl.a \
+ && test -f /opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib/libcrypto.a \
+ && rm -rf /tmp/openssl-src /tmp/openssl.tar.gz
+
 # Refresh the rolling compiler per workflow run, after the cached native tools.
 ARG SUN_REFRESH=local
 RUN echo "Sun package refresh: ${SUN_REFRESH}" \
