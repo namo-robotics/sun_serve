@@ -15,18 +15,6 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     ca-certificates curl make nghttp2-client openssl \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
-# Install the rolling Sun compiler together with its matching stdlib and TLS
-# bundles. apt resolves the LLVM runtime and the host C toolchain declared
-# by the package.
-RUN curl -fsSL -o /tmp/sun.deb \
-      https://github.com/namo-robotics/sun/releases/download/dev/sun_0.dev_amd64.deb \
- && apt-get update \
- && apt-get install -y --no-install-recommends /tmp/sun.deb \
- && sun --version \
- && rm -f /tmp/sun.deb \
- && apt-get clean \
- && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
-
 # The musl toolchain provides the libstdc++ needed by Sun's static link mode.
 # Use musl.cc's GitHub mirror because the main download host is unreliable.
 RUN mkdir -p /opt/cross \
@@ -58,6 +46,18 @@ RUN curl -fSL --connect-timeout 10 --max-time 300 \
  && make install \
  && test -f /opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib/libz.a \
  && rm -rf /tmp/zlib-src /tmp/zlib.tar.gz
+
+# Refresh the rolling compiler per workflow run, after the cached native tools.
+ARG SUN_REFRESH=local
+RUN echo "Sun package refresh: ${SUN_REFRESH}" \
+ && curl -fsSL -o /tmp/sun.deb \
+      https://github.com/namo-robotics/sun/releases/download/dev/sun_0.dev_amd64.deb \
+ && apt-get update \
+ && apt-get install -y --no-install-recommends /tmp/sun.deb \
+ && sun --version \
+ && rm -f /tmp/sun.deb \
+ && apt-get clean \
+ && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # Default ports of the sun_serve command (HTTP/h2c, HTTPS/h2) and the example. The
 # devcontainer runs with host networking, so these are reachable from the

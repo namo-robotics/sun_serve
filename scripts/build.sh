@@ -3,6 +3,7 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 mkdir -p build
+sun --version
 scripts/check-sun-safety.sh
 scripts/check-sun-comments.sh
 sun fmt --check src cmd tests examples

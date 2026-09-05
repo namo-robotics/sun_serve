@@ -10,13 +10,14 @@ jobs:
     steps:
       - uses: actions/checkout@v4
       - uses: docker/setup-buildx-action@v3
-      # Layers are cached between runs, so the toolchain downloads in the
-      # Dockerfile only happen again when the Dockerfile changes.
+      # Refresh Sun on every run and retry while caching the native tools.
       - name: Build the toolchain image
         uses: docker/build-push-action@v6
         with:
           context: .
           target: toolchain
+          build-args: |
+            SUN_REFRESH=${{ github.run_id }}-${{ github.run_attempt }}
           load: true
           tags: sun_serve-ci
           cache-from: type=gha
