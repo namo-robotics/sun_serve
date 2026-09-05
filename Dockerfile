@@ -9,10 +9,11 @@ FROM ubuntu:26.04 AS toolchain
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC
 
-# curl and certificates fetch the compiler below; the openssl tool mints the
-# certificates the TLS tests use and acts as their client.
+# curl and certificates fetch the compiler below. Perl builds OpenSSL, whose
+# command also mints the certificates the TLS tests use and acts as their client.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl make nghttp2-client openssl \
+    ca-certificates curl make nghttp2-client openssl perl \
+    && perl -MFindBin -e 1 \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # The musl toolchain provides the libstdc++ needed by Sun's static link mode.
