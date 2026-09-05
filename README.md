@@ -121,10 +121,10 @@ are views into the connection's buffer and are valid only during `handle()`;
 the `String`-returning variants copy. Responses take a status, headers, an
 in-memory body, a file to stream (`send_file`), or chunks (`write_chunk`).
 
-The library is compiled from source through the `$SUN_SERVE_SRC` path
-variable in `sun-config.json`. `build/sun_serve.moon` is also produced, but
-consuming it from another program currently trips two compiler issues
-(see `SUN_FEEDBACK.md`), so the source route is the supported one for now.
+The build produces `build/sun_serve.moon`. Consumers add its directory to
+`sun_path` and list `stdlib.moon`, `tls.moon`, and `sun_serve.moon` in their
+manifest's `libraries`. The Moon files carry their required native archives.
+The hello example uses this setup directly.
 
 ## Layout
 

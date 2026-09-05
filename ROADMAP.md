@@ -9,14 +9,6 @@ self-contained piece of work; nothing here is scheduled.
   - Needed for resumable downloads and seeking in audio and video.
   - Covers single byte ranges, `If-Range`, and 416 for unsatisfiable ranges.
 
-- **Use the library as a `.moon`**
-  - Programs currently compile sun_serve in from source through the
-    `$SUN_SERVE_SRC` path variable. Consuming `build/sun_serve.moon` is blocked
-    by compiler issues with interface types across a moon boundary, tracked in
-    `SUN_FEEDBACK.md`.
-  - Once those land, ship the moon as the supported way to depend on sun_serve
-    and drop the source-file manifest from the example and the command.
-
 - **Streaming request bodies**
   - A request body is buffered in full, up to the configured limit, before the
     handler runs. Uploads larger than memory are not possible.

@@ -16,9 +16,8 @@
  *   curl "${SERVER}/stats"
  *   websocat "${SERVER/http:/ws:}/ws"
  *
- * The library is compiled in from source through the $SUN_SERVE_SRC path
- * variable in sun-config.json. Importing build/sun_serve.moon instead is
- * blocked by two compiler issues recorded in SUN_FEEDBACK.md.
+ * The program links build/sun_serve.moon, which sun-config.json builds before
+ * this example.
  */
 
 using std;
@@ -151,34 +150,6 @@ function main() i32 {
 }
 
 manifest {
-  source_files: [
-    "$SUN_SERVE_SRC/version.sun",
-    "$SUN_SERVE_SRC/sys_ffi.sun",
-    "$SUN_SERVE_SRC/abi_linux.sun",
-    "$SUN_SERVE_SRC/buffer.sun",
-    "$SUN_SERVE_SRC/net.sun",
-    "$SUN_SERVE_SRC/epoll.sun",
-    "$SUN_SERVE_SRC/log.sun",
-    "$SUN_SERVE_SRC/config.sun",
-    "$SUN_SERVE_SRC/http/status.sun",
-    "$SUN_SERVE_SRC/http/date.sun",
-    "$SUN_SERVE_SRC/http/mime.sun",
-    "$SUN_SERVE_SRC/http/request.sun",
-    "$SUN_SERVE_SRC/http2.sun",
-    "$SUN_SERVE_SRC/http/response.sun",
-    "$SUN_SERVE_SRC/websocket.sun",
-    "$SUN_SERVE_SRC/handler.sun",
-    "$SUN_SERVE_SRC/tls/openssl_server.sun",
-    "$SUN_SERVE_SRC/tls/tls_context.sun",
-    "$SUN_SERVE_SRC/tls/tls_session.sun",
-    "$SUN_SERVE_SRC/transport.sun",
-    "$SUN_SERVE_SRC/signals.sun",
-    "$SUN_SERVE_SRC/connection.sun",
-    "$SUN_SERVE_SRC/worker.sun",
-    "$SUN_SERVE_SRC/server.sun",
-    "$SUN_SERVE_SRC/static_files.sun"
-  ]
   test_files: ["hello_tests.sun"]
-  libraries: ["stdlib.moon", "tls.moon"]
-  archives: ["$ZLIB_LIB/libz.a"]
+  libraries: ["stdlib.moon", "tls.moon", "sun_serve.moon"]
 }

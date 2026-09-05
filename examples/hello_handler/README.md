@@ -40,7 +40,7 @@ on every push.
 ## Files
 
 - `main.sun` holds the handler, the `main` that starts a `Server` with one
-  handler per CPU, and the manifest that compiles the library in from source.
+  handler per CPU, and the manifest that links `sun_serve.moon`.
 - `hello_tests.sun` starts a real server on a loopback port for each test,
   sends one request over a TCP socket, and checks the reply. The same pattern
   works for testing any handler built on sun_serve.

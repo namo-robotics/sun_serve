@@ -383,34 +383,6 @@ function main(argc: i32, argv: raw_ptr<raw_ptr<i8>>) i32 {
 }
 
 manifest {
-  source_files: [
-    "$SUN_SERVE_SRC/version.sun",
-    "$SUN_SERVE_SRC/sys_ffi.sun",
-    "$SUN_SERVE_SRC/abi_linux.sun",
-    "$SUN_SERVE_SRC/buffer.sun",
-    "$SUN_SERVE_SRC/net.sun",
-    "$SUN_SERVE_SRC/epoll.sun",
-    "$SUN_SERVE_SRC/log.sun",
-    "$SUN_SERVE_SRC/config.sun",
-    "$SUN_SERVE_SRC/http/status.sun",
-    "$SUN_SERVE_SRC/http/date.sun",
-    "$SUN_SERVE_SRC/http/mime.sun",
-    "$SUN_SERVE_SRC/http/request.sun",
-    "$SUN_SERVE_SRC/http2.sun",
-    "$SUN_SERVE_SRC/http/response.sun",
-    "$SUN_SERVE_SRC/websocket.sun",
-    "$SUN_SERVE_SRC/handler.sun",
-    "$SUN_SERVE_SRC/tls/openssl_server.sun",
-    "$SUN_SERVE_SRC/tls/tls_context.sun",
-    "$SUN_SERVE_SRC/tls/tls_session.sun",
-    "$SUN_SERVE_SRC/transport.sun",
-    "$SUN_SERVE_SRC/signals.sun",
-    "$SUN_SERVE_SRC/connection.sun",
-    "$SUN_SERVE_SRC/worker.sun",
-    "$SUN_SERVE_SRC/server.sun",
-    "$SUN_SERVE_SRC/static_files.sun"
-  ]
   test_files: ["cli_tests.sun"]
-  libraries: ["stdlib.moon", "tls.moon"]
-  archives: ["$ZLIB_LIB/libz.a"]
+  libraries: ["stdlib.moon", "tls.moon", "sun_serve.moon"]
 }
