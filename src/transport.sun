@@ -16,14 +16,8 @@ public module sun_serve {
 
   // Presents the same nonblocking operations for plain and TLS sockets.
   public class Transport {
-    var fd: i32;  // nonpositive values hold no descriptor
-    var tls: TlsSession;
-
-    // Start with no socket.
-    init() {
-      this.fd = 0;
-      this.tls = TlsSession();
-    }
+    var fd: i32 = 0;  // nonpositive values hold no descriptor
+    var tls: TlsSession = TlsSession();
 
     // Close on drop.
     deinit() {

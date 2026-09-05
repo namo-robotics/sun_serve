@@ -22,9 +22,9 @@ public module sun_serve {
     var threads: Vec<Thread<i32>>;
     var stop_cell: Unique<i32>;
     var ports: Vec<i32>;
-    var tls: TlsServerContext;
-    var started: bool;
-    var joined: bool;
+    var tls: TlsServerContext = TlsServerContext();
+    var started: bool = false;
+    var joined: bool = false;
 
     /*
      * Prepare a server. The number of handlers is the number of worker
@@ -40,9 +40,6 @@ public module sun_serve {
       // create_unique does not write primitive values (see SUN_FEEDBACK.md).
       atomic_store(this.stop_cell, 0);
       this.ports = Vec<i32>(allocator, 4);
-      this.tls = TlsServerContext();
-      this.started = false;
-      this.joined = false;
       if (this.handlers.size() == 0) {
         throw Error(-1, "a server needs at least one handler");
       }

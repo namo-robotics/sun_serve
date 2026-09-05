@@ -69,9 +69,6 @@ public module sun_serve {
 
   // Answers every request as not found. Useful as a placeholder.
   public class NotFoundHandler implements IHandler {
-    // Nothing to set up.
-    init() {}
-
     // Send a plain-text not-found response.
     public method handle(req: const ref Request, resp: ref Response) void {
       resp.set_status(404);

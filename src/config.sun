@@ -59,33 +59,22 @@ public module sun_serve {
     }
   }
 
-  // Caps that keep one client from exhausting a worker.
+  // Caps that keep one client from exhausting a worker. The defaults suit a general-purpose server.
   public class Limits {
     // The largest accepted request head in bytes.
-    public var max_header_bytes: i64;
+    public var max_header_bytes: i64 = 16384;
     // The largest accepted request body in bytes.
-    public var max_body_bytes: i64;
+    public var max_body_bytes: i64 = 8388608;
     // The largest accepted header count.
-    public var max_headers: i64;
+    public var max_headers: i64 = 100;
     // The largest connection count owned by one worker.
-    public var max_connections_per_worker: i64;
+    public var max_connections_per_worker: i64 = 8192;
     // The most pipelined requests served for one readiness event.
-    public var max_pipelined: i64;
+    public var max_pipelined: i64 = 16;
     // The largest concurrent HTTP/2 stream count.
-    public var max_h2_concurrent_streams: i64;
+    public var max_h2_concurrent_streams: i64 = 100;
     // The largest amount of buffered HTTP/2 request data.
-    public var max_h2_buffered_bytes: i64;
-
-    // Sensible defaults for a general-purpose server.
-    init() {
-      this.max_header_bytes = 16384;
-      this.max_body_bytes = 8388608;
-      this.max_headers = 100;
-      this.max_connections_per_worker = 8192;
-      this.max_pipelined = 16;
-      this.max_h2_concurrent_streams = 100;
-      this.max_h2_buffered_bytes = this.max_body_bytes;
-    }
+    public var max_h2_buffered_bytes: i64 = this.max_body_bytes;
 
     // An independent copy.
     public const method clone() Limits {
@@ -101,33 +90,22 @@ public module sun_serve {
     }
   }
 
-  // How long a connection may sit in each state, in milliseconds.
+  // How long a connection may sit in each state, in milliseconds. The defaults are tuned for browsers and command-line clients.
   public class Timeouts {
     // The TLS handshake deadline.
-    public var handshake_ms: i64;
+    public var handshake_ms: i64 = 10000;
     // The request-head deadline.
-    public var header_ms: i64;
+    public var header_ms: i64 = 30000;
     // The request-body deadline.
-    public var body_ms: i64;
+    public var body_ms: i64 = 60000;
     // The idle keep-alive deadline.
-    public var keep_alive_ms: i64;
+    public var keep_alive_ms: i64 = 75000;
     // The response-write deadline.
-    public var write_ms: i64;
+    public var write_ms: i64 = 60000;
     // The shutdown grace period for active requests.
-    public var drain_ms: i64;
+    public var drain_ms: i64 = 5000;
     // How often idle workers wake to inspect server state.
-    public var tick_ms: i64;
-
-    // Defaults tuned for browsers and command-line clients.
-    init() {
-      this.handshake_ms = 10000;
-      this.header_ms = 30000;
-      this.body_ms = 60000;
-      this.keep_alive_ms = 75000;
-      this.write_ms = 60000;
-      this.drain_ms = 5000;
-      this.tick_ms = 250;
-    }
+    public var tick_ms: i64 = 250;
 
     // An independent copy.
     public const method clone() Timeouts {
@@ -150,23 +128,23 @@ public module sun_serve {
     // The configured TLS certificate and key.
     public var tls: TlsSpec;
     // Whether TLS credentials have been configured.
-    public var has_tls: bool;
+    public var has_tls: bool = false;
     // The pending-connection queue size.
-    public var backlog: i32;
+    public var backlog: i32 = 1024;
     // The server resource limits.
-    public var limits: Limits;
+    public var limits: Limits = Limits();
     // The connection timeouts.
-    public var timeouts: Timeouts;
+    public var timeouts: Timeouts = Timeouts();
     // The least severe diagnostic level to write.
-    public var log_level: LogLevel;
+    public var log_level: LogLevel = LogLevel.Info;
     // Whether completed requests are logged.
-    public var access_log: bool;
+    public var access_log: bool = true;
     // Whether responses include the Server header.
-    public var server_header: bool;
+    public var server_header: bool = true;
     // Whether HTTP/2 support is enabled.
-    public var http2: bool;
+    public var http2: bool = true;
     // Whether WebSocket compression may be negotiated.
-    public var websocket_compression: bool;
+    public var websocket_compression: bool = true;
     var alloc: HeapAllocator;
 
     // Start from defaults with no listeners.
@@ -174,15 +152,6 @@ public module sun_serve {
       this.alloc = allocator.copy();
       this.listen = Vec<ListenSpec>(allocator, 4);
       this.tls = TlsSpec(allocator);
-      this.has_tls = false;
-      this.backlog = 1024;
-      this.limits = Limits();
-      this.timeouts = Timeouts();
-      this.log_level = LogLevel.Info;
-      this.access_log = true;
-      this.server_header = true;
-      this.http2 = true;
-      this.websocket_compression = true;
     }
 
     // Add a plain HTTP listener.

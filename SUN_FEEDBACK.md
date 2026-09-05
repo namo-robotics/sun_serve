@@ -305,6 +305,17 @@ against the archives tls.moon carries, most likely a link-order problem
 (archives placed before the objects that need them, or only the direct
 importer's archives being passed to the linker).
 
+**Update (sun 0.dev 474ccc55f05d):** the failure now depends only on the
+library's module hash. Every module gets a content hash that prefixes its
+mangled symbols (`$3d936214$_tls_`, `$d87a9b92$_sun_serve_`). Whenever
+sun_serve's hash sorts below tls's (`0x3d936214`), the link line for a
+consumer keeps `sun_serve/libz.a` but drops `tls/libssl.a` and
+`tls/libcrypto.a`; whenever it sorts above, everything links. Editing a single
+comment in any library source flips the outcome (34 builds, no exception).
+Listing `tls.moon` before or after `sun_serve.moon` in the consumer manifest,
+or omitting it, makes no difference. Consumers should collect the archives of
+every moon in the import graph regardless of module order.
+
 ---
 
 ## Bug: passing a class where an interface value is expected is inconsistent

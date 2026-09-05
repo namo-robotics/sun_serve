@@ -161,12 +161,12 @@ public module sun_serve {
       date.refresh();
       conn.queue_h2_response(date, 1, false, true);
       conn.flush_h2_response_data();
-      std.test.assert_eq(conn.h2_send_window, 0);
+      std.test.assert_eq(conn.h2.send_window, 0);
       var response_index: i64 = conn.find_h2_response_stream(1);
       std.test.assert(response_index >= 0, "response remains queued");
-      std.test.assert_eq(conn.h2_responses.get_unchecked(response_index).data.readable_len(), 4465);
-      conn.h2_send_window = 4465;
-      conn.h2_responses.get_unchecked(response_index).window = 4465;
+      std.test.assert_eq(conn.h2.responses.get_unchecked(response_index).data.readable_len(), 4465);
+      conn.h2.send_window = 4465;
+      conn.h2.responses.get_unchecked(response_index).window = 4465;
       conn.flush_h2_response_data();
       std.test.assert(conn.find_h2_response_stream(1) < 0, "response completed after update");
     }

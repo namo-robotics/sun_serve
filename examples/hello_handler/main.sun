@@ -35,13 +35,12 @@ module hello_handler {
    * thread owns one instance, so the counter needs no locking.
    */
   public class HelloHandler implements IHandler {
-    var served: i64;
+    var served: i64 = 0;
     var alloc: HeapAllocator;
 
     // Start with an empty counter.
     init(allocator: const ref HeapAllocator) {
       this.alloc = allocator.copy();
-      this.served = 0;
     }
 
     // Route the request by path.

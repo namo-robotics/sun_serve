@@ -17,35 +17,27 @@ public module sun_serve {
   // Collects the status, headers, and body produced by a handler.
   public class Response {
     // The HTTP status code sent to the client.
-    public var status: i32;
+    public var status: i32 = 200;
     var header_lines: ByteBuffer;  // extra headers, each already "Name: value\r\n"
     var body: ByteBuffer;
     var chunk_payload: ByteBuffer;
     var content_type_: String;
-    var has_content_type: bool;
-    var file: File;
-    var file_remaining: i64;
-    var has_file: bool;
-    var chunked: bool;  // body holds chunk-framed data
-    var chunks_ended: bool;
-    var close_after: bool;
+    var has_content_type: bool = false;
+    var file: File = File();
+    var file_remaining: i64 = 0;
+    var has_file: bool = false;
+    var chunked: bool = false;  // body holds chunk-framed data
+    var chunks_ended: bool = false;
+    var close_after: bool = false;
     var alloc: HeapAllocator;
 
     // Build an empty successful response.
     init(allocator: const ref HeapAllocator) {
       this.alloc = allocator.copy();
-      this.status = 200;
       this.header_lines = ByteBuffer(allocator, 256);
       this.body = ByteBuffer(allocator, 1024);
       this.chunk_payload = ByteBuffer(allocator, 1024);
       this.content_type_ = String(allocator, "");
-      this.has_content_type = false;
-      this.file = File();
-      this.file_remaining = 0;
-      this.has_file = false;
-      this.chunked = false;
-      this.chunks_ended = false;
-      this.close_after = false;
     }
 
     // Return to the initial successful state for the next request.

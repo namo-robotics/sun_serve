@@ -14,12 +14,7 @@ public module sun_serve {
 
   // Owns an optional OpenSSL session for one connection.
   public class TlsSession {
-    var ssl: raw_ptr<u8>;  // null = no TLS on this connection
-
-    // Start without a session.
-    init() {
-      this.ssl = null;
-    }
+    var ssl: raw_ptr<u8> = null;  // null = no TLS on this connection
 
     // Free the session.
     deinit() {

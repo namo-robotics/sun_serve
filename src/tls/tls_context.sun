@@ -81,14 +81,13 @@ public module sun_serve {
 
   // Owns the SSL_CTX built from a TlsSpec.
   public class TlsServerContext {
-    var ctx: raw_ptr<u8>;
+    var ctx: raw_ptr<u8> = null;
 
     /*
      * Load the certificate chain and key, apply transport hardening, and
      * allow partial writes for the nonblocking loop.
      */
     init(alloc: const ref HeapAllocator, spec: const ref TlsSpec, http2: bool) throws IError {
-      this.ctx = null;
       var cert_path: String = spec.cert_path.clone(alloc);
       var key_path: String = spec.key_path.clone(alloc);
       ensure_alpn_list();
@@ -133,9 +132,7 @@ public module sun_serve {
     }
 
     // A context with no certificate, for servers without TLS listeners.
-    init() {
-      this.ctx = null;
-    }
+    init() {}
 
     // Drop this owner's reference.
     deinit() {

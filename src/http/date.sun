@@ -73,12 +73,11 @@ public module sun_serve {
   // A formatted Date header value, rebuilt at most once per second.
   public class DateCache {
     var text: String;
-    var second: i64;
+    var second: i64 = -1i64;
 
     // Start with the current time formatted.
     init(alloc: const ref HeapAllocator) {
       this.text = String(alloc, "");
-      this.second = -1i64;
       this.refresh();
     }
 

@@ -20,10 +20,9 @@ module hello_handler {
     // struct timeval for SO_RCVTIMEO.
     class Timeval {
       var sec: i64;
-      var usec: i64;
+      var usec: i64 = 0;
       init(sec: i64) {
         this.sec = sec;
-        this.usec = 0;
       }
     }
 

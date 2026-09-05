@@ -23,38 +23,20 @@ public module sun_serve {
 
   // The public zlib stream layout on 64-bit Linux.
   class ZStream {
-    var next_in: raw_ptr<u8>;
-    var avail_in: u32;
-    var total_in: u64;
-    var next_out: raw_ptr<u8>;
-    var avail_out: u32;
-    var total_out: u64;
-    var message: raw_ptr<u8>;
-    var state: raw_ptr<u8>;
-    var allocate: raw_ptr<u8>;
-    var free: raw_ptr<u8>;
-    var opaque: raw_ptr<u8>;
-    var data_type: i32;
-    var adler: u64;
-    var reserved: u64;
-
-    // Initialize a stream for zlib to populate.
-    init() {
-      this.next_in = null;
-      this.avail_in = 0;
-      this.total_in = 0;
-      this.next_out = null;
-      this.avail_out = 0;
-      this.total_out = 0;
-      this.message = null;
-      this.state = null;
-      this.allocate = null;
-      this.free = null;
-      this.opaque = null;
-      this.data_type = 0;
-      this.adler = 0;
-      this.reserved = 0;
-    }
+    var next_in: raw_ptr<u8> = null;
+    var avail_in: u32 = 0;
+    var total_in: u64 = 0;
+    var next_out: raw_ptr<u8> = null;
+    var avail_out: u32 = 0;
+    var total_out: u64 = 0;
+    var message: raw_ptr<u8> = null;
+    var state: raw_ptr<u8> = null;
+    var allocate: raw_ptr<u8> = null;
+    var free: raw_ptr<u8> = null;
+    var opaque: raw_ptr<u8> = null;
+    var data_type: i32 = 0;
+    var adler: u64 = 0;
+    var reserved: u64 = 0;
   }
 
   // Notify the owning worker that a handle queued output.
@@ -167,22 +149,20 @@ public module sun_serve {
   // The application decision for a valid WebSocket opening request.
   public class WebSocketHandshake {
     // Whether the application accepted the opening request.
-    public var accepted: bool;
+    public var accepted: bool = false;
     // The selected subprotocol, or an empty string when none was selected.
     public var subprotocol: String;
     // Whether compression was negotiated for the connection.
     public var compression: bool;
     // The HTTP status used when the request is rejected.
-    public var reject_status: i32;
+    public var reject_status: i32 = 404;
     var alloc: HeapAllocator;
 
     // Start as a rejected handshake.
     init(allocator: const ref HeapAllocator, compression: bool) {
       this.alloc = allocator.copy();
-      this.accepted = false;
       this.subprotocol = String(allocator, "");
       this.compression = compression;
-      this.reject_status = 404;
     }
 
     // Accept without selecting a subprotocol.
@@ -206,20 +186,15 @@ public module sun_serve {
 
   // State shared by the worker and every asynchronous handle clone.
   class WebSocketMailbox {
-    var active: bool;
-    var generation: i64;
-    var max_bytes: i64;
-    var compression: bool;
-    var wake_fd: i32;
+    var active: bool = false;
+    var generation: i64 = 0;
+    var max_bytes: i64 = 0;
+    var compression: bool = false;
+    var wake_fd: i32 = 0;
     var queue: ByteBuffer;
 
     // Build an inactive mailbox.
     init(alloc: const ref HeapAllocator) {
-      this.active = false;
-      this.generation = 0;
-      this.max_bytes = 0;
-      this.compression = false;
-      this.wake_fd = 0;
       this.queue = ByteBuffer(alloc, 256);
     }
 
@@ -292,6 +267,62 @@ public module sun_serve {
       }
       websocket_wake(this.wake_fd);
       return WebSocketSendResult.Queued;
+    }
+  }
+
+  /*
+   * One connection's WebSocket session: the shared mailbox behind its handles
+   * and the reassembly state of the message being received.
+   */
+  class WebSocketState {
+    var mailbox: Shared<WebSocketMailbox>;
+    var generation: i64 = 0;  // handles from earlier sessions are ignored
+    var wake_fd: i32 = 0;  // the owning worker's wake descriptor
+    var upgrading: bool = false;  // the 101 response is being written
+    var fragmenting: bool = false;
+    var fragment_compressed: bool = false;
+    var fragment_opcode: u8 = 0;
+    var compression: bool = false;
+    var closing: bool = false;
+
+    // Create the mailbox shared with asynchronous handles.
+    init(alloc: const ref HeapAllocator) {
+      this.mailbox = Shared<WebSocketMailbox>(alloc, WebSocketMailbox(alloc));
+    }
+
+    // Prepare for a new connection owned by the worker behind wake_fd.
+    method reset(wake_fd: i32) void {
+      this.wake_fd = wake_fd;
+      this.upgrading = false;
+      this.fragmenting = false;
+      this.fragment_compressed = false;
+      this.fragment_opcode = 0;
+      this.compression = false;
+      this.closing = false;
+    }
+
+    // Start a new session generation that handles may send into.
+    method activate(max_bytes: i64, compression: bool) void {
+      this.compression = compression;
+      var guard = this.mailbox.lock();
+      this.generation = guard.get().activate(max_bytes, compression, this.wake_fd);
+    }
+
+    // Move queued asynchronous frames into out. Returns false once deactivated.
+    method drain_to(out: ref ByteBuffer) bool {
+      var guard = this.mailbox.lock();
+      return guard.get().drain(this.generation, out);
+    }
+
+    // Invalidate every handle of the current session.
+    method deactivate() void {
+      var guard = this.mailbox.lock();
+      guard.get().deactivate(this.generation);
+    }
+
+    // A handle for the application to keep or clone.
+    method handle() WebSocketHandle {
+      return WebSocketHandle(this.mailbox.clone(), this.generation);
     }
   }
 

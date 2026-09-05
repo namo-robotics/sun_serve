@@ -19,24 +19,22 @@ public module sun_serve {
     // struct timeval for SO_RCVTIMEO.
     class Timeval {
       var sec: i64;
-      var usec: i64;
+      var usec: i64 = 0;
       init(sec: i64) {
         this.sec = sec;
-        this.usec = 0;
       }
     }
 
     // What the client read back for one request.
     public class ClientResponse {
       // The parsed HTTP status code.
-      public var status: i32;
+      public var status: i32 = 0;
       // The header block after the status line.
       public var head: String;
       // The decoded response body.
       public var body: String;
 
       init(alloc: const ref HeapAllocator) {
-        this.status = 0;
         this.head = String(alloc, "");
         this.body = String(alloc, "");
       }
@@ -74,14 +72,13 @@ public module sun_serve {
 
     // Provides the blocking socket operations used by integration tests.
     public class RawClient {
-      var stream: TcpStream;
+      var stream: TcpStream = TcpStream();
       var pending: String;  // bytes read but not yet consumed
       var alloc: HeapAllocator;
 
       // Connect to loopback on port with a receive timeout.
       init(allocator: const ref HeapAllocator, port: i32) throws IError {
         this.alloc = allocator.copy();
-        this.stream = TcpStream();
         this.pending = String(allocator, "");
         this.stream.connect_local(port);
         set_socket_receive_timeout(this.stream.get_fd(), 10);

@@ -24,13 +24,12 @@ public module sun_serve {
     // The Cache-Control value, or an empty string when omitted.
     public var cache_control: String;
     // Whether text media types receive a UTF-8 charset.
-    public var add_charset: bool;
+    public var add_charset: bool = true;
 
     // Defaults: index.html, no Cache-Control, charset on text.
     init(alloc: const ref HeapAllocator) {
       this.index_name = String(alloc, "index.html");
       this.cache_control = String(alloc, "");
-      this.add_charset = true;
     }
 
     // An independent copy.

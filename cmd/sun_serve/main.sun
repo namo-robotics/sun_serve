@@ -27,11 +27,11 @@ module sun_serve_cli {
     // The directory served by the command.
     public var root: String;
     // The requested worker count.
-    public var workers: i32;
+    public var workers: i32 = 0;
     // Whether help should be printed.
-    public var show_help: bool;
+    public var show_help: bool = false;
     // Whether version information should be printed.
-    public var show_version: bool;
+    public var show_version: bool = false;
     // The parsing error, or an empty string after successful parsing.
     public var error: String;
     var alloc: HeapAllocator;
@@ -42,9 +42,6 @@ module sun_serve_cli {
       this.config = Config(allocator);
       this.static_opts = StaticOptions(allocator);
       this.root = String(allocator, ".");
-      this.workers = 0;
-      this.show_help = false;
-      this.show_version = false;
       this.error = String(allocator, "");
     }
 

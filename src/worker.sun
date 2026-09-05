@@ -54,14 +54,14 @@ public module sun_serve {
     var wake_fd: i32;
     var conns: Vec<Connection>;
     var free: Vec<i64>;
-    var live: i64;
+    var live: i64 = 0;
     var log: Logger;
     var date: DateCache;
-    var epoch: Instant;
-    var stopping: bool;
-    var drain_deadline: i64;
-    var next_sweep: i64;
-    var accept_paused_until: i64;
+    var epoch: Instant = now();
+    var stopping: bool = false;
+    var drain_deadline: i64 = 0;
+    var next_sweep: i64 = 0;
+    var accept_paused_until: i64 = 0;
 
     // Set up the loop's resources. Listeners are registered in run().
     init(args: WorkerArgs) throws IError {
@@ -69,7 +69,6 @@ public module sun_serve {
       this.alloc = alloc.copy();
       this.log = Logger(alloc, args.config.log_level, args.id, args.config.access_log);
       this.date = DateCache(alloc);
-      this.epoch = now();
       var layout: EpollLayout = probe_epoll_layout(alloc);
       this.epoll = Epoll(alloc, layout, 256);
       this.wake_fd = create_event_counter();
@@ -78,11 +77,6 @@ public module sun_serve {
       }
       this.conns = Vec<Connection>(alloc, 64);
       this.free = Vec<i64>(alloc, 64);
-      this.live = 0;
-      this.stopping = false;
-      this.drain_deadline = 0;
-      this.next_sweep = 0;
-      this.accept_paused_until = 0;
       this.args = args;
     }
 

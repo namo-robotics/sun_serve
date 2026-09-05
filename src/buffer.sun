@@ -33,15 +33,13 @@ public module sun_serve {
   public class ByteBuffer {
     var data: ContiguousBuffer<u8>;
     var alloc: HeapAllocator;
-    var len: i64;  // bytes stored from the start of the block
-    var pos: i64;  // bytes already consumed from the front
+    var len: i64 = 0;  // bytes stored from the start of the block
+    var pos: i64 = 0;  // bytes already consumed from the front
 
     // Build an empty buffer with room for capacity bytes.
     init(allocator: const ref HeapAllocator, capacity: i64) {
       this.alloc = allocator.copy();
       this.data = ContiguousBuffer<u8>(allocator, capacity);
-      this.len = 0;
-      this.pos = 0;
     }
 
     // Bytes available to read.

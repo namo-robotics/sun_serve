@@ -42,8 +42,8 @@ public module sun_serve {
 
   // Buffered request state for one active HTTP/2 stream.
   class H2RequestStream {
-    var active: bool;
-    var id: u32;
+    var active: bool = false;
+    var id: u32 = 0;
     var headers: Vec<H2Header>;
     var body: ByteBuffer;
     var alloc: HeapAllocator;
@@ -51,8 +51,6 @@ public module sun_serve {
     // Build an unused stream slot.
     init(allocator: const ref HeapAllocator) {
       this.alloc = allocator.copy();
-      this.active = false;
-      this.id = 0;
       this.headers = Vec<H2Header>(allocator, 16);
       this.body = ByteBuffer(allocator, 256);
     }
@@ -79,16 +77,13 @@ public module sun_serve {
 
   // Flow-controlled response data for one HTTP/2 stream.
   class H2ResponseStream {
-    var active: bool;
-    var id: u32;
-    var window: i64;
+    var active: bool = false;
+    var id: u32 = 0;
+    var window: i64 = 0;
     var data: ByteBuffer;
 
     // Build an unused response slot.
     init(allocator: const ref HeapAllocator) {
-      this.active = false;
-      this.id = 0;
-      this.window = 0;
       this.data = ByteBuffer(allocator, 256);
     }
 
@@ -112,16 +107,14 @@ public module sun_serve {
   // The HPACK dynamic table for one connection.
   class HpackDecoder {
     var entries: Vec<H2Header>;
-    var bytes: i64;
-    var maximum: i64;
+    var bytes: i64 = 0;
+    var maximum: i64 = 4096;
     var alloc: HeapAllocator;
 
     // Start with the RFC default dynamic-table limit.
     init(alloc: const ref HeapAllocator) {
       this.alloc = alloc.copy();
       this.entries = Vec<H2Header>(alloc, 16);
-      this.bytes = 0;
-      this.maximum = 4096;
     }
 
     // Empty the dynamic table for a new connection.
@@ -177,6 +170,91 @@ public module sun_serve {
         this.entries = remaining;
         this.bytes = this.bytes - old_size;
       }
+    }
+  }
+
+  /*
+   * Connection-level HTTP/2 state: the peer's settings, HPACK decoding, the
+   * header block being assembled, and the request and response stream tables.
+   */
+  class H2ConnectionState {
+    // The decoded header fields of the request being dispatched.
+    var headers: Vec<H2Header>;
+    var hpack: HpackDecoder;
+    var stream: u32 = 0;  // the stream whose request is being handled
+    var preface: bool = false;
+    var headers_ready: bool = false;
+    var header_block: ByteBuffer;
+    var continuation_stream: u32 = 0;
+    var header_end_stream: bool = false;
+    var streams: Vec<H2RequestStream>;
+    var open_streams: i64 = 0;
+    var buffered_bytes: i64 = 0;
+    var last_client_stream: u32 = 0;
+    var peer_frame_size: i64 = H2_DEFAULT_FRAME_SIZE;
+    var peer_initial_window: i64 = 65535;
+    var send_window: i64 = 65535;
+    var responses: Vec<H2ResponseStream>;
+    var enable_connect: bool = false;
+    var upgrading: bool = false;  // an h2c upgrade response is being written
+
+    // Allocate the tables; reset() prepares them for a connection.
+    init(alloc: const ref HeapAllocator) {
+      this.headers = Vec<H2Header>(alloc, 16);
+      this.hpack = HpackDecoder(alloc);
+      this.header_block = ByteBuffer(alloc, 512);
+      this.streams = Vec<H2RequestStream>(alloc, 16);
+      this.responses = Vec<H2ResponseStream>(alloc, 16);
+    }
+
+    // Return to the initial protocol state, keeping the allocations.
+    method reset() void {
+      this.headers.clear();
+      this.hpack.reset();
+      this.stream = 0;
+      this.preface = false;
+      this.headers_ready = false;
+      this.header_block.clear();
+      this.continuation_stream = 0;
+      this.header_end_stream = false;
+      for (var stream_slot: i64 = 0; stream_slot < this.streams.size(); stream_slot = stream_slot + 1) {
+        this.streams.get_unchecked(stream_slot).reset();
+      }
+      this.open_streams = 0;
+      this.buffered_bytes = 0;
+      this.last_client_stream = 0;
+      this.peer_frame_size = H2_DEFAULT_FRAME_SIZE;
+      this.peer_initial_window = 65535;
+      this.send_window = 65535;
+      for (var response_slot: i64 = 0; response_slot < this.responses.size(); response_slot = response_slot + 1) {
+        this.responses.get_unchecked(response_slot).reset();
+      }
+      this.enable_connect = false;
+      this.upgrading = false;
+    }
+  }
+
+  // A WebSocket session tunneled over one HTTP/2 stream with extended CONNECT.
+  class H2WebSocketTunnel {
+    var stream: u32 = 0;  // zero while no tunnel is open
+    var inbound: ByteBuffer;  // WebSocket frames received as DATA
+    var outbound: ByteBuffer;  // WebSocket frames waiting for send window
+    var send_window: i64 = 0;
+    var end_pending: bool = false;  // END_STREAM must follow the queued frames
+
+    // Allocate the frame buffers.
+    init(alloc: const ref HeapAllocator) {
+      this.inbound = ByteBuffer(alloc, 256);
+      this.outbound = ByteBuffer(alloc, 256);
+    }
+
+    // Forget any tunnel, keeping the allocations.
+    method reset() void {
+      this.stream = 0;
+      this.inbound.clear();
+      this.outbound.clear();
+      this.send_window = 0;
+      this.end_pending = false;
     }
   }
 

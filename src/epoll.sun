@@ -14,7 +14,7 @@ public module sun_serve {
 
   // Owns an epoll instance and decodes its ready events.
   public class Epoll {
-    var fd: i32;  // nonpositive values hold no descriptor
+    var fd: i32 = 0;  // nonpositive values hold no descriptor
     var events: ContiguousBuffer<u8>;
     var scratch: ContiguousBuffer<u8>;  // one event for epoll_ctl
     var max_events: i64;
@@ -26,7 +26,6 @@ public module sun_serve {
       this.events = ContiguousBuffer<u8>(alloc, max_events * layout.stride);
       this.layout = layout;
       this.scratch = ContiguousBuffer<u8>(alloc, 16);
-      this.fd = 0;
       var created: i32 = unsafe { sys_epoll_create1(EPOLL_CLOEXEC); };
       if (created < 0) {
         throw Error(last_errno(), "epoll_create1 failed");

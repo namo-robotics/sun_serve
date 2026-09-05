@@ -27,7 +27,7 @@ public module sun_serve {
    * one on the same address and let the kernel spread connections.
    */
   public class ListenerSocket {
-    var fd: i32;  // nonpositive values hold no descriptor
+    var fd: i32 = 0;  // nonpositive values hold no descriptor
     // Whether accepted connections use TLS.
     public var tls: bool;
     // The matching entry in the configured listener list.
@@ -35,7 +35,6 @@ public module sun_serve {
 
     // Build a listener that is not bound yet.
     init(tls: bool, spec_index: i64) {
-      this.fd = 0;
       this.tls = tls;
       this.spec_index = spec_index;
     }
@@ -122,12 +121,11 @@ public module sun_serve {
   // The C timeval layout used for socket timeouts.
   class SocketTimeout {
     var seconds: i64;
-    var microseconds: i64;
+    var microseconds: i64 = 0;
 
     // Build a whole-second timeout.
     init(seconds: i64) {
       this.seconds = seconds;
-      this.microseconds = 0;
     }
   }
 
