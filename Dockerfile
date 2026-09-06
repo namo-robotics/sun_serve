@@ -53,10 +53,8 @@ RUN curl -fSL --connect-timeout 10 --max-time 300 \
 ARG OPENSSL_VERSION=3.3.7
 ARG OPENSSL_SHA256=4900be54e81c4dfe00bb1a10dad33fd8414833573c40d0e9e3274d4ed32e53a2
 
-# Build static OpenSSL with musl's compiler. tls.moon carries the same version,
-# but the Sun linker drops a dependency's archives when module hashes sort in
-# an unlucky order (SUN_FEEDBACK.md, issue 218), so sun_serve.moon carries its
-# own copies of libssl.a and libcrypto.a.
+# Build static OpenSSL for sun_serve's server bindings. sun_serve.moon carries
+# these archives so consumers need no separate OpenSSL or TLS bundle.
 RUN curl -fSL --connect-timeout 10 --max-time 300 \
       --retry 3 --retry-all-errors --retry-delay 2 \
       -o /tmp/openssl.tar.gz \
@@ -108,7 +106,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     # Cross-compilation to AArch64: toolchain+sysroot to link `sun --target
     # aarch64-linux-gnu -c` output, qemu-user to run the result on x86
     # (qemu-aarch64 -L /usr/aarch64-linux-gnu <binary>). Waits on aarch64
-    # builds of the stdlib and TLS moons before it is useful.
+    # builds of the stdlib moon and native archives before it is useful.
     g++-aarch64-linux-gnu \
     qemu-user \
     && locale-gen en_US.UTF-8 \

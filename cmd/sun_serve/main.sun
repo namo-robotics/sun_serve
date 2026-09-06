@@ -381,5 +381,5 @@ function main(argc: i32, argv: raw_ptr<raw_ptr<i8>>) i32 {
 
 manifest {
   test_files: ["cli_tests.sun"]
-  libraries: ["stdlib.moon", "tls.moon", "sun_serve.moon"]
+  libraries: ["stdlib.moon", "sun_serve.moon"]
 }

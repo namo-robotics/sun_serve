@@ -122,12 +122,13 @@ the `String`-returning variants copy. Responses take a status, headers, an
 in-memory body, a file to stream (`send_file`), or chunks (`write_chunk`).
 
 The build produces `build/sun_serve.moon`. Consumers add its directory to
-`sun_path` and list `stdlib.moon`, `tls.moon`, and `sun_serve.moon` in their
-manifest's `libraries`. The Moon files carry their required native archives;
-`sun_serve.moon` also carries its own copies of zlib and OpenSSL, built with
-the musl toolchain in the `Dockerfile`, because the Sun linker can drop a
-dependency's archives (see `SUN_FEEDBACK.md`). The hello example uses this
-setup directly.
+`sun_path` and list `stdlib.moon` and `sun_serve.moon` in their manifest's
+`libraries`. `sun_serve.moon` carries zlib and OpenSSL, built with the musl
+toolchain in the `Dockerfile`; consumers link those archives transitively.
+No `tls.moon` dependency is needed: the server provides its own TLS bindings,
+and Sun isolates each bundle's native symbols. Use a current Sun toolchain
+with the fix for [sun#218](https://github.com/namo-robotics/sun/issues/218).
+The hello example uses this setup directly.
 
 ## Layout
 
@@ -181,8 +182,9 @@ suites through `sun-config.json`.
 
 ## Status and roadmap
 
-- Linux x86_64. The installed Sun stdlib and TLS moons are x86_64-only, so
-  the aarch64 cross build in the Dockerfile waits on per-target moons.
+- Linux x86_64. The installed Sun stdlib moon and native archives are
+  x86_64-only, so the aarch64 cross build in the Dockerfile waits on
+  per-target builds.
 - Not yet: `Range` requests, `sendfile`, and directory listings. See
   [ROADMAP.md](ROADMAP.md) for the full list, in order of importance.
 - `SUN_FEEDBACK.md` lists the compiler and stdlib issues found while

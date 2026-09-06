@@ -2,13 +2,11 @@
  * sun_serve.sun - Library entrypoint and manifest for sun_serve.moon
  *
  * sun_serve is an HTTP/1.1 and HTTP/2 server: one event loop per worker thread,
- * nonblocking sockets, optional TLS through the tls bundle's OpenSSL, and a
+ * nonblocking sockets, optional TLS through bundled OpenSSL, and a
  * handler interface for application code. See README.md for the tour.
  *
- * The manifest lists libssl.a and libcrypto.a even though tls.moon carries the
- * same archives: the Sun linker drops a dependency's archives when module
- * hashes sort in an unlucky order (SUN_FEEDBACK.md, issue 218), so consumers
- * of sun_serve.moon get them from here instead. $MUSL_LIB comes from
+ * The manifest carries zlib for WebSocket compression and OpenSSL for TLS.
+ * Consumers link these archives through sun_serve.moon. $MUSL_LIB comes from
  * sun-config.json and points at the musl toolchain's static libraries.
  */
 
@@ -57,6 +55,6 @@ manifest {
     "../tests/static_tests.sun",
     "../tests/server_tls_tests.sun"
   ]
-  libraries: ["stdlib.moon", "tls.moon"]
+  libraries: ["stdlib.moon"]
   archives: ["$MUSL_LIB/libz.a", "$MUSL_LIB/libssl.a", "$MUSL_LIB/libcrypto.a"]
 }

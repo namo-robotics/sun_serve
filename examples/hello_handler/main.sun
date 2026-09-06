@@ -150,5 +150,5 @@ function main() i32 {
 
 manifest {
   test_files: ["hello_tests.sun"]
-  libraries: ["stdlib.moon", "tls.moon", "sun_serve.moon"]
+  libraries: ["stdlib.moon", "sun_serve.moon"]
 }

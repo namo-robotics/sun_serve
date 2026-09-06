@@ -319,6 +319,15 @@ sun_serve: the library manifest lists its own static OpenSSL archives (built
 in the Dockerfile with the musl toolchain), which reach every consumer's link
 line no matter how the hashes sort.
 
+**Resolved upstream (2026-09-06; sun 0.dev b33a1726ef77):** issue #218 is
+closed as completed. The current compiler also isolates bundled C symbols,
+so sun_serve's OpenSSL declarations cannot bind to `tls.moon`'s private
+archives. The TLS bundle exposes only a client API. sun_serve therefore keeps
+its own OpenSSL archives and removes the unused `tls.moon` dependency from
+the library and its consumers. Consumers link the server's archives
+transitively through `sun_serve.moon`. The compiled build, all test suites,
+and the nghttp interoperability check pass with this compiler.
+
 ---
 
 ## Bug: passing a class where an interface value is expected is inconsistent

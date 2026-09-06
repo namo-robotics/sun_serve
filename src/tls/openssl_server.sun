@@ -1,10 +1,9 @@
 /*
  * openssl_server.sun - The server-side OpenSSL symbols sun_serve calls
  *
- * The tls bundle only binds the client half of libssl, but it carries the
- * whole library, so the server half is declared here and links against the
- * same archives. Declarations mirror the bundle's openssl.sun: module-private,
- * opaque handles as raw_ptr<u8>, macros expressed through SSL_CTX_ctrl.
+ * These declarations bind to the OpenSSL archives carried by sun_serve.moon.
+ * Handles stay private to the checked TLS boundary; OpenSSL macros are
+ * expressed through SSL_CTX_ctrl.
  */
 
 /*
