@@ -51,44 +51,33 @@ public module sun_serve {
    * The result starts with a slash and never ends with one (root is "/").
    */
   public function normalize_path(alloc: const ref HeapAllocator, path: const ref String) Option<String> {
-    var out = String(alloc, "");
-    var ends = Vec<i64>(alloc, 8);  // length of out after each kept segment
-    var n: i64 = path.length();
-    var i: i64 = 0;
-    while (i <= n) {
-      var start: i64 = i;
-      while (i < n and path.at(i) != b'/') {
-        i = i + 1;
+    var kept = Vec<String>(alloc, 8);
+    var segments: Vec<String> = path.split(alloc, b'/');
+    for (var segment: ref String in segments) {
+      if (segment.is_empty() or segment.equals_literal(".")) {
+        continue;
       }
-      var len: i64 = i - start;
-      if (len == 1 and path.at(start) == b'.') {
-        // current directory
-      } else if (len == 2 and path.at(start) == b'.' and path.at(start + 1) == b'.') {
-        if (ends.size() == 0) {
+      if (segment.equals_literal("..")) {
+        if (kept.size() == 0) {
           return Option.None;
         }
-        ends.pop();
-        var back: i64 = match ends.last() {
-          Option.Some(v) => v,
-          Option.None => 0
-        };
-        out.truncate(back);
-      } else if (len > 0) {
-        for (var k: i64 = start; k < i; k = k + 1) {
-          var c: u8 = path.at(k);
-          if (c < 32 or c == 127) {
-            return Option.None;
-          }
-        }
-        out.append_char(b'/');
-        for (var k: i64 = start; k < i; k = k + 1) {
-          out.append_char(path.at(k));
-        }
-        ends.push(out.length());
+        kept.pop();
+        continue;
       }
-      i = i + 1;
+      for (var k: i64 = 0; k < segment.length(); k = k + 1) {
+        var c: u8 = string_byte(segment, k);
+        if (c < 32 or c == 127) {
+          return Option.None;
+        }
+      }
+      kept.push(segment.clone(alloc));
     }
-    if (out.length() == 0) {
+    var out = String(alloc, "");
+    for (var segment: ref String in kept) {
+      out.append_char(b'/');
+      out.append(segment);
+    }
+    if (out.is_empty()) {
       out.append_char(b'/');
     }
     return Option.Some(out);
@@ -108,7 +97,7 @@ public module sun_serve {
     init(allocator: const ref HeapAllocator, root: const ref String, opts: StaticOptions) throws IError {
       this.alloc = allocator.copy();
       this.root = root.clone(allocator);
-      while (this.root.length() > 1 and this.root.at(this.root.length() - 1) == b'/') {
+      while (this.root.length() > 1 and this.root.ends_with("/")) {
         this.root.truncate(this.root.length() - 1);
       }
       if (not is_dir(this.root)) {
@@ -132,16 +121,11 @@ public module sun_serve {
         resp.set_body("Method Not Allowed\n");
         return;
       }
-      /*
-       * Fallbacks are built before the match; see SUN_FEEDBACK.md on
-       * temporaries inside match arms.
-       */
-      var no_path = String(this.alloc, "");
       var rel: String = match normalize_path(this.alloc, req.path()) {
         Option.Some(p) => p,
-        Option.None => no_path
+        Option.None => String(this.alloc, "")
       };
-      if (rel.length() == 0) {
+      if (rel.is_empty()) {
         this.not_found(resp);
         return;
       }
@@ -167,7 +151,7 @@ public module sun_serve {
       if ((mode & S_IFMT) == S_IFDIR) {
         f.close();
         var path: const ref String = req.path();
-        if (path.at(path.length() - 1) != b'/') {
+        if (not path.ends_with("/")) {
           // Redirect so relative links inside the index resolve correctly.
           var location: String = path.clone(this.alloc);
           location.append_char(b'/');
@@ -231,22 +215,13 @@ public module sun_serve {
       this.last_modified.clear();
       append_http_date(this.last_modified, mtime);
 
-      var fresh: bool = false;
-      var no_inm = String(this.alloc, "");
-      var inm: String = match req.header("if-none-match", this.alloc) {
-        Option.Some(v) => v,
-        Option.None => no_inm
+      var fresh: bool = match req.header("if-none-match", this.alloc) {
+        Option.Some(inm) => inm.equals_literal("*") or inm.contains(this.etag),
+        Option.None => match req.header("if-modified-since", this.alloc) {
+          Option.Some(ims) => ims.equals(this.last_modified),
+          Option.None => false
+        }
       };
-      if (inm.length() > 0) {
-        fresh = inm.equals_literal("*") or inm.contains(this.etag);
-      } else {
-        var no_ims = String(this.alloc, "");
-        var ims: String = match req.header("if-modified-since", this.alloc) {
-          Option.Some(v) => v,
-          Option.None => no_ims
-        };
-        fresh = ims.length() > 0 and ims.equals(this.last_modified);
-      }
       resp.add_header_string("ETag", this.etag);
       resp.add_header_string("Last-Modified", this.last_modified);
       if (this.opts.cache_control.length() > 0) {

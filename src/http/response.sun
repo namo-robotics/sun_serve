@@ -14,6 +14,9 @@ public module sun_serve {
   using std;
   using std.io;
 
+  // How much of a streamed file to read per HTTP/2 DATA batch.
+  const H2_FILE_CHUNK: i64 = 65536;
+
   // Collects the status, headers, and body produced by a handler.
   public class Response {
     // The HTTP status code sent to the client.
@@ -75,7 +78,7 @@ public module sun_serve {
     }
 
     // Add a header whose value was built at runtime.
-    public method add_header_string(name: static_ptr<u8>, value: ref String) void {
+    public method add_header_string(name: static_ptr<u8>, value: const ref String) void {
       this.header_lines.append_literal(name);
       this.header_lines.append_literal(": ");
       this.header_lines.append_string(value);
@@ -111,7 +114,7 @@ public module sun_serve {
     }
 
     // Replace the body with a String's contents.
-    public method set_body_string(text: ref String) void {
+    public method set_body_string(text: const ref String) void {
       this.body.clear();
       this.body.append_string(text);
     }
@@ -128,7 +131,7 @@ public module sun_serve {
     }
 
     // Append a String to the body.
-    public method append_body_string(text: ref String) void {
+    public method append_body_string(text: const ref String) void {
       this.body.append_string(text);
     }
 
@@ -175,6 +178,13 @@ public module sun_serve {
       this.write_chunk_buffer(data, 0, data.readable_len());
     }
 
+    // Write a String as one chunk.
+    public method write_chunk_string(text: const ref String) void {
+      var data = ByteBuffer(this.alloc, text.length());
+      data.append_string(text);
+      this.write_chunk_buffer(data, 0, data.readable_len());
+    }
+
     // Finish a chunked body.
     public method end_chunks() void {
       this.chunked = true;
@@ -192,7 +202,7 @@ public module sun_serve {
     }
 
     // Answer with a redirect to a runtime location.
-    public method redirect_string(location: ref String, code: i32) void {
+    public method redirect_string(location: const ref String, code: i32) void {
       this.status = code;
       this.add_header_string("Location", location);
       this.body.clear();
@@ -275,7 +285,7 @@ public module sun_serve {
      * Write the status line and headers into out. head_only is set for HEAD
      * requests, which still declare the length of the body they omit.
      */
-    public method serialize_head(out: ref ByteBuffer, date: ref String, keep_alive: bool, server_header: bool) void {
+    public method serialize_head(out: ref ByteBuffer, date: const ref String, keep_alive: bool, server_header: bool) void {
       if (this.chunked and not this.chunks_ended) {
         this.end_chunks();
       }
@@ -291,7 +301,7 @@ public module sun_serve {
         out.append_string(this.content_type_);
         out.append_literal("\r\n");
       }
-      out.append_bytes(this.header_lines.readable_ptr(), this.header_lines.readable_len());
+      out.append_buffer(this.header_lines, 0, this.header_lines.readable_len());
       if (not status_has_no_body(this.status)) {
         if (this.chunked) {
           out.append_literal("Transfer-Encoding: chunked\r\n");
@@ -309,91 +319,84 @@ public module sun_serve {
       out.append_literal("\r\n");
     }
     // Serialize this response as HTTP/2 HEADERS and DATA frames.
-    public method serialize_h2(out: ref ByteBuffer, date: ref String, stream: u32, server_header: bool, send_body: bool) void {
+    public method serialize_h2(out: ref ByteBuffer, date: const ref String, stream: u32, server_header: bool, send_body: bool) void {
       if (this.chunked and not this.chunks_ended) {
         this.end_chunks();
       }
       var block = ByteBuffer(this.alloc, 256);
       hpack_status(block, this.status, this.alloc);
-      var name = String(this.alloc, "date");
-      hpack_header(block, name, date);
+      hpack_header(block, String(this.alloc, "date"), date);
       if (server_header) {
-        name.clear();
-        name.append("server");
-        var server = String(this.alloc, "sun_serve");
-        hpack_header(block, name, server);
+        hpack_header_literal(block, "server", "sun_serve");
       }
       if (this.has_content_type) {
-        name.clear();
-        name.append("content-type");
-        hpack_header(block, name, this.content_type_);
+        hpack_header(block, String(this.alloc, "content-type"), this.content_type_);
       }
-      var header_pos: i64 = 0;
-      while (header_pos < this.header_lines.readable_len()) {
-        var colon: i64 = header_pos;
-        while (colon < this.header_lines.readable_len() and this.header_lines.byte_at(colon) != b':') {
-          colon = colon + 1;
-        }
-        var line_end: i64 = colon + 1;
-        while (line_end + 1 < this.header_lines.readable_len() and not (this.header_lines.byte_at(line_end) == 13 and this.header_lines.byte_at(line_end + 1) == 10)) {
-          line_end = line_end + 1;
-        }
-        if (colon < line_end) {
-          var extra_name = String(this.alloc, "");
-          for (var ni: i64 = header_pos; ni < colon; ni = ni + 1) {
-            extra_name.append_char(lower_ascii(this.header_lines.byte_at(ni)));
-          }
-          var value_start: i64 = colon + 1;
-          while (value_start < line_end and this.header_lines.byte_at(value_start) == 32) {
-            value_start = value_start + 1;
-          }
-          var extra_value = String(this.alloc, "");
-          for (var vi: i64 = value_start; vi < line_end; vi = vi + 1) {
-            extra_value.append_char(this.header_lines.byte_at(vi));
-          }
-          hpack_header(block, extra_name, extra_value);
-        }
-        header_pos = line_end + 2;
-      }
+      this.hpack_extra_headers(block);
       if (not status_has_no_body(this.status)) {
-        name.clear();
-        name.append("content-length");
         var length = String(this.alloc, "");
         length.append(this.h2_declared_length());
-        hpack_header(block, name, length);
+        hpack_header(block, String(this.alloc, "content-length"), length);
       }
       var flags: u8 = H2_END_HEADERS;
       if (not send_body or status_has_no_body(this.status) or this.h2_declared_length() == 0) {
         flags = flags | H2_END_STREAM;
       }
-      h2_frame(out, block.readable_len(), H2_HEADERS, flags, stream);
-      out.append_bytes(block.readable_ptr(), block.readable_len());
+      h2_frame(out, block.readable_len(), H2FrameKind.Headers, flags, stream);
+      out.append_buffer(block, 0, block.readable_len());
       if ((flags & H2_END_STREAM) != 0) {
         return;
       }
       var payload = ByteBuffer(this.alloc, this.h2_declared_length());
       if (this.chunked) {
-        payload.append_bytes(this.chunk_payload.readable_ptr(), this.chunk_payload.readable_len());
+        payload.append_buffer(this.chunk_payload, 0, this.chunk_payload.readable_len());
       } else {
-        payload.append_bytes(this.body.readable_ptr(), this.body.readable_len());
+        payload.append_buffer(this.body, 0, this.body.readable_len());
       }
       while (this.has_file_body()) {
-        if (this.read_file_chunk(payload, 65536) == 0) {
+        if (this.read_file_chunk(payload, H2_FILE_CHUNK) == 0) {
           break;
         }
       }
       while (payload.readable_len() > 0) {
         var take: i64 = payload.readable_len();
-        if (take > 16384) {
-          take = 16384;
+        if (take > H2_DEFAULT_FRAME_SIZE) {
+          take = H2_DEFAULT_FRAME_SIZE;
         }
         var data_flags: u8 = 0;
         if (take == payload.readable_len()) {
           data_flags = H2_END_STREAM;
         }
-        h2_frame(out, take, H2_DATA, data_flags, stream);
-        out.append_bytes(payload.readable_ptr(), take);
+        h2_frame(out, take, H2FrameKind.Data, data_flags, stream);
+        out.append_buffer(payload, 0, take);
         payload.consume(take);
+      }
+    }
+
+    /*
+     * Encode the handler's extra header lines, each "Name: value\r\n", as
+     * lowercase HPACK literals.
+     */
+    method hpack_extra_headers(block: ref ByteBuffer) void {
+      var lines: Vec<String> = this.header_lines.to_string(this.alloc).split(this.alloc, "\r\n");
+      for (var line: ref String in lines) {
+        var colon: i64 = match line.find_char(b':') {
+          Option.Some(i) => i,
+          Option.None => -1
+        };
+        if (colon < 0) {
+          continue;
+        }
+        var name = String(this.alloc, "");
+        for (var i: i64 = 0; i < colon; i = i + 1) {
+          name.append_char(lower_ascii(string_byte(line, i)));
+        }
+        var value = String(this.alloc, "");
+        for (var i: i64 = colon + 1; i < line.length(); i = i + 1) {
+          value.append_char(string_byte(line, i));
+        }
+        value.trim_start();
+        hpack_header(block, name, value);
       }
     }
   }

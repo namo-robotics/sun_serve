@@ -49,20 +49,20 @@ public module sun_serve {
      * lets the kernel choose; read the choice back with local_port().
      */
     public method bind(addr: const ref Ipv4Addr, port: i32, backlog: i32) void throws IError {
-      var sock: i32 = unsafe { __socket(AF_INET, SOCK_STREAM, 0); };
+      var sock: i32 = unsafe __socket(AF_INET, SOCK_STREAM, 0);
       if (sock < 0) {
         throw Error(last_errno(), "failed to create socket");
       }
       this.fd = sock;
       var one: i32 = 1;
-      unsafe { __setsockopt(this.fd, SOL_SOCKET, SO_REUSEADDR, _address_of<i32>(one), 4); };
-      unsafe { __setsockopt(this.fd, SOL_SOCKET, SO_REUSEPORT, _address_of<i32>(one), 4); };
-      if (unsafe { __bind_ipv4(this.fd, addr.to_network_i32(), port); } < 0) {
+      unsafe __setsockopt(this.fd, SOL_SOCKET, SO_REUSEADDR, _address_of<i32>(one), 4);
+      unsafe __setsockopt(this.fd, SOL_SOCKET, SO_REUSEPORT, _address_of<i32>(one), 4);
+      if (unsafe __bind_ipv4(this.fd, addr.to_network_i32(), port) < 0) {
         var bind_err: i32 = last_errno();
         this.close();
         throw Error(bind_err, "failed to bind socket");
       }
-      if (unsafe { __listen(this.fd, backlog); } < 0) {
+      if (unsafe __listen(this.fd, backlog) < 0) {
         var listen_err: i32 = last_errno();
         this.close();
         throw Error(listen_err, "failed to listen");
@@ -74,7 +74,7 @@ public module sun_serve {
     public method local_port() i32 throws IError {
       var ip: i32 = 0;
       var port: i32 = 0;
-      var rc: i32 = unsafe { __getsockname_ipv4(this.fd, _address_of<i32>(ip), _address_of<i32>(port)); };
+      var rc: i32 = unsafe __getsockname_ipv4(this.fd, _address_of<i32>(ip), _address_of<i32>(port));
       if (rc < 0) {
         throw Error(last_errno(), "failed to read socket address");
       }
@@ -87,7 +87,7 @@ public module sun_serve {
      * errno when the accept itself failed.
      */
     public method accept() i32 {
-      var client: i32 = unsafe { sys_accept4(this.fd, null, null, SOCK_NONBLOCK | SOCK_CLOEXEC); };
+      var client: i32 = unsafe sys_accept4(this.fd, null, null, SOCK_NONBLOCK | SOCK_CLOEXEC);
       if (client >= 0) {
         return client;
       }
@@ -111,7 +111,7 @@ public module sun_serve {
     // Close the listening socket.
     public method close() void {
       if (this.fd > 0) {
-        unsafe { __shutdown(this.fd, SHUT_RDWR); };
+        unsafe __shutdown(this.fd, SHUT_RDWR);
         close_fd(this.fd);
         this.fd = 0;
       }
@@ -132,13 +132,13 @@ public module sun_serve {
   // Set a receive timeout in seconds for clients and tests.
   public function set_socket_receive_timeout(fd: i32, seconds: i64) void {
     var timeout = SocketTimeout(seconds);
-    unsafe { __setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, _address_of<SocketTimeout>(timeout), 16); };
+    unsafe __setsockopt(fd, SOL_SOCKET, SO_RCVTIMEO, _address_of<SocketTimeout>(timeout), 16);
   }
 
   // Disable Nagle's algorithm so small responses leave immediately.
   function set_tcp_nodelay(fd: i32) void {
     var one: i32 = 1;
-    unsafe { __setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, _address_of<i32>(one), 4); };
+    unsafe __setsockopt(fd, IPPROTO_TCP, TCP_NODELAY, _address_of<i32>(one), 4);
   }
 
   /*
@@ -147,7 +147,7 @@ public module sun_serve {
    */
   function socket_read(fd: i32, buf: raw_ptr<u8>, len: i64) i64 {
     while (true) {
-      var n: i64 = unsafe { __recv(fd, buf, len, 0); };
+      var n: i64 = unsafe __recv(fd, buf, len, 0);
       if (n >= 0) {
         return n;
       }
@@ -169,7 +169,7 @@ public module sun_serve {
    */
   function socket_write(fd: i32, buf: raw_ptr<u8>, len: i64) i64 {
     while (true) {
-      var n: i64 = unsafe { __send(fd, buf, len, MSG_NOSIGNAL); };
+      var n: i64 = unsafe __send(fd, buf, len, MSG_NOSIGNAL);
       if (n >= 0) {
         return n;
       }

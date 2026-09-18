@@ -17,15 +17,6 @@ module hello_handler {
     using std;
     using sun_serve;
 
-    // struct timeval for SO_RCVTIMEO.
-    class Timeval {
-      var sec: i64;
-      var usec: i64 = 0;
-      init(sec: i64) {
-        this.sec = sec;
-      }
-    }
-
     /*
      * A HelloHandler server on loopback with one worker, so /stats counts
      * every request the test sends.
@@ -65,9 +56,7 @@ module hello_handler {
           if (n <= 0) {
             break;
           }
-          for (var i: i64 = 0; i < n; i = i + 1) {
-            reply.append_char(chunk.get_unchecked(i));
-          }
+          reply.append(String(alloc, chunk, n));
         }
         stream.close();
         return reply;
@@ -75,23 +64,27 @@ module hello_handler {
     }
 
     // Append an HTTP/2 frame header to a binary test string.
-    function append_h2_frame(out: ref String, len: i64, kind: i32, flags: i32, stream: i32) void {
-      out.append_char(_convert<u8>((len >> 16) & 255));
-      out.append_char(_convert<u8>((len >> 8) & 255));
-      out.append_char(_convert<u8>(len & 255));
+    function append_h2_frame(out: ref String, len: i64, kind: H2FrameKind, flags: u8, stream: u32) void {
+      out.append_char(_convert<u8>((len >> 16) & 0xff));
+      out.append_char(_convert<u8>((len >> 8) & 0xff));
+      out.append_char(_convert<u8>(len & 0xff));
       out.append_char(_convert<u8>(kind));
-      out.append_char(_convert<u8>(flags));
-      out.append_char(_convert<u8>((stream >> 24) & 127));
-      out.append_char(_convert<u8>((stream >> 16) & 255));
-      out.append_char(_convert<u8>((stream >> 8) & 255));
-      out.append_char(_convert<u8>(stream & 255));
+      out.append_char(flags);
+      out.append_char(_convert<u8>((stream >> 24) & 0x7f));
+      out.append_char(_convert<u8>((stream >> 16) & 0xff));
+      out.append_char(_convert<u8>((stream >> 8) & 0xff));
+      out.append_char(_convert<u8>(stream & 0xff));
     }
 
+    // HTTP/2 frame flags used by the fixtures.
+    const H2_END_STREAM: u8 = 0x1;
+    const H2_END_HEADERS: u8 = 0x4;
+
     // WebSocket fields used by client-frame fixtures.
-    const WS_FIN_FLAG: u8 = 128;
-    const WS_COMPRESSED_FLAG: u8 = 64;
-    const WS_MASK_FLAG: u8 = 128;
-    const WS_TEXT_OPCODE: u8 = 1;
+    const WS_FIN_FLAG: u8 = 0x80;
+    const WS_COMPRESSED_FLAG: u8 = 0x40;
+    const WS_MASK_FLAG: u8 = 0x80;
+    const WS_TEXT_OPCODE: u8 = _convert<u8>(WebSocketOpcode.Text);
     const WS_SHORT_PAYLOAD_MAX: i64 = 125;
     const WS_HEADER_BYTES: i64 = 2;
     const WS_MASK_BYTES: i64 = 4;
@@ -125,19 +118,15 @@ module hello_handler {
       }
       var frame = ContiguousBuffer<u8>(alloc, wire.readable_len());
       for (var i: i64 = 0; i < wire.readable_len(); i = i + 1) {
-        frame.set_unchecked(i, wire.byte_at(i));
+        frame[i] = wire.byte_at(i);
       }
       return frame;
     }
 
     // The body is everything after the blank line that ends the head.
-    function body_of(alloc: ref HeapAllocator, reply: const ref String) String {
+    function body_of(alloc: ref HeapAllocator, reply: const ref String) String throws IError {
       var start: i64 = find_header_end(reply) + 4;
-      var body = String(alloc, "");
-      for (var i: i64 = start; i < reply.length(); i = i + 1) {
-        body.append_char(reply.at(i));
-      }
-      return body;
+      return reply.substr(alloc, start, reply.length() - start);
     }
 
     test_function greets_by_name() {
@@ -194,10 +183,7 @@ module hello_handler {
       stream.send_str("GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
       var reply = ContiguousBuffer<u8>(alloc, 4096);
       var got: i64 = stream.recv(reply);
-      var head = String(alloc, "");
-      for (var hi: i64 = 0; hi < got; hi = hi + 1) {
-        head.append_char(reply.get_unchecked(hi));
-      }
+      var head = String(alloc, reply, got);
       std.test.assert(head.contains("101 Switching Protocols"), "upgrade accepted");
       std.test.assert(head.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "accept key");
       var message = String(alloc, "hello");
@@ -206,12 +192,9 @@ module hello_handler {
       var echoed = ContiguousBuffer<u8>(alloc, 16);
       var echoed_len: i64 = stream.recv(echoed);
       std.test.assert_eq(echoed_len, WS_HEADER_BYTES + message.length());
-      std.test.assert_eq(echoed.get_unchecked(0), WS_FIN_FLAG | WS_TEXT_OPCODE);
-      std.test.assert_eq(echoed.get_unchecked(1), _convert<u8>(message.length()));
-      var text = String(alloc, "");
-      for (var i: i64 = WS_HEADER_BYTES; i < echoed_len; i = i + 1) {
-        text.append_char(echoed.get_unchecked(i));
-      }
+      std.test.assert_eq(echoed[0], WS_FIN_FLAG | WS_TEXT_OPCODE);
+      std.test.assert_eq(echoed[1], _convert<u8>(message.length()));
+      var text: String = String(alloc, echoed, echoed_len).substr(alloc, WS_HEADER_BYTES, message.length());
       std.test.assert(text.equals(message), "message echoed");
       stream.close();
     }
@@ -223,47 +206,22 @@ module hello_handler {
       stream.connect_local(ts.port);
       set_socket_receive_timeout(stream.get_fd(), 2);
       var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-      append_h2_frame(wire, 6, 4, _convert<u8>(0), 0);
-      wire.append_char(0);
-      wire.append_char(8);
-      wire.append_char(0);
-      wire.append_char(0);
-      wire.append_char(0);
-      wire.append_char(1);
-      append_h2_frame(wire, 39, 1, 4, 1);
-      wire.append_char(2);
-      wire.append_char(7);
-      wire.append("CONNECT");
-      wire.append_char(0);
-      wire.append_char(9);
-      wire.append(":protocol");
-      wire.append_char(9);
-      wire.append("websocket");
-      wire.append_char(134);
-      wire.append_char(4);
-      wire.append_char(3);
-      wire.append("/ws");
-      wire.append_char(1);
-      wire.append_char(1);
-      wire.append_char(b'a');
-      append_h2_frame(wire, 11, 0, _convert<u8>(0), 1);
-      wire.append_char(129);
-      wire.append_char(133);
-      wire.append_char(1);
-      wire.append_char(2);
-      wire.append_char(3);
-      wire.append_char(4);
-      wire.append_char(105);
-      wire.append_char(103);
-      wire.append_char(111);
-      wire.append_char(104);
-      wire.append_char(110);
-      append_h2_frame(wire, 7, 1, 5, 3);
-      wire.append_char(130);
-      wire.append_char(134);
-      wire.append_char(4);
-      wire.append_char(3);
-      wire.append("/hi");
+      // SETTINGS: enable the extended CONNECT protocol.
+      append_h2_frame(wire, 6, H2FrameKind.Settings, 0, 0);
+      wire.append("\x00\x08\x00\x00\x00\x01");
+      // HEADERS on stream 1: CONNECT /ws with :protocol websocket.
+      append_h2_frame(wire, 39, H2FrameKind.Headers, H2_END_HEADERS, 1);
+      wire.append("\x02\x07CONNECT");  // literal :method
+      wire.append("\x00\x09:protocol\x09websocket");  // literal name and value
+      wire.append("\x86");  // indexed :scheme http
+      wire.append("\x04\x03/ws");  // literal :path
+      wire.append("\x01\x01a");  // literal :authority
+      // DATA on stream 1: a masked WebSocket text frame saying "hello".
+      append_h2_frame(wire, 11, H2FrameKind.Data, 0, 1);
+      wire.append("\x81\x85\x01\x02\x03\x04igohn");
+      // HEADERS on stream 3: GET /hi over the same connection.
+      append_h2_frame(wire, 7, H2FrameKind.Headers, H2_END_HEADERS | H2_END_STREAM, 3);
+      wire.append("\x82\x86\x04\x03/hi");
       stream.send_string(wire);
       var received = String(alloc, "");
       var chunk = ContiguousBuffer<u8>(alloc, 4096);
@@ -272,9 +230,7 @@ module hello_handler {
         if (got <= 0) {
           break;
         }
-        for (var i: i64 = 0; i < got; i = i + 1) {
-          received.append_char(chunk.get_unchecked(i));
-        }
+        received.append(String(alloc, chunk, got));
       }
       std.test.assert(received.contains("hello"), "WebSocket stream echoed");
       std.test.assert(received.contains("hello, world"), "HTTP stream completed");
@@ -290,22 +246,19 @@ module hello_handler {
       stream.send_str("GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n");
       var reply = ContiguousBuffer<u8>(alloc, 4096);
       var got: i64 = stream.recv(reply);
-      var head = String(alloc, "");
-      for (var hi: i64 = 0; hi < got; hi = hi + 1) {
-        head.append_char(reply.get_unchecked(hi));
-      }
+      var head = String(alloc, reply, got);
       std.test.assert(head.contains("permessage-deflate; server_no_context_takeover; client_no_context_takeover"), "compression negotiated");
       var message = String(alloc, "hello");
       var frame = masked_text_frame(alloc, "hello", true);
       stream.send_bytes(frame.raw_data(), frame.size());
       var echoed = ContiguousBuffer<u8>(alloc, 32);
       var echoed_len: i64 = stream.recv(echoed);
-      std.test.assert_eq(echoed.get_unchecked(0), WS_FIN_FLAG | WS_COMPRESSED_FLAG | WS_TEXT_OPCODE);
-      var compressed_len: i64 = _convert<i64>(echoed.get_unchecked(1));
+      std.test.assert_eq(echoed[0], WS_FIN_FLAG | WS_COMPRESSED_FLAG | WS_TEXT_OPCODE);
+      var compressed_len: i64 = _convert<i64>(echoed[1]);
       std.test.assert_eq(echoed_len, WS_HEADER_BYTES + compressed_len);
       var compressed = ByteBuffer(alloc, compressed_len);
       for (var i: i64 = WS_HEADER_BYTES; i < echoed_len; i = i + 1) {
-        compressed.append_byte(echoed.get_unchecked(i));
+        compressed.append_byte(echoed[i]);
       }
       var decoded = ByteBuffer(alloc, message.length());
       std.test.assert_eq(websocket_inflate(alloc, compressed, 0, compressed.readable_len(), message.length(), decoded), 0);

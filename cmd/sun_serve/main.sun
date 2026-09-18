@@ -62,60 +62,48 @@ module sun_serve_cli {
   // Parse a byte count with an optional k or m suffix.
   function parse_size(text: const ref String) Option<i64> {
     var alloc = make_heap_allocator();
-    var digits = String(alloc, "");
+    var digits: String = text.clone(alloc);
     var multiplier: i64 = 1;
-    for (var i: i64 = 0; i < text.length(); i = i + 1) {
-      var c: u8 = text.at(i);
-      if (c >= b'0' and c <= b'9') {
-        digits.append_char(c);
-      } else if ((c == b'k' or c == b'K') and i == text.length() - 1) {
-        multiplier = 1024;
-      } else if ((c == b'm' or c == b'M') and i == text.length() - 1) {
-        multiplier = 1048576;
-      } else {
-        return Option.None;
-      }
+    if (digits.ends_with("k") or digits.ends_with("K")) {
+      multiplier = 1024;
+      digits.truncate(digits.length() - 1);
+    } else if (digits.ends_with("m") or digits.ends_with("M")) {
+      multiplier = 1048576;
+      digits.truncate(digits.length() - 1);
     }
-    if (digits.length() == 0) {
+    if (digits.is_empty() or digits.starts_with("-") or digits.starts_with("+")) {
       return Option.None;
     }
-    var value: i64 = match digits.parse_i64() {
-      Option.Some(v) => v,
-      Option.None => -1
+    return match digits.parse_i64() {
+      Option.Some(v) => Option.Some(v * multiplier),
+      Option.None => Option.None
     };
-    if (value < 0) {
-      return Option.None;
-    }
-    return Option.Some(value * multiplier);
+  }
+
+  // Parse a port number in the valid range.
+  function parse_port(text: const ref String) Option<i32> {
+    return match text.parse_i64() {
+      Option.Some(v) => v >= 0 and v <= 65535 ? Option.Some(_convert<i32>(v)) : Option.None,
+      Option.None => Option.None
+    };
   }
 
   // Split HOST:PORT into an address and port. Returns false when malformed.
   function parse_endpoint(text: const ref String, addr: ref Ipv4Addr, port: ref i32) bool {
     var alloc = make_heap_allocator();
-    var colon: i64 = match text.rfind_char(b':') {
-      Option.Some(i) => i,
-      Option.None => -1
-    };
-    if (colon < 0) {
+    var parts: Vec<String> = text.split(alloc, b':');
+    if (parts.size() != 2) {
       return false;
     }
-    var host: String = String(alloc, "");
-    for (var i: i64 = 0; i < colon; i = i + 1) {
-      host.append_char(text.at(i));
-    }
-    var port_text = String(alloc, "");
-    for (var i: i64 = colon + 1; i < text.length(); i = i + 1) {
-      port_text.append_char(text.at(i));
-    }
-    var p: i64 = match port_text.parse_i64() {
-      Option.Some(v) => v,
+    port = match parse_port(parts[1]) {
+      Option.Some(p) => p,
       Option.None => -1
     };
-    if (p < 0 or p > 65535 or port_text.length() == 0) {
+    if (port < 0) {
       return false;
     }
-    port = _convert<i32>(p);
-    if (host.length() == 0 or host.equals_literal("*")) {
+    var host: ref String = parts[0];
+    if (host.is_empty() or host.equals_literal("*")) {
       addr = ipv4_any();
       return true;
     }
@@ -143,23 +131,20 @@ module sun_serve_cli {
     var key = String(alloc, "");
     var i: i64 = 1;
     while (i < args.size()) {
-      var arg: String = args.get_unchecked(i).clone(alloc);
+      var arg: String = args[i].clone(alloc);
       i = i + 1;
-      // Split --flag=value.
+      // Split --flag=value at the first equals sign.
       var flag: String = arg.clone(alloc);
       var value = String(alloc, "");
       var has_value: bool = false;
-      var eq: i64 = match arg.find_char(b'=') {
-        Option.Some(v) => v,
-        Option.None => -1
-      };
-      if (eq > 0 and arg.starts_with("--")) {
-        flag.clear();
-        for (var k: i64 = 0; k < eq; k = k + 1) {
-          flag.append_char(arg.at(k));
-        }
-        for (var k: i64 = eq + 1; k < arg.length(); k = k + 1) {
-          value.append_char(arg.at(k));
+      if (arg.starts_with("--") and arg.contains_char(b'=')) {
+        var pieces: Vec<String> = arg.split(alloc, b'=');
+        flag = pieces[0].clone(alloc);
+        for (var k: i64 = 1; k < pieces.size(); k = k + 1) {
+          if (k > 1) {
+            value.append_char(b'=');
+          }
+          value.append(pieces[k]);
         }
         has_value = true;
       }
@@ -193,7 +178,7 @@ module sun_serve_cli {
           return cli;
         }
         value.clear();
-        value.append(args.get_unchecked(i));
+        value.append(args[i]);
         i = i + 1;
       }
       if (flag.equals_literal("--listen") or flag.equals_literal("--tls-listen")) {
@@ -228,19 +213,15 @@ module sun_serve_cli {
         }
         cli.workers = _convert<i32>(n);
       } else if (flag.equals_literal("--log-level")) {
-        var level: LogLevel = match parse_log_level(value) {
-          Option.Some(l) => l,
-          Option.None => LogLevel.Info
+        match parse_log_level(value) {
+          Option.Some(level) => {
+            cli.config.log_level = level;
+          },
+          Option.None => {
+            cli.fail(flag, "expects error, warn, info, or debug");
+            return cli;
+          }
         };
-        var known: bool = match parse_log_level(value) {
-          Option.Some(l) => true,
-          Option.None => false
-        };
-        if (not known) {
-          cli.fail(flag, "expects error, warn, info, or debug");
-          return cli;
-        }
-        cli.config.log_level = level;
       } else if (flag.equals_literal("--max-body")) {
         var size: i64 = match parse_size(value) {
           Option.Some(v) => v,
@@ -309,21 +290,12 @@ module sun_serve_cli {
   // Print one "listening on" line per listener.
   function announce(alloc: const ref HeapAllocator, server: const ref Server, cfg: const ref Config, workers: i32) void {
     for (var i: i64 = 0; i < cfg.listen.size(); i = i + 1) {
-      var spec: const ref ListenSpec = cfg.listen.get_unchecked(i);
-      var line = String(alloc, "listening on ");
-      if (spec.tls) {
-        line.append("https://");
-      } else {
-        line.append("http://");
-      }
+      var spec: const ref ListenSpec = cfg.listen[i];
+      var scheme: static_ptr<u8> = spec.tls ? "https" : "http";
       var host: String = spec.addr.to_string(alloc);
-      line.append(host);
-      line.append_char(b':');
-      line.append(server.port(i));
+      var line: String = `listening on ${scheme}://${host}:${server.port(i)}`;
       if (i == 0) {
-        line.append(" with ");
-        line.append(workers);
-        line.append(" workers");
+        line.append(` with ${workers} workers`);
       }
       eprintln(line);
     }
@@ -344,9 +316,8 @@ module sun_serve_cli {
       println(sun_serve.version());
       return 0;
     }
-    if (cli.error.length() > 0) {
-      eprint("sun_serve: ");
-      eprintln(cli.error);
+    if (not cli.error.is_empty()) {
+      eprintln(`sun_serve: ${cli.error}`);
       eprint(usage());
       return 2;
     }
@@ -367,9 +338,7 @@ module sun_serve_cli {
       }
       return 0;
     } catch (e: IError) {
-      var msg: String = e.message();
-      eprint("sun_serve: ");
-      eprintln(msg);
+      eprintln(`sun_serve: ${e.message()}`);
       return 3;
     }
   }

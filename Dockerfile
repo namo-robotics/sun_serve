@@ -73,10 +73,14 @@ RUN curl -fSL --connect-timeout 10 --max-time 300 \
  && rm -rf /tmp/openssl-src /tmp/openssl.tar.gz
 
 # Refresh the rolling compiler per workflow run, after the cached native tools.
+# SUN_DEB_URL can point at another build of the package, such as a workflow
+# artifact, when the dev release is between uploads.
 ARG SUN_REFRESH=local
+ARG SUN_DEB_URL=https://github.com/namo-robotics/sun/releases/download/dev/sun_0.dev_amd64.deb
 RUN echo "Sun package refresh: ${SUN_REFRESH}" \
- && curl -fsSL -o /tmp/sun.deb \
-      https://github.com/namo-robotics/sun/releases/download/dev/sun_0.dev_amd64.deb \
+ && curl -fsSL --connect-timeout 10 --max-time 300 \
+      --retry 3 --retry-all-errors --retry-delay 5 \
+      -o /tmp/sun.deb "${SUN_DEB_URL}" \
  && apt-get update \
  && apt-get install -y --no-install-recommends /tmp/sun.deb \
  && sun --version \

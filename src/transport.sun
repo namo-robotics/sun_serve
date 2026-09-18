@@ -89,19 +89,19 @@ public module sun_serve {
       return 0;
     }
 
-    // The negotiated ALPN protocol, if TLS chose one.
-    method alpn(out: ref String) bool {
+    // The negotiated ALPN protocol name, empty for plain sockets or no choice.
+    method alpn(alloc: const ref HeapAllocator) String {
       if (this.tls.is_active()) {
-        return this.tls.alpn(out);
+        return this.tls.alpn(alloc);
       }
-      return false;
+      return String(alloc, "");
     }
 
     // Shut the session down and close the socket.
     public method close() void {
       if (this.fd > 0) {
         this.tls.shutdown();
-        unsafe { __shutdown(this.fd, SHUT_RDWR); };
+        unsafe __shutdown(this.fd, SHUT_RDWR);
         close_fd(this.fd);
         this.fd = 0;
       }

@@ -69,9 +69,9 @@ public module sun_serve {
       var out = ByteBuffer(alloc, 16);
       var hello = ByteBuffer(alloc, 5);
       hello.append_literal("hello");
-      websocket_append_frame(out, _convert<u8>(1), hello, 0, 5);
+      websocket_append_frame(out, WebSocketOpcode.Text, hello, 0, 5);
       std.test.assert_eq(out.readable_len(), 7);
-      std.test.assert_eq(out.byte_at(0), 129);
+      std.test.assert_eq(out.byte_at(0), 0x81);
       std.test.assert_eq(out.byte_at(1), 5);
       std.test.assert(websocket_valid_utf8(hello, 0, 5), "ASCII is UTF-8");
       var bad = ByteBuffer(alloc, 2);
@@ -79,9 +79,9 @@ public module sun_serve {
       bad.append_byte(128);
       std.test.assert(not websocket_valid_utf8(bad, 0, 2), "overlong UTF-8 rejected");
       var offers = String(alloc, "other; value=1, permessage-deflate; client_max_window_bits");
-      std.test.assert(websocket_offers_deflate(offers), "compression offer found");
+      std.test.assert(websocket_offers_deflate(alloc, offers), "compression offer found");
       var prefix = String(alloc, "not-permessage-deflate");
-      std.test.assert(not websocket_offers_deflate(prefix), "extension token is exact");
+      std.test.assert(not websocket_offers_deflate(alloc, prefix), "extension token is exact");
       std.test.assert_eq(websocket_close_payload_status(bad, 1), 1002);
       var invalid_code = ByteBuffer(alloc, 2);
       invalid_code.append_byte(3);
@@ -129,11 +129,10 @@ public module sun_serve {
       var date = DateCache(alloc);
       date.refresh();
       conn.queue_h2_response(date, 1, false, false);
-      std.test.assert_eq(conn.wbuf.byte_at(3), H2_HEADERS);
+      std.test.assert_eq(conn.wbuf.byte_at(3), _convert<u8>(H2FrameKind.Headers));
       std.test.assert_eq(conn.wbuf.byte_at(4) & H2_END_HEADERS, 0);
-      var first_length: i64 = (_convert<i64>(conn.wbuf.byte_at(0)) << 16) | (_convert<i64>(conn.wbuf.byte_at(1)) << 8) | _convert<i64>(conn.wbuf.byte_at(2));
-      var continuation: i64 = 9 + first_length;
-      std.test.assert_eq(conn.wbuf.byte_at(continuation + 3), H2_CONTINUATION);
+      var continuation: i64 = H2_FRAME_HEADER_LEN + h2_frame_len(conn.wbuf, 0);
+      std.test.assert_eq(conn.wbuf.byte_at(continuation + 3), _convert<u8>(H2FrameKind.Continuation));
       std.test.assert((conn.wbuf.byte_at(continuation + 4) & H2_END_HEADERS) != 0, "continuation ends block");
     }
 
@@ -164,9 +163,9 @@ public module sun_serve {
       std.test.assert_eq(conn.h2.send_window, 0);
       var response_index: i64 = conn.find_h2_response_stream(1);
       std.test.assert(response_index >= 0, "response remains queued");
-      std.test.assert_eq(conn.h2.responses.get_unchecked(response_index).data.readable_len(), 4465);
+      std.test.assert_eq(conn.h2.responses[response_index].data.readable_len(), 4465);
       conn.h2.send_window = 4465;
-      conn.h2.responses.get_unchecked(response_index).window = 4465;
+      conn.h2.responses[response_index].window = 4465;
       conn.flush_h2_response_data();
       std.test.assert(conn.find_h2_response_stream(1) < 0, "response completed after update");
     }
@@ -174,23 +173,10 @@ public module sun_serve {
     test_function hpack_huffman_and_dynamic_table() {
       var alloc = make_heap_allocator();
       var encoded = ByteBuffer(alloc, 12);
-      encoded.append_byte(241);
-      encoded.append_byte(227);
-      encoded.append_byte(194);
-      encoded.append_byte(229);
-      encoded.append_byte(242);
-      encoded.append_byte(58);
-      encoded.append_byte(107);
-      encoded.append_byte(160);
-      encoded.append_byte(171);
-      encoded.append_byte(144);
-      encoded.append_byte(244);
-      encoded.append_byte(255);
-      var decoded: Option<String> = hpack_huffman_decode(alloc, encoded, 0, 12);
-      var fallback = String(alloc, "");
-      var text: String = match decoded {
+      encoded.append_literal("\xf1\xe3\xc2\xe5\xf2\x3a\x6b\xa0\xab\x90\xf4\xff");
+      var text: String = match hpack_huffman_decode(alloc, encoded, 0, 12) {
         Option.Some(v) => v,
-        Option.None => fallback
+        Option.None => String(alloc, "")
       };
       std.test.assert(text.equals_literal("www.example.com"), "RFC Huffman example");
 
@@ -205,7 +191,7 @@ public module sun_serve {
       var indexed = ByteBuffer(alloc, 1);
       indexed.append_byte(190);
       std.test.assert(hpack_decode(alloc, indexed, 1, decoder, headers), "dynamic index decoded");
-      std.test.assert(headers.get_unchecked(0).value.equals_literal("localhost"), "dynamic value");
+      std.test.assert(headers[0].value.equals_literal("localhost"), "dynamic value");
 
       var first_name = String(alloc, "x");
       var first_value = String(alloc, "old");

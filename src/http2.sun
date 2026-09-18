@@ -6,20 +6,42 @@
 public module sun_serve {
   using std;
 
-  const H2_DATA: u8 = 0;
-  const H2_HEADERS: u8 = 1;
-  const H2_PRIORITY: u8 = 2;
-  const H2_RST_STREAM: u8 = 3;
-  const H2_SETTINGS: u8 = 4;
-  const H2_PUSH_PROMISE: u8 = 5;
-  const H2_PING: u8 = 6;
-  const H2_GOAWAY: u8 = 7;
-  const H2_WINDOW_UPDATE: u8 = 8;
-  const H2_CONTINUATION: u8 = 9;
-  const H2_END_STREAM: u8 = 1;
-  const H2_ACK: u8 = 1;
-  const H2_END_HEADERS: u8 = 4;
+  // The frame types of RFC 9113, stored as they appear on the wire.
+  public enum H2FrameKind u8 { Data = 0, Headers = 1, Priority = 2, RstStream = 3, Settings = 4, PushPromise = 5, Ping = 6, Goaway = 7, WindowUpdate = 8, Continuation = 9 }
+
+  // The stream error codes sun_serve sends in RST_STREAM frames.
+  const H2_ERROR_PROTOCOL: u32 = 0x1;
+  const H2_ERROR_STREAM_CLOSED: u32 = 0x5;
+  const H2_ERROR_REFUSED_STREAM: u32 = 0x7;
+  const H2_ERROR_ENHANCE_YOUR_CALM: u32 = 0xb;
+
+  // The frame flags used by this implementation.
+  const H2_END_STREAM: u8 = 0x1;
+  const H2_ACK: u8 = 0x1;
+  const H2_END_HEADERS: u8 = 0x4;
+  const H2_PADDED: u8 = 0x8;
+  const H2_PRIORITY_FLAG: u8 = 0x20;
+
+  // The SETTINGS identifiers this implementation reads and writes.
+  const H2_SETTINGS_ENABLE_PUSH: i32 = 0x2;
+  const H2_SETTINGS_MAX_CONCURRENT_STREAMS: i32 = 0x3;
+  const H2_SETTINGS_INITIAL_WINDOW_SIZE: i32 = 0x4;
+  const H2_SETTINGS_MAX_FRAME_SIZE: i32 = 0x5;
+  const H2_SETTINGS_ENABLE_CONNECT_PROTOCOL: i32 = 0x8;
+
+  // The protocol's fixed sizes and limits.
+  const H2_FRAME_HEADER_LEN: i64 = 9;
   const H2_DEFAULT_FRAME_SIZE: i64 = 16384;
+  const H2_MAX_FRAME_SIZE: i64 = 0xff_ffff;
+  const H2_DEFAULT_WINDOW: i64 = 65535;
+  const H2_MAX_WINDOW: i64 = 0x7fff_ffff;
+  const H2_STREAM_ID_MASK: u32 = 0x7fff_ffff;
+  const H2_PREFACE: static_ptr<u8> = "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n";
+  const HPACK_DEFAULT_TABLE_SIZE: i64 = 4096;
+  // Bytes HPACK charges per dynamic-table entry on top of its name and value.
+  const HPACK_ENTRY_OVERHEAD: i64 = 32;
+  // The number of entries in the HPACK static table.
+  const HPACK_STATIC_ENTRIES: i64 = 61;
 
   // One decoded HTTP/2 header field.
   public class H2Header {
@@ -56,13 +78,13 @@ public module sun_serve {
     }
 
     // Populate a slot from a decoded header block.
-    method begin(id: u32, source: ref Vec<H2Header>) void {
+    method begin(id: u32, source: const ref Vec<H2Header>) void {
       this.active = true;
       this.id = id;
       this.headers.clear();
       this.body.clear();
       for (var i: i64 = 0; i < source.size(); i = i + 1) {
-        this.headers.push(source.get_unchecked(i).clone(this.alloc));
+        this.headers.push(source[i].clone(this.alloc));
       }
     }
 
@@ -108,7 +130,7 @@ public module sun_serve {
   class HpackDecoder {
     var entries: Vec<H2Header>;
     var bytes: i64 = 0;
-    var maximum: i64 = 4096;
+    var maximum: i64 = HPACK_DEFAULT_TABLE_SIZE;
     var alloc: HeapAllocator;
 
     // Start with the RFC default dynamic-table limit.
@@ -121,12 +143,12 @@ public module sun_serve {
     method reset() void {
       this.entries.clear();
       this.bytes = 0;
-      this.maximum = 4096;
+      this.maximum = HPACK_DEFAULT_TABLE_SIZE;
     }
 
     // Apply a peer table-size update within the configured maximum.
     method resize(size: i64) bool {
-      if (size < 0 or size > 4096) {
+      if (size < 0 or size > HPACK_DEFAULT_TABLE_SIZE) {
         return false;
       }
       this.maximum = size;
@@ -136,19 +158,19 @@ public module sun_serve {
 
     // Resolve a dynamic index into owned strings.
     method lookup(index: i64, name: ref String, value: ref String) bool {
-      var at: i64 = this.entries.size() - 1 - (index - 62);
+      var at: i64 = this.entries.size() - 1 - (index - HPACK_STATIC_ENTRIES - 1);
       if (at < 0 or at >= this.entries.size()) {
         return false;
       }
-      var field: ref H2Header = this.entries.get_unchecked(at);
+      var field: ref H2Header = this.entries[at];
       name.append(field.name);
       value.append(field.value);
       return true;
     }
 
     // Add an entry after older entries; lookup indexes from the end.
-    method add(name: ref String, value: ref String) void {
-      var size: i64 = name.length() + value.length() + 32;
+    method add(name: const ref String, value: const ref String) void {
+      var size: i64 = name.length() + value.length() + HPACK_ENTRY_OVERHEAD;
       if (size > this.maximum) {
         this.entries.clear();
         this.bytes = 0;
@@ -162,13 +184,13 @@ public module sun_serve {
     // Remove oldest entries until the table fits.
     method evict() void {
       while (this.bytes > this.maximum and this.entries.size() > 0) {
-        var old_size: i64 = this.entries.get_unchecked(0).name.length() + this.entries.get_unchecked(0).value.length() + 32;
-        var remaining = Vec<H2Header>(this.alloc, this.entries.size() - 1);
-        for (var i: i64 = 1; i < this.entries.size(); i = i + 1) {
-          remaining.push(this.entries.get_unchecked(i).clone(this.alloc));
+        try {
+          var oldest: H2Header = this.entries.remove(0);
+          this.bytes = this.bytes - oldest.name.length() - oldest.value.length() - HPACK_ENTRY_OVERHEAD;
+        } catch (e: IError) {
+          // Unreachable: the table was just checked to be non-empty.
+          return;
         }
-        this.entries = remaining;
-        this.bytes = this.bytes - old_size;
       }
     }
   }
@@ -192,8 +214,8 @@ public module sun_serve {
     var buffered_bytes: i64 = 0;
     var last_client_stream: u32 = 0;
     var peer_frame_size: i64 = H2_DEFAULT_FRAME_SIZE;
-    var peer_initial_window: i64 = 65535;
-    var send_window: i64 = 65535;
+    var peer_initial_window: i64 = H2_DEFAULT_WINDOW;
+    var send_window: i64 = H2_DEFAULT_WINDOW;
     var responses: Vec<H2ResponseStream>;
     var enable_connect: bool = false;
     var upgrading: bool = false;  // an h2c upgrade response is being written
@@ -217,17 +239,17 @@ public module sun_serve {
       this.header_block.clear();
       this.continuation_stream = 0;
       this.header_end_stream = false;
-      for (var stream_slot: i64 = 0; stream_slot < this.streams.size(); stream_slot = stream_slot + 1) {
-        this.streams.get_unchecked(stream_slot).reset();
+      for (var stream: ref H2RequestStream in this.streams) {
+        stream.reset();
       }
       this.open_streams = 0;
       this.buffered_bytes = 0;
       this.last_client_stream = 0;
       this.peer_frame_size = H2_DEFAULT_FRAME_SIZE;
-      this.peer_initial_window = 65535;
-      this.send_window = 65535;
-      for (var response_slot: i64 = 0; response_slot < this.responses.size(); response_slot = response_slot + 1) {
-        this.responses.get_unchecked(response_slot).reset();
+      this.peer_initial_window = H2_DEFAULT_WINDOW;
+      this.send_window = H2_DEFAULT_WINDOW;
+      for (var response: ref H2ResponseStream in this.responses) {
+        response.reset();
       }
       this.enable_connect = false;
       this.upgrading = false;
@@ -265,14 +287,14 @@ public module sun_serve {
 
   // Append an unsigned big-endian HTTP/2 integer.
   function h2_append_u32(out: ref ByteBuffer, value: u32) void {
-    out.append_byte(_convert<u8>((value >> 24) & 255));
-    out.append_byte(_convert<u8>((value >> 16) & 255));
-    out.append_byte(_convert<u8>((value >> 8) & 255));
-    out.append_byte(_convert<u8>(value & 255));
+    out.append_byte(_convert<u8>((value >> 24) & 0xff));
+    out.append_byte(_convert<u8>((value >> 16) & 0xff));
+    out.append_byte(_convert<u8>((value >> 8) & 0xff));
+    out.append_byte(_convert<u8>(value & 0xff));
   }
 
   // Validate HTTP/2 request-header syntax and decoded limits.
-  function h2_valid_request_headers(headers: ref Vec<H2Header>, limits: const ref Limits) bool {
+  function h2_valid_request_headers(headers: const ref Vec<H2Header>, limits: const ref Limits) bool {
     if (headers.size() > limits.max_headers) {
       return false;
     }
@@ -284,16 +306,16 @@ public module sun_serve {
     var protocol_seen: bool = false;
     var decoded_bytes: i64 = 0;
     for (var i: i64 = 0; i < headers.size(); i = i + 1) {
-      var field: ref H2Header = headers.get_unchecked(i);
-      if (field.name.length() == 0) {
+      var field: const ref H2Header = headers[i];
+      if (field.name.is_empty()) {
         return false;
       }
-      decoded_bytes = decoded_bytes + field.name.length() + field.value.length() + 32;
+      decoded_bytes = decoded_bytes + field.name.length() + field.value.length() + HPACK_ENTRY_OVERHEAD;
       if (decoded_bytes > limits.max_header_bytes) {
         return false;
       }
       for (var j: i64 = 0; j < field.name.length(); j = j + 1) {
-        var c: u8 = field.name.at(j);
+        var c: u8 = string_byte(field.name, j);
         if (c >= b'A' and c <= b'Z') {
           return false;
         }
@@ -335,11 +357,11 @@ public module sun_serve {
   }
 
   // Decode an unpadded base64url HTTP2-Settings header value.
-  function h2_decode_settings_header(value: ref String, out: ref ByteBuffer) bool {
+  function h2_decode_settings_header(value: const ref String, out: ref ByteBuffer) bool {
     var bits: u32 = 0;
     var bit_count: i32 = 0;
     for (var i: i64 = 0; i < value.length(); i = i + 1) {
-      var c: u8 = value.at(i);
+      var c: u8 = string_byte(value, i);
       var digit: i32 = -1;
       if (c >= b'A' and c <= b'Z') {
         digit = _convert<i32>(c - b'A');
@@ -368,16 +390,42 @@ public module sun_serve {
   }
 
   // Append an HTTP/2 frame header.
-  function h2_frame(out: ref ByteBuffer, len: i64, kind: u8, flags: u8, stream: u32) void {
-    out.append_byte(_convert<u8>((len >> 16) & 255));
-    out.append_byte(_convert<u8>((len >> 8) & 255));
-    out.append_byte(_convert<u8>(len & 255));
-    out.append_byte(kind);
+  function h2_frame(out: ref ByteBuffer, len: i64, kind: H2FrameKind, flags: u8, stream: u32) void {
+    out.append_byte(_convert<u8>((len >> 16) & 0xff));
+    out.append_byte(_convert<u8>((len >> 8) & 0xff));
+    out.append_byte(_convert<u8>(len & 0xff));
+    out.append_byte(_convert<u8>(kind));
     out.append_byte(flags);
-    out.append_byte(_convert<u8>((stream >> 24) & 127));
-    out.append_byte(_convert<u8>((stream >> 16) & 255));
-    out.append_byte(_convert<u8>((stream >> 8) & 255));
-    out.append_byte(_convert<u8>(stream & 255));
+    h2_append_u32(out, stream & H2_STREAM_ID_MASK);
+  }
+
+  // The payload length declared by a frame header at off.
+  function h2_frame_len(data: const ref ByteBuffer, off: i64) i64 {
+    return (_convert<i64>(data.byte_at(off)) << 16) | (_convert<i64>(data.byte_at(off + 1)) << 8) | _convert<i64>(data.byte_at(off + 2));
+  }
+
+  // The frame type declared by a frame header at off; unknown types are None.
+  function h2_frame_kind(data: const ref ByteBuffer, off: i64) Option<H2FrameKind> {
+    return _enum_from_int<H2FrameKind>(data.byte_at(off + 3));
+  }
+
+  // Append a settings frame advertising the server limits.
+  function h2_append_settings(out: ref ByteBuffer, max_concurrent_streams: i64) void {
+    h2_frame(out, 12, H2FrameKind.Settings, 0, 0);
+    h2_append_setting(out, H2_SETTINGS_MAX_CONCURRENT_STREAMS, _convert<u32>(max_concurrent_streams));
+    h2_append_setting(out, H2_SETTINGS_ENABLE_CONNECT_PROTOCOL, 1);
+  }
+
+  // Append one identifier and value pair of a SETTINGS payload.
+  function h2_append_setting(out: ref ByteBuffer, identifier: i32, value: u32) void {
+    out.append_byte(_convert<u8>((identifier >> 8) & 0xff));
+    out.append_byte(_convert<u8>(identifier & 0xff));
+    h2_append_u32(out, value);
+  }
+
+  // Read the identifier of a SETTINGS pair at off.
+  function h2_setting_id(data: const ref ByteBuffer, off: i64) i32 {
+    return _convert<i32>(data.byte_at(off)) * 256 + _convert<i32>(data.byte_at(off + 1));
   }
 
   // Decode an HPACK variable-length integer and advance pos.
@@ -497,263 +545,263 @@ public module sun_serve {
   // Return the RFC HPACK Huffman code for one symbol.
   function hpack_huffman_code(symbol: i32) u64 {
     return match symbol {
-      0 => _convert<u64>(8184),
-      1 => _convert<u64>(8388568),
-      2 => _convert<u64>(268435426),
-      3 => _convert<u64>(268435427),
-      4 => _convert<u64>(268435428),
-      5 => _convert<u64>(268435429),
-      6 => _convert<u64>(268435430),
-      7 => _convert<u64>(268435431),
-      8 => _convert<u64>(268435432),
-      9 => _convert<u64>(16777194),
-      10 => _convert<u64>(1073741820),
-      11 => _convert<u64>(268435433),
-      12 => _convert<u64>(268435434),
-      13 => _convert<u64>(1073741821),
-      14 => _convert<u64>(268435435),
-      15 => _convert<u64>(268435436),
-      16 => _convert<u64>(268435437),
-      17 => _convert<u64>(268435438),
-      18 => _convert<u64>(268435439),
-      19 => _convert<u64>(268435440),
-      20 => _convert<u64>(268435441),
-      21 => _convert<u64>(268435442),
-      22 => _convert<u64>(1073741822),
-      23 => _convert<u64>(268435443),
-      24 => _convert<u64>(268435444),
-      25 => _convert<u64>(268435445),
-      26 => _convert<u64>(268435446),
-      27 => _convert<u64>(268435447),
-      28 => _convert<u64>(268435448),
-      29 => _convert<u64>(268435449),
-      30 => _convert<u64>(268435450),
-      31 => _convert<u64>(268435451),
-      32 => _convert<u64>(20),
-      33 => _convert<u64>(1016),
-      34 => _convert<u64>(1017),
-      35 => _convert<u64>(4090),
-      36 => _convert<u64>(8185),
-      37 => _convert<u64>(21),
-      38 => _convert<u64>(248),
-      39 => _convert<u64>(2042),
-      40 => _convert<u64>(1018),
-      41 => _convert<u64>(1019),
-      42 => _convert<u64>(249),
-      43 => _convert<u64>(2043),
-      44 => _convert<u64>(250),
-      45 => _convert<u64>(22),
-      46 => _convert<u64>(23),
-      47 => _convert<u64>(24),
-      48 => _convert<u64>(0),
-      49 => _convert<u64>(1),
-      50 => _convert<u64>(2),
-      51 => _convert<u64>(25),
-      52 => _convert<u64>(26),
-      53 => _convert<u64>(27),
-      54 => _convert<u64>(28),
-      55 => _convert<u64>(29),
-      56 => _convert<u64>(30),
-      57 => _convert<u64>(31),
-      58 => _convert<u64>(92),
-      59 => _convert<u64>(251),
-      60 => _convert<u64>(32764),
-      61 => _convert<u64>(32),
-      62 => _convert<u64>(4091),
-      63 => _convert<u64>(1020),
-      64 => _convert<u64>(8186),
-      65 => _convert<u64>(33),
-      66 => _convert<u64>(93),
-      67 => _convert<u64>(94),
-      68 => _convert<u64>(95),
-      69 => _convert<u64>(96),
-      70 => _convert<u64>(97),
-      71 => _convert<u64>(98),
-      72 => _convert<u64>(99),
-      73 => _convert<u64>(100),
-      74 => _convert<u64>(101),
-      75 => _convert<u64>(102),
-      76 => _convert<u64>(103),
-      77 => _convert<u64>(104),
-      78 => _convert<u64>(105),
-      79 => _convert<u64>(106),
-      80 => _convert<u64>(107),
-      81 => _convert<u64>(108),
-      82 => _convert<u64>(109),
-      83 => _convert<u64>(110),
-      84 => _convert<u64>(111),
-      85 => _convert<u64>(112),
-      86 => _convert<u64>(113),
-      87 => _convert<u64>(114),
-      88 => _convert<u64>(252),
-      89 => _convert<u64>(115),
-      90 => _convert<u64>(253),
-      91 => _convert<u64>(8187),
-      92 => _convert<u64>(524272),
-      93 => _convert<u64>(8188),
-      94 => _convert<u64>(16380),
-      95 => _convert<u64>(34),
-      96 => _convert<u64>(32765),
-      97 => _convert<u64>(3),
-      98 => _convert<u64>(35),
-      99 => _convert<u64>(4),
-      100 => _convert<u64>(36),
-      101 => _convert<u64>(5),
-      102 => _convert<u64>(37),
-      103 => _convert<u64>(38),
-      104 => _convert<u64>(39),
-      105 => _convert<u64>(6),
-      106 => _convert<u64>(116),
-      107 => _convert<u64>(117),
-      108 => _convert<u64>(40),
-      109 => _convert<u64>(41),
-      110 => _convert<u64>(42),
-      111 => _convert<u64>(7),
-      112 => _convert<u64>(43),
-      113 => _convert<u64>(118),
-      114 => _convert<u64>(44),
-      115 => _convert<u64>(8),
-      116 => _convert<u64>(9),
-      117 => _convert<u64>(45),
-      118 => _convert<u64>(119),
-      119 => _convert<u64>(120),
-      120 => _convert<u64>(121),
-      121 => _convert<u64>(122),
-      122 => _convert<u64>(123),
-      123 => _convert<u64>(32766),
-      124 => _convert<u64>(2044),
-      125 => _convert<u64>(16381),
-      126 => _convert<u64>(8189),
-      127 => _convert<u64>(268435452),
-      128 => _convert<u64>(1048550),
-      129 => _convert<u64>(4194258),
-      130 => _convert<u64>(1048551),
-      131 => _convert<u64>(1048552),
-      132 => _convert<u64>(4194259),
-      133 => _convert<u64>(4194260),
-      134 => _convert<u64>(4194261),
-      135 => _convert<u64>(8388569),
-      136 => _convert<u64>(4194262),
-      137 => _convert<u64>(8388570),
-      138 => _convert<u64>(8388571),
-      139 => _convert<u64>(8388572),
-      140 => _convert<u64>(8388573),
-      141 => _convert<u64>(8388574),
-      142 => _convert<u64>(16777195),
-      143 => _convert<u64>(8388575),
-      144 => _convert<u64>(16777196),
-      145 => _convert<u64>(16777197),
-      146 => _convert<u64>(4194263),
-      147 => _convert<u64>(8388576),
-      148 => _convert<u64>(16777198),
-      149 => _convert<u64>(8388577),
-      150 => _convert<u64>(8388578),
-      151 => _convert<u64>(8388579),
-      152 => _convert<u64>(8388580),
-      153 => _convert<u64>(2097116),
-      154 => _convert<u64>(4194264),
-      155 => _convert<u64>(8388581),
-      156 => _convert<u64>(4194265),
-      157 => _convert<u64>(8388582),
-      158 => _convert<u64>(8388583),
-      159 => _convert<u64>(16777199),
-      160 => _convert<u64>(4194266),
-      161 => _convert<u64>(2097117),
-      162 => _convert<u64>(1048553),
-      163 => _convert<u64>(4194267),
-      164 => _convert<u64>(4194268),
-      165 => _convert<u64>(8388584),
-      166 => _convert<u64>(8388585),
-      167 => _convert<u64>(2097118),
-      168 => _convert<u64>(8388586),
-      169 => _convert<u64>(4194269),
-      170 => _convert<u64>(4194270),
-      171 => _convert<u64>(16777200),
-      172 => _convert<u64>(2097119),
-      173 => _convert<u64>(4194271),
-      174 => _convert<u64>(8388587),
-      175 => _convert<u64>(8388588),
-      176 => _convert<u64>(2097120),
-      177 => _convert<u64>(2097121),
-      178 => _convert<u64>(4194272),
-      179 => _convert<u64>(2097122),
-      180 => _convert<u64>(8388589),
-      181 => _convert<u64>(4194273),
-      182 => _convert<u64>(8388590),
-      183 => _convert<u64>(8388591),
-      184 => _convert<u64>(1048554),
-      185 => _convert<u64>(4194274),
-      186 => _convert<u64>(4194275),
-      187 => _convert<u64>(4194276),
-      188 => _convert<u64>(8388592),
-      189 => _convert<u64>(4194277),
-      190 => _convert<u64>(4194278),
-      191 => _convert<u64>(8388593),
-      192 => _convert<u64>(67108832),
-      193 => _convert<u64>(67108833),
-      194 => _convert<u64>(1048555),
-      195 => _convert<u64>(524273),
-      196 => _convert<u64>(4194279),
-      197 => _convert<u64>(8388594),
-      198 => _convert<u64>(4194280),
-      199 => _convert<u64>(33554412),
-      200 => _convert<u64>(67108834),
-      201 => _convert<u64>(67108835),
-      202 => _convert<u64>(67108836),
-      203 => _convert<u64>(134217694),
-      204 => _convert<u64>(134217695),
-      205 => _convert<u64>(67108837),
-      206 => _convert<u64>(16777201),
-      207 => _convert<u64>(33554413),
-      208 => _convert<u64>(524274),
-      209 => _convert<u64>(2097123),
-      210 => _convert<u64>(67108838),
-      211 => _convert<u64>(134217696),
-      212 => _convert<u64>(134217697),
-      213 => _convert<u64>(67108839),
-      214 => _convert<u64>(134217698),
-      215 => _convert<u64>(16777202),
-      216 => _convert<u64>(2097124),
-      217 => _convert<u64>(2097125),
-      218 => _convert<u64>(67108840),
-      219 => _convert<u64>(67108841),
-      220 => _convert<u64>(268435453),
-      221 => _convert<u64>(134217699),
-      222 => _convert<u64>(134217700),
-      223 => _convert<u64>(134217701),
-      224 => _convert<u64>(1048556),
-      225 => _convert<u64>(16777203),
-      226 => _convert<u64>(1048557),
-      227 => _convert<u64>(2097126),
-      228 => _convert<u64>(4194281),
-      229 => _convert<u64>(2097127),
-      230 => _convert<u64>(2097128),
-      231 => _convert<u64>(8388595),
-      232 => _convert<u64>(4194282),
-      233 => _convert<u64>(4194283),
-      234 => _convert<u64>(33554414),
-      235 => _convert<u64>(33554415),
-      236 => _convert<u64>(16777204),
-      237 => _convert<u64>(16777205),
-      238 => _convert<u64>(67108842),
-      239 => _convert<u64>(8388596),
-      240 => _convert<u64>(67108843),
-      241 => _convert<u64>(134217702),
-      242 => _convert<u64>(67108844),
-      243 => _convert<u64>(67108845),
-      244 => _convert<u64>(134217703),
-      245 => _convert<u64>(134217704),
-      246 => _convert<u64>(134217705),
-      247 => _convert<u64>(134217706),
-      248 => _convert<u64>(134217707),
-      249 => _convert<u64>(268435454),
-      250 => _convert<u64>(134217708),
-      251 => _convert<u64>(134217709),
-      252 => _convert<u64>(134217710),
-      253 => _convert<u64>(134217711),
-      254 => _convert<u64>(134217712),
-      255 => _convert<u64>(67108846),
-      256 => _convert<u64>(1073741823),
+      0 => 8184,
+      1 => 8388568,
+      2 => 268435426,
+      3 => 268435427,
+      4 => 268435428,
+      5 => 268435429,
+      6 => 268435430,
+      7 => 268435431,
+      8 => 268435432,
+      9 => 16777194,
+      10 => 1073741820,
+      11 => 268435433,
+      12 => 268435434,
+      13 => 1073741821,
+      14 => 268435435,
+      15 => 268435436,
+      16 => 268435437,
+      17 => 268435438,
+      18 => 268435439,
+      19 => 268435440,
+      20 => 268435441,
+      21 => 268435442,
+      22 => 1073741822,
+      23 => 268435443,
+      24 => 268435444,
+      25 => 268435445,
+      26 => 268435446,
+      27 => 268435447,
+      28 => 268435448,
+      29 => 268435449,
+      30 => 268435450,
+      31 => 268435451,
+      32 => 20,
+      33 => 1016,
+      34 => 1017,
+      35 => 4090,
+      36 => 8185,
+      37 => 21,
+      38 => 248,
+      39 => 2042,
+      40 => 1018,
+      41 => 1019,
+      42 => 249,
+      43 => 2043,
+      44 => 250,
+      45 => 22,
+      46 => 23,
+      47 => 24,
+      48 => 0,
+      49 => 1,
+      50 => 2,
+      51 => 25,
+      52 => 26,
+      53 => 27,
+      54 => 28,
+      55 => 29,
+      56 => 30,
+      57 => 31,
+      58 => 92,
+      59 => 251,
+      60 => 32764,
+      61 => 32,
+      62 => 4091,
+      63 => 1020,
+      64 => 8186,
+      65 => 33,
+      66 => 93,
+      67 => 94,
+      68 => 95,
+      69 => 96,
+      70 => 97,
+      71 => 98,
+      72 => 99,
+      73 => 100,
+      74 => 101,
+      75 => 102,
+      76 => 103,
+      77 => 104,
+      78 => 105,
+      79 => 106,
+      80 => 107,
+      81 => 108,
+      82 => 109,
+      83 => 110,
+      84 => 111,
+      85 => 112,
+      86 => 113,
+      87 => 114,
+      88 => 252,
+      89 => 115,
+      90 => 253,
+      91 => 8187,
+      92 => 524272,
+      93 => 8188,
+      94 => 16380,
+      95 => 34,
+      96 => 32765,
+      97 => 3,
+      98 => 35,
+      99 => 4,
+      100 => 36,
+      101 => 5,
+      102 => 37,
+      103 => 38,
+      104 => 39,
+      105 => 6,
+      106 => 116,
+      107 => 117,
+      108 => 40,
+      109 => 41,
+      110 => 42,
+      111 => 7,
+      112 => 43,
+      113 => 118,
+      114 => 44,
+      115 => 8,
+      116 => 9,
+      117 => 45,
+      118 => 119,
+      119 => 120,
+      120 => 121,
+      121 => 122,
+      122 => 123,
+      123 => 32766,
+      124 => 2044,
+      125 => 16381,
+      126 => 8189,
+      127 => 268435452,
+      128 => 1048550,
+      129 => 4194258,
+      130 => 1048551,
+      131 => 1048552,
+      132 => 4194259,
+      133 => 4194260,
+      134 => 4194261,
+      135 => 8388569,
+      136 => 4194262,
+      137 => 8388570,
+      138 => 8388571,
+      139 => 8388572,
+      140 => 8388573,
+      141 => 8388574,
+      142 => 16777195,
+      143 => 8388575,
+      144 => 16777196,
+      145 => 16777197,
+      146 => 4194263,
+      147 => 8388576,
+      148 => 16777198,
+      149 => 8388577,
+      150 => 8388578,
+      151 => 8388579,
+      152 => 8388580,
+      153 => 2097116,
+      154 => 4194264,
+      155 => 8388581,
+      156 => 4194265,
+      157 => 8388582,
+      158 => 8388583,
+      159 => 16777199,
+      160 => 4194266,
+      161 => 2097117,
+      162 => 1048553,
+      163 => 4194267,
+      164 => 4194268,
+      165 => 8388584,
+      166 => 8388585,
+      167 => 2097118,
+      168 => 8388586,
+      169 => 4194269,
+      170 => 4194270,
+      171 => 16777200,
+      172 => 2097119,
+      173 => 4194271,
+      174 => 8388587,
+      175 => 8388588,
+      176 => 2097120,
+      177 => 2097121,
+      178 => 4194272,
+      179 => 2097122,
+      180 => 8388589,
+      181 => 4194273,
+      182 => 8388590,
+      183 => 8388591,
+      184 => 1048554,
+      185 => 4194274,
+      186 => 4194275,
+      187 => 4194276,
+      188 => 8388592,
+      189 => 4194277,
+      190 => 4194278,
+      191 => 8388593,
+      192 => 67108832,
+      193 => 67108833,
+      194 => 1048555,
+      195 => 524273,
+      196 => 4194279,
+      197 => 8388594,
+      198 => 4194280,
+      199 => 33554412,
+      200 => 67108834,
+      201 => 67108835,
+      202 => 67108836,
+      203 => 134217694,
+      204 => 134217695,
+      205 => 67108837,
+      206 => 16777201,
+      207 => 33554413,
+      208 => 524274,
+      209 => 2097123,
+      210 => 67108838,
+      211 => 134217696,
+      212 => 134217697,
+      213 => 67108839,
+      214 => 134217698,
+      215 => 16777202,
+      216 => 2097124,
+      217 => 2097125,
+      218 => 67108840,
+      219 => 67108841,
+      220 => 268435453,
+      221 => 134217699,
+      222 => 134217700,
+      223 => 134217701,
+      224 => 1048556,
+      225 => 16777203,
+      226 => 1048557,
+      227 => 2097126,
+      228 => 4194281,
+      229 => 2097127,
+      230 => 2097128,
+      231 => 8388595,
+      232 => 4194282,
+      233 => 4194283,
+      234 => 33554414,
+      235 => 33554415,
+      236 => 16777204,
+      237 => 16777205,
+      238 => 67108842,
+      239 => 8388596,
+      240 => 67108843,
+      241 => 134217702,
+      242 => 67108844,
+      243 => 67108845,
+      244 => 134217703,
+      245 => 134217704,
+      246 => 134217705,
+      247 => 134217706,
+      248 => 134217707,
+      249 => 268435454,
+      250 => 134217708,
+      251 => 134217709,
+      252 => 134217710,
+      253 => 134217711,
+      254 => 134217712,
+      255 => 67108846,
+      256 => 1073741823,
       _ => 0
     };
   }
@@ -1070,7 +1118,7 @@ public module sun_serve {
     if (pos >= len) {
       return Option.None;
     }
-    var huffman: bool = (data.byte_at(pos) & 128) != 0;
+    var huffman: bool = (data.byte_at(pos) & 0x80) != 0;
     var n: i64 = hpack_int(data, len, pos, 7);
     if (n < 0 or pos + n > len) {
       return Option.None;
@@ -1080,10 +1128,7 @@ public module sun_serve {
       pos = pos + n;
       return decoded;
     }
-    var out = String(alloc, "");
-    for (var i: i64 = 0; i < n; i = i + 1) {
-      out.append_char(data.byte_at(pos + i));
-    }
+    var out: String = data.range_text(alloc, pos, n);
     pos = pos + n;
     return Option.Some(out);
   }
@@ -1093,19 +1138,19 @@ public module sun_serve {
     var pos: i64 = 0;
     while (pos < len) {
       var first: u8 = data.byte_at(pos);
-      if ((first & 224) == 32) {
+      if ((first & 0xe0) == 0x20) {
         var size: i64 = hpack_int(data, len, pos, 5);
         if (not decoder.resize(size)) {
           return false;
         }
         continue;
       }
-      var indexed: bool = (first & 128) != 0;
-      var incremental: bool = (first & 64) != 0;
+      var indexed: bool = (first & 0x80) != 0;
+      var incremental: bool = (first & 0x40) != 0;
       var prefix: i32 = 4;
       if (indexed) {
         prefix = 7;
-      } else if ((first & 64) != 0) {
+      } else if (incremental) {
         prefix = 6;
       }
       var index: i64 = hpack_int(data, len, pos, prefix);
@@ -1123,15 +1168,15 @@ public module sun_serve {
             return false;
           }
         };
-      } else if (index <= 61) {
+      } else if (index <= HPACK_STATIC_ENTRIES) {
         name.append(hpack_static_name(index));
       }
       var value = String(alloc, "");
-      if (index > 61 and not decoder.lookup(index, name, value)) {
+      if (index > HPACK_STATIC_ENTRIES and not decoder.lookup(index, name, value)) {
         return false;
       }
       if (indexed) {
-        if (index <= 61) {
+        if (index <= HPACK_STATIC_ENTRIES) {
           value.append(hpack_static_value(index));
         }
       } else {
@@ -1163,23 +1208,28 @@ public module sun_serve {
     out.append_byte(first | _convert<u8>(mask));
     var left: i64 = value - mask;
     while (left >= 128) {
-      out.append_byte(_convert<u8>(left % 128) | 128);
+      out.append_byte(_convert<u8>(left % 128) | 0x80);
       left = left / 128;
     }
     out.append_byte(_convert<u8>(left));
   }
 
   // Encode a literal HPACK string without Huffman coding.
-  function hpack_append_string(out: ref ByteBuffer, value: ref String) void {
-    hpack_append_int(out, value.length(), 7, _convert<u8>(0));
-    out.append_bytes(value.c_str(), value.length());
+  function hpack_append_string(out: ref ByteBuffer, value: const ref String) void {
+    hpack_append_int(out, value.length(), 7, 0);
+    out.append_string(value);
   }
 
   // Encode one literal response header without indexing.
-  function hpack_header(out: ref ByteBuffer, name: ref String, value: ref String) void {
-    hpack_append_int(out, 0, 4, _convert<u8>(0));
+  function hpack_header(out: ref ByteBuffer, name: const ref String, value: const ref String) void {
+    hpack_append_int(out, 0, 4, 0);
     hpack_append_string(out, name);
     hpack_append_string(out, value);
+  }
+
+  // Encode one literal response header given as literals.
+  function hpack_header_literal(out: ref ByteBuffer, name: static_ptr<u8>, value: static_ptr<u8>) void {
+    hpack_header(out, String(name), String(value));
   }
 
   // Encode a response status using the static table when possible.
@@ -1195,10 +1245,10 @@ public module sun_serve {
       _ => 0
     };
     if (index > 0) {
-      hpack_append_int(out, index, 7, _convert<u8>(128));
+      hpack_append_int(out, index, 7, 0x80);
       return;
     }
-    hpack_append_int(out, 8, 4, _convert<u8>(0));
+    hpack_append_int(out, 8, 4, 0);
     var text = String(alloc, "");
     text.append(status);
     hpack_append_string(out, text);

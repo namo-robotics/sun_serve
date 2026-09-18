@@ -31,13 +31,22 @@ Supports **x86_64 Linux** only
 
 ## Install and try it
 
-The rolling `dev` release provides a statically linked Linux x86-64 binary:
+The rolling `dev` release provides a statically linked Linux x86-64 binary
+and the library as a Sun bundle (`.moon`):
 
 ```sh
 curl -fsSL https://github.com/namo-robotics/sun_serve/releases/download/dev/sun_serve-dev-linux-x86_64.tar.gz \
   | tar -xz
 sudo install sun_serve-dev-linux-x86_64/sun_serve /usr/local/bin/sun_serve
+
+# For programs built on the library: install the bundle where `sun` looks.
+curl -fsSL -o sun_serve.moon \
+  https://github.com/namo-robotics/sun_serve/releases/download/dev/sun_serve-x86_64-linux-gnu.moon
+sudo install -m 644 sun_serve.moon /usr/lib/sun/sun_serve.moon
 ```
+
+The bundle is built with the same rolling `dev` Sun toolchain that the release
+names in its notes; use that toolchain with it.
 
 There are two ways to use sun_serve: run the binary as a static file server,
 or build your own program on the library and give it a handler.
@@ -121,14 +130,15 @@ are views into the connection's buffer and are valid only during `handle()`;
 the `String`-returning variants copy. Responses take a status, headers, an
 in-memory body, a file to stream (`send_file`), or chunks (`write_chunk`).
 
-The build produces `build/sun_serve.moon`. Consumers add its directory to
-`sun_path` and list `stdlib.moon` and `sun_serve.moon` in their manifest's
-`libraries`. `sun_serve.moon` carries zlib and OpenSSL, built with the musl
-toolchain in the `Dockerfile`; consumers link those archives transitively.
-No `tls.moon` dependency is needed: the server provides its own TLS bindings,
-and Sun isolates each bundle's native symbols. Use a current Sun toolchain
-with the fix for [sun#218](https://github.com/namo-robotics/sun/issues/218).
-The hello example uses this setup directly.
+The build produces `build/sun_serve.moon`, and the `dev` release publishes
+the same file as `sun_serve-x86_64-linux-gnu.moon`. Consumers put it in a
+directory on `sun_path` (or `/usr/lib/sun`) as `sun_serve.moon` and list
+`stdlib.moon` and `sun_serve.moon` in their manifest's `libraries`. The bundle
+carries zlib and OpenSSL, built with the musl toolchain in the `Dockerfile`;
+consumers link those archives transitively, both when compiling and under the
+JIT. No `tls.moon` dependency is needed: the server provides its own TLS
+bindings, and Sun isolates each bundle's native symbols. The hello example
+uses this setup directly.
 
 ## Layout
 
@@ -182,10 +192,11 @@ suites through `sun-config.json`.
 
 ## Status and roadmap
 
-- Linux x86_64. The installed Sun stdlib moon and native archives are
-  x86_64-only, so the aarch64 cross build in the Dockerfile waits on
-  per-target builds.
+- Linux x86_64. The Sun toolchain now installs aarch64 stdlib and TLS
+  bundles, but the OpenSSL and zlib archives the `Dockerfile` builds are
+  x86_64 musl only, so an aarch64 `sun_serve.moon` waits on cross-built
+  archives.
 - Not yet: `Range` requests, `sendfile`, and directory listings. See
   [ROADMAP.md](ROADMAP.md) for the full list, in order of importance.
 - `SUN_FEEDBACK.md` lists the compiler and stdlib issues found while
-  building this, with reproductions.
+  building this that are still open, with reproductions.

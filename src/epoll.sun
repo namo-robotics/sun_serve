@@ -26,7 +26,7 @@ public module sun_serve {
       this.events = ContiguousBuffer<u8>(alloc, max_events * layout.stride);
       this.layout = layout;
       this.scratch = ContiguousBuffer<u8>(alloc, 16);
-      var created: i32 = unsafe { sys_epoll_create1(EPOLL_CLOEXEC); };
+      var created: i32 = unsafe sys_epoll_create1(EPOLL_CLOEXEC);
       if (created < 0) {
         throw Error(last_errno(), "epoll_create1 failed");
       }
@@ -42,14 +42,14 @@ public module sun_serve {
     // Fill the scratch event with an interest mask and user token.
     method fill(interest: u32, token: u64) void {
       this.scratch.fill(0);
-      unsafe { _store<u32>(this.scratch.raw_data(), 0, interest); };
-      unsafe { _store<u64>(_ptr_offset(this.scratch.raw_data(), this.layout.data_offset), 0, token); };
+      unsafe _store<u32>(this.scratch.raw_data(), 0, interest);
+      unsafe _store<u64>(_ptr_offset(this.scratch.raw_data(), this.layout.data_offset), 0, token);
     }
 
     // Start watching a descriptor; events carry token back to the caller.
     public method add(fd: i32, interest: u32, token: u64) void throws IError {
       this.fill(interest, token);
-      if (unsafe { sys_epoll_ctl(this.fd, EPOLL_CTL_ADD, fd, this.scratch.raw_data()); } < 0) {
+      if (unsafe sys_epoll_ctl(this.fd, EPOLL_CTL_ADD, fd, this.scratch.raw_data()) < 0) {
         throw Error(last_errno(), "epoll_ctl add failed");
       }
     }
@@ -57,7 +57,7 @@ public module sun_serve {
     // Change the interest mask of a watched descriptor.
     public method modify(fd: i32, interest: u32, token: u64) void throws IError {
       this.fill(interest, token);
-      if (unsafe { sys_epoll_ctl(this.fd, EPOLL_CTL_MOD, fd, this.scratch.raw_data()); } < 0) {
+      if (unsafe sys_epoll_ctl(this.fd, EPOLL_CTL_MOD, fd, this.scratch.raw_data()) < 0) {
         throw Error(last_errno(), "epoll_ctl mod failed");
       }
     }
@@ -67,7 +67,7 @@ public module sun_serve {
      * to be closed anyway.
      */
     public method remove(fd: i32) void {
-      unsafe { sys_epoll_ctl(this.fd, EPOLL_CTL_DEL, fd, this.scratch.raw_data()); };
+      unsafe sys_epoll_ctl(this.fd, EPOLL_CTL_DEL, fd, this.scratch.raw_data());
     }
 
     /*
@@ -75,9 +75,7 @@ public module sun_serve {
      * events are ready. A signal interruption counts as zero events.
      */
     public method wait(timeout_ms: i32) i64 throws IError {
-      var n: i32 = unsafe {
-        sys_epoll_wait(this.fd, this.events.raw_data(), _convert<i32>(this.max_events), timeout_ms);
-      };
+      var n: i32 = unsafe sys_epoll_wait(this.fd, this.events.raw_data(), _convert<i32>(this.max_events), timeout_ms);
       if (n < 0) {
         var code: i32 = last_errno();
         if (code == EINTR) {
@@ -90,14 +88,12 @@ public module sun_serve {
 
     // The readiness bits of the i-th event from the last wait.
     public const method event_mask(i: i64) u32 {
-      return unsafe { _load<u32>(_ptr_offset(this.events.raw_data(), i * this.layout.stride), 0); };
+      return unsafe _load<u32>(_ptr_offset(this.events.raw_data(), i * this.layout.stride), 0);
     }
 
     // The token of the i-th event from the last wait.
     public const method event_token(i: i64) u64 {
-      return unsafe {
-        _load<u64>(_ptr_offset(this.events.raw_data(), i * this.layout.stride + this.layout.data_offset), 0);
-      };
+      return unsafe _load<u64>(_ptr_offset(this.events.raw_data(), i * this.layout.stride + this.layout.data_offset), 0);
     }
 
     // The epoll descriptor itself.

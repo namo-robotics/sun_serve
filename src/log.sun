@@ -12,16 +12,19 @@
 public module sun_serve {
   using std;
 
-  // How much to say. Each level includes the ones before it.
+  /*
+   * How much to say. Each level includes the ones before it, so the integer
+   * value of a level orders it.
+   */
   public enum LogLevel { Error, Warn, Info, Debug }
 
-  // Order levels so they can be compared.
-  function level_rank(level: LogLevel) i32 {
+  // The tag written at the start of a diagnostic line.
+  function level_tag(level: LogLevel) static_ptr<u8> {
     return match level {
-      LogLevel.Error => 0,
-      LogLevel.Warn => 1,
-      LogLevel.Info => 2,
-      LogLevel.Debug => 3
+      LogLevel.Error => "error",
+      LogLevel.Warn => "warn",
+      LogLevel.Info => "info",
+      LogLevel.Debug => "debug"
     };
   }
 
@@ -51,7 +54,7 @@ public module sun_serve {
 
     // Build a logger tagged with a worker id.
     init(alloc: const ref HeapAllocator, level: LogLevel, worker: i32, access_enabled: bool) {
-      this.level = level_rank(level);
+      this.level = _convert<i32>(level);
       this.worker = worker;
       this.line = ByteBuffer(alloc, 512);
       this.access_enabled = access_enabled;
@@ -59,7 +62,7 @@ public module sun_serve {
 
     // Report whether messages at level would be written.
     public const method enabled(level: LogLevel) bool {
-      return level_rank(level) <= this.level;
+      return _convert<i32>(level) <= this.level;
     }
 
     // Report whether access log lines are written.
@@ -84,11 +87,11 @@ public module sun_serve {
     }
 
     // Write one diagnostic line made of a message and an optional detail.
-    method emit(level: LogLevel, tag: static_ptr<u8>, message: static_ptr<u8>, detail: ref String) void {
+    method emit(level: LogLevel, message: static_ptr<u8>, detail: const ref String) void {
       if (not this.enabled(level)) {
         return;
       }
-      this.begin(tag);
+      this.begin(level_tag(level));
       this.line.append_literal(message);
       if (detail.length() > 0) {
         this.line.append_literal(": ");
@@ -98,48 +101,40 @@ public module sun_serve {
     }
 
     // Log an error with a detail string.
-    public method error(message: static_ptr<u8>, detail: ref String) void {
-      this.emit(LogLevel.Error, "error", message, detail);
+    public method error(message: static_ptr<u8>, detail: const ref String) void {
+      this.emit(LogLevel.Error, message, detail);
     }
 
     // Log a warning with a detail string.
-    public method warn(message: static_ptr<u8>, detail: ref String) void {
-      this.emit(LogLevel.Warn, "warn", message, detail);
+    public method warn(message: static_ptr<u8>, detail: const ref String) void {
+      this.emit(LogLevel.Warn, message, detail);
     }
 
     // Log an informational message with a detail string.
-    public method info(message: static_ptr<u8>, detail: ref String) void {
-      this.emit(LogLevel.Info, "info", message, detail);
+    public method info(message: static_ptr<u8>, detail: const ref String) void {
+      this.emit(LogLevel.Info, message, detail);
     }
 
     // Log a debug message with a detail string.
-    public method debug(message: static_ptr<u8>, detail: ref String) void {
-      this.emit(LogLevel.Debug, "debug", message, detail);
+    public method debug(message: static_ptr<u8>, detail: const ref String) void {
+      this.emit(LogLevel.Debug, message, detail);
     }
 
     // Log a literal message at the given level with no detail.
     public method log(level: LogLevel, message: static_ptr<u8>) void {
-      var empty = String("");
-      var tag: static_ptr<u8> = match level {
-        LogLevel.Error => "error",
-        LogLevel.Warn => "warn",
-        LogLevel.Info => "info",
-        LogLevel.Debug => "debug"
-      };
-      this.emit(level, tag, message, empty);
+      this.emit(level, message, String(""));
     }
 
     // Log the message text of a caught error.
     public method error_caught(message: static_ptr<u8>, e: ref IError) void {
-      var text: String = e.message();
-      this.error(message, text);
+      this.error(message, e.message());
     }
 
     /*
      * Write an access log line to stdout. The caller formats the request
      * part; this adds the worker id and a newline.
      */
-    public method access(entry: ref ByteBuffer) void {
+    public method access(entry: const ref ByteBuffer) void {
       if (not this.access_enabled) {
         return;
       }

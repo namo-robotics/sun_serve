@@ -49,13 +49,13 @@ public module sun_serve {
           for (var i: i64 = 0; i < entries.size(); i = i + 1) {
             var entry_path = this.path.clone(this.alloc);
             entry_path.append_char(b'/');
-            entry_path.append(entries.get_unchecked(i).name());
-            if (entries.get_unchecked(i).is_dir()) {
+            entry_path.append(entries[i].name());
+            if (entries[i].is_dir()) {
               var inner = read_dir(this.alloc, entry_path);
               for (var j: i64 = 0; j < inner.size(); j = j + 1) {
                 var inner_path = entry_path.clone(this.alloc);
                 inner_path.append_char(b'/');
-                inner_path.append(inner.get_unchecked(j).name());
+                inner_path.append(inner[j].name());
                 remove_file(inner_path);
               }
               remove_dir(entry_path);

@@ -16,33 +16,33 @@ public module sun_serve {
 
   // The signal handler: record the request and return.
   function on_shutdown_signal(sig: i32) void {
-    unsafe { _atomic_store_i32(_address_of<i32>(shutdown_flag), 1); };
+    unsafe _atomic_store_i32(_address_of<i32>(shutdown_flag), 1);
   }
 
   // Route SIGINT and SIGTERM to the shutdown flag and ignore SIGPIPE.
   public function install_signal_handlers() void throws IError {
     ignore_sigpipe();
     var act: SigAction = { handler: on_shutdown_signal, mask: [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64], flags: 0, restorer: null };
-    if (unsafe { sys_sigaction(std.process.SIGINT, act, null); } != 0) {
+    if (unsafe sys_sigaction(std.process.SIGINT, act, null) != 0) {
       throw Error(last_errno(), "failed to install SIGINT handler");
     }
-    if (unsafe { sys_sigaction(std.process.SIGTERM, act, null); } != 0) {
+    if (unsafe sys_sigaction(std.process.SIGTERM, act, null) != 0) {
       throw Error(last_errno(), "failed to install SIGTERM handler");
     }
   }
 
   // Report whether a shutdown signal has arrived or request_shutdown() ran.
   public function shutdown_requested() bool {
-    return unsafe { _atomic_load_i32(_address_of<i32>(shutdown_flag)); } != 0;
+    return unsafe _atomic_load_i32(_address_of<i32>(shutdown_flag)) != 0;
   }
 
   // Ask every server in the process to stop, as a signal would.
   public function request_shutdown() void {
-    unsafe { _atomic_store_i32(_address_of<i32>(shutdown_flag), 1); };
+    unsafe _atomic_store_i32(_address_of<i32>(shutdown_flag), 1);
   }
 
   // Clear the flag so a later server can run. For tests.
   public function reset_shutdown_flag() void {
-    unsafe { _atomic_store_i32(_address_of<i32>(shutdown_flag), 0); };
+    unsafe _atomic_store_i32(_address_of<i32>(shutdown_flag), 0);
   }
 }

@@ -54,8 +54,7 @@ public module sun_serve {
 
     // An independent copy.
     public const method clone(alloc: const ref HeapAllocator) TlsSpec {
-      var copy = TlsSpec(alloc, this.cert_path, this.key_path);
-      return copy;
+      return TlsSpec(alloc, this.cert_path, this.key_path);
     }
   }
 
@@ -172,8 +171,8 @@ public module sun_serve {
 
     // Report whether any listener speaks TLS.
     public const method has_tls_listener() bool {
-      for (var i: i64 = 0; i < this.listen.size(); i = i + 1) {
-        if (this.listen.get_unchecked(i).tls) {
+      for (var spec: ref ListenSpec in this.listen) {
+        if (spec.tls) {
           return true;
         }
       }
@@ -183,8 +182,8 @@ public module sun_serve {
     // An independent copy for a worker.
     public const method clone() Config {
       var copy = Config(this.alloc);
-      for (var i: i64 = 0; i < this.listen.size(); i = i + 1) {
-        copy.listen.push(this.listen.get_unchecked(i).clone());
+      for (var spec: ref ListenSpec in this.listen) {
+        copy.listen.push(spec.clone());
       }
       copy.tls = this.tls.clone(this.alloc);
       copy.has_tls = this.has_tls;

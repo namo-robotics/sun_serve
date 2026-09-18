@@ -15,10 +15,10 @@ public module sun_serve {
 
   /*
    * Tokens at or above this value identify listeners; below it, connection
-   * slots.
+   * slots, except for the one token reserved for the wake descriptor.
    */
-  const LISTENER_TOKEN_BASE: u64 = 1099511627776;
-  const WORKER_WAKE_TOKEN: u64 = 1099511627775;
+  const LISTENER_TOKEN_BASE: u64 = 0x100_0000_0000;
+  const WORKER_WAKE_TOKEN: u64 = 0xff_ffff_ffff;
 
   /*
    * How many connections one readiness event on a listener may accept before
@@ -103,9 +103,8 @@ public module sun_serve {
         return 1;
       }
       for (var i: i64 = 0; i < this.args.listeners.size(); i = i + 1) {
-        var l: ref ListenerSocket = this.args.listeners.get_unchecked(i);
         try {
-          this.epoll.add(l.get_fd(), EPOLLIN, LISTENER_TOKEN_BASE + _convert<u64>(i));
+          this.epoll.add(this.args.listeners[i].get_fd(), EPOLLIN, LISTENER_TOKEN_BASE + _convert<u64>(i));
         } catch (e: IError) {
           this.log.error_caught("failed to watch listener", e);
           return 1;
@@ -156,7 +155,7 @@ public module sun_serve {
     // Drain asynchronous output for every WebSocket owned by this worker.
     method drive_websockets(now_ms: i64) void {
       for (var slot: i64 = 0; slot < this.conns.size(); slot = slot + 1) {
-        var pending: ref Connection = this.conns.get_unchecked(slot);
+        var pending: ref Connection = this.conns[slot];
         if (pending.is_open() and pending.is_websocket()) {
           this.connection_ready(slot, 0, now_ms);
         }
@@ -168,14 +167,9 @@ public module sun_serve {
       if (this.stopping or now_ms < this.accept_paused_until) {
         return;
       }
+      var tls: bool = this.args.listeners[index].tls;
       for (var count: i32 = 0; count < ACCEPT_BATCH; count = count + 1) {
-        var fd: i32 = 0;
-        var tls: bool = false;
-        if (true) {
-          var listener: ref ListenerSocket = this.args.listeners.get_unchecked(index);
-          fd = listener.accept();
-          tls = listener.tls;
-        }
+        var fd: i32 = this.args.listeners[index].accept();
         if (fd == 0) {
           return;
         }
@@ -185,9 +179,7 @@ public module sun_serve {
             this.log.log(LogLevel.Warn, "out of file descriptors; pausing accept");
             this.accept_paused_until = now_ms + this.args.config.timeouts.tick_ms;
           } else {
-            var detail = String(this.alloc, "errno ");
-            detail.append(code);
-            this.log.error("accept failed", detail);
+            this.log.error("accept failed", `errno ${code}`);
           }
           return;
         }
@@ -213,7 +205,7 @@ public module sun_serve {
      * Returns false (with the socket closed) when that fails.
      */
     method open_slot(slot: i64, fd: i32, tls: bool, now_ms: i64) bool {
-      var conn: ref Connection = this.conns.get_unchecked(slot);
+      var conn: ref Connection = this.conns[slot];
       if (not conn.open(fd, tls, this.args.tls, now_ms, this.args.config.timeouts, this.wake_fd)) {
         this.log.log(LogLevel.Warn, "could not start TLS session");
         close_fd(fd);
@@ -232,8 +224,7 @@ public module sun_serve {
 
     // A free connection slot, growing the table when none is spare.
     method take_slot() i64 {
-      var reused: Option<i64> = this.free.pop();
-      return match reused {
+      return match this.free.pop() {
         Option.Some(slot) => slot,
         Option.None => this.new_slot()
       };
@@ -247,7 +238,7 @@ public module sun_serve {
 
     // Drive one connection for a readiness event and update its interest.
     method connection_ready(slot: i64, mask: u32, now_ms: i64) void {
-      var conn: ref Connection = this.conns.get_unchecked(slot);
+      var conn: ref Connection = this.conns[slot];
       if (not conn.is_open()) {
         return;
       }
@@ -272,7 +263,7 @@ public module sun_serve {
 
     // Close a live connection and free its slot.
     method drop_connection(slot: i64) void {
-      var conn: ref Connection = this.conns.get_unchecked(slot);
+      var conn: ref Connection = this.conns[slot];
       if (conn.is_open()) {
         this.epoll.remove(conn.get_fd());
         conn.close();
@@ -283,13 +274,13 @@ public module sun_serve {
 
     // Report whether the slot holds an open connection past its deadline.
     method slot_expired(slot: i64, now_ms: i64) bool {
-      var conn: ref Connection = this.conns.get_unchecked(slot);
+      var conn: ref Connection = this.conns[slot];
       return conn.is_open() and conn.expired(now_ms);
     }
 
     // Report whether the slot holds an open connection idle between requests.
     method slot_idle(slot: i64) bool {
-      var conn: ref Connection = this.conns.get_unchecked(slot);
+      var conn: ref Connection = this.conns[slot];
       return conn.is_open() and conn.is_idle();
     }
 
@@ -316,13 +307,11 @@ public module sun_serve {
       }
       this.stopping = true;
       this.drain_deadline = now_ms + this.args.config.timeouts.drain_ms;
-      for (var i: i64 = 0; i < this.args.listeners.size(); i = i + 1) {
-        var l: ref ListenerSocket = this.args.listeners.get_unchecked(i);
+      for (var l: ref ListenerSocket in this.args.listeners) {
         this.epoll.remove(l.get_fd());
         l.close();
       }
-      for (var i: i64 = 0; i < this.conns.size(); i = i + 1) {
-        var conn: ref Connection = this.conns.get_unchecked(i);
+      for (var conn: ref Connection in this.conns) {
         if (conn.is_open()) {
           conn.begin_shutdown();
         }
@@ -351,9 +340,7 @@ public module sun_serve {
       var w = Worker(args);
       return w.run();
     } catch (e: IError) {
-      var msg: String = e.message();
-      eprint("error: worker failed to start: ");
-      eprintln(msg);
+      eprintln(`error: worker failed to start: ${e.message()}`);
       return 1;
     }
   }

@@ -13,30 +13,16 @@ public module sun_serve {
   using std;
 
   /*
-   * ALPN protocol list in wire form: each name prefixed with its length.
-   * Built once because the callback below runs inside OpenSSL and must not
-   * allocate. HTTP/2 is added here when its framing exists.
+   * ALPN protocol lists in wire form: each name prefixed with its length.
+   * Module globals because the callbacks below run inside OpenSSL and must
+   * not allocate.
    */
-  var alpn_protocols: String = String("");
-  var alpn_http1: String = String("");
-
-  // Fill the ALPN list on first use.
-  function ensure_alpn_list() void {
-    if (alpn_protocols.length() == 0) {
-      alpn_protocols.append_char(2);
-      alpn_protocols.append("h2");
-      alpn_protocols.append_char(8);
-      alpn_protocols.append("http/1.1");
-      alpn_http1.append_char(8);
-      alpn_http1.append("http/1.1");
-    }
-  }
+  var alpn_protocols: String = String("\x02h2\x08http/1.1");
+  var alpn_http1: String = String("\x08http/1.1");
 
   // Select HTTP/1.1 when HTTP/2 is disabled for this server.
   function alpn_select_http1(ssl: raw_ptr<u8>, out: raw_ptr<raw_ptr<u8>>, outlen: raw_ptr<u8>, client: raw_ptr<u8>, client_len: u32, arg: raw_ptr<u8>) i32 {
-    var rc: i32 = unsafe {
-      ssl_select_next_proto(out, outlen, alpn_http1.c_str(), _convert<u32>(alpn_http1.length()), client, client_len);
-    };
+    var rc: i32 = unsafe ssl_select_next_proto(out, outlen, alpn_http1.bytes(), _convert<u32>(alpn_http1.length()), client, client_len);
     if (rc == OPENSSL_NPN_NEGOTIATED) {
       return SSL_TLSEXT_ERR_OK;
     }
@@ -48,9 +34,7 @@ public module sun_serve {
    * from the client's list. Only module-level functions can cross to C.
    */
   function alpn_select(ssl: raw_ptr<u8>, out: raw_ptr<raw_ptr<u8>>, outlen: raw_ptr<u8>, client: raw_ptr<u8>, client_len: u32, arg: raw_ptr<u8>) i32 {
-    var rc: i32 = unsafe {
-      ssl_select_next_proto(out, outlen, alpn_protocols.c_str(), _convert<u32>(alpn_protocols.length()), client, client_len);
-    };
+    var rc: i32 = unsafe ssl_select_next_proto(out, outlen, alpn_protocols.bytes(), _convert<u32>(alpn_protocols.length()), client, client_len);
     if (rc == OPENSSL_NPN_NEGOTIATED) {
       return SSL_TLSEXT_ERR_OK;
     }
@@ -90,20 +74,17 @@ public module sun_serve {
     init(alloc: const ref HeapAllocator, spec: const ref TlsSpec, http2: bool) throws IError {
       var cert_path: String = spec.cert_path.clone(alloc);
       var key_path: String = spec.key_path.clone(alloc);
-      ensure_alpn_list();
-      var method: raw_ptr<u8> = unsafe { ssl_tls_server_method(); };
-      var ctx: raw_ptr<u8> = unsafe { ssl_ctx_new(method); };
+      var method: raw_ptr<u8> = unsafe ssl_tls_server_method();
+      var ctx: raw_ptr<u8> = unsafe ssl_ctx_new(method);
       if (ctx == null) {
         throw TlsError(take_openssl_error(alloc, "SSL_CTX_new failed"));
       }
       this.ctx = ctx;
-      unsafe { ssl_ctx_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_2_VERSION, null); };
-      unsafe { ssl_ctx_set_options(ctx, SSL_OP_NO_RENEGOTIATION | SSL_OP_NO_COMPRESSION | SSL_OP_CIPHER_SERVER_PREFERENCE); };
-      unsafe {
-        ssl_ctx_ctrl(ctx, SSL_CTRL_MODE, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_RELEASE_BUFFERS, null);
-      };
-      unsafe { ssl_ctx_ctrl(ctx, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_SESS_CACHE_SERVER, null); };
-      if (unsafe { ssl_ctx_use_certificate_chain_file(ctx, cert_path.c_str()); } != 1) {
+      unsafe ssl_ctx_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_2_VERSION, null);
+      unsafe ssl_ctx_set_options(ctx, SSL_OP_NO_RENEGOTIATION | SSL_OP_NO_COMPRESSION | SSL_OP_CIPHER_SERVER_PREFERENCE);
+      unsafe ssl_ctx_ctrl(ctx, SSL_CTRL_MODE, SSL_MODE_ENABLE_PARTIAL_WRITE | SSL_MODE_ACCEPT_MOVING_WRITE_BUFFER | SSL_MODE_RELEASE_BUFFERS, null);
+      unsafe ssl_ctx_ctrl(ctx, SSL_CTRL_SET_SESS_CACHE_MODE, SSL_SESS_CACHE_SERVER, null);
+      if (unsafe ssl_ctx_use_certificate_chain_file(ctx, cert_path.c_str()) != 1) {
         var cert_err: String = take_openssl_error(alloc, "failed to load certificate chain");
         cert_err.append(" (");
         cert_err.append(cert_path);
@@ -111,7 +92,7 @@ public module sun_serve {
         this.release();
         throw TlsError(cert_err);
       }
-      if (unsafe { ssl_ctx_use_privatekey_file(ctx, key_path.c_str(), SSL_FILETYPE_PEM); } != 1) {
+      if (unsafe ssl_ctx_use_privatekey_file(ctx, key_path.c_str(), SSL_FILETYPE_PEM) != 1) {
         var key_err: String = take_openssl_error(alloc, "failed to load private key");
         key_err.append(" (");
         key_err.append(key_path);
@@ -119,15 +100,15 @@ public module sun_serve {
         this.release();
         throw TlsError(key_err);
       }
-      if (unsafe { ssl_ctx_check_private_key(ctx); } != 1) {
+      if (unsafe ssl_ctx_check_private_key(ctx) != 1) {
         var match_err: String = take_openssl_error(alloc, "private key does not match certificate");
         this.release();
         throw TlsError(match_err);
       }
       if (http2) {
-        unsafe { ssl_ctx_set_alpn_select_cb(ctx, alpn_select, null); };
+        unsafe ssl_ctx_set_alpn_select_cb(ctx, alpn_select, null);
       } else {
-        unsafe { ssl_ctx_set_alpn_select_cb(ctx, alpn_select_http1, null); };
+        unsafe ssl_ctx_set_alpn_select_cb(ctx, alpn_select_http1, null);
       }
     }
 
@@ -142,7 +123,7 @@ public module sun_serve {
     // Free the context reference held here, if any.
     method release() void {
       if (this.ctx != null) {
-        unsafe { ssl_ctx_free(this.ctx); };
+        unsafe ssl_ctx_free(this.ctx);
         this.ctx = null;
       }
     }
@@ -152,7 +133,7 @@ public module sun_serve {
       if (this.ctx == null) {
         return TlsAcceptor(null);
       }
-      unsafe { ssl_ctx_up_ref(this.ctx); };
+      unsafe ssl_ctx_up_ref(this.ctx);
       return TlsAcceptor(this.ctx);
     }
 
@@ -177,7 +158,7 @@ public module sun_serve {
     // Drop the reference.
     deinit() {
       if (this.ctx != null) {
-        unsafe { ssl_ctx_free(this.ctx); };
+        unsafe ssl_ctx_free(this.ctx);
         this.ctx = null;
       }
     }

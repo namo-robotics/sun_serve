@@ -16,7 +16,18 @@ public module sun_serve {
 
   // Read one byte from a static string inside the low-level buffer boundary.
   function literal_byte(text: static_ptr<u8>, index: i64) u8 {
-    return unsafe { _load<u8>(text.raw(), index); };
+    return unsafe _load<u8>(text.raw(), index);
+  }
+
+  /*
+   * Read one byte of a String without throwing: indexes outside the string
+   * read as zero, the same convention as ByteBuffer.byte_at().
+   */
+  function string_byte(text: const ref String, index: i64) u8 {
+    if (index < 0 or index >= text.length()) {
+      return 0;
+    }
+    return unsafe text.unsafe_at(index);
   }
 
   // Copy a raw byte range at a foreign-function boundary into a String.
@@ -24,7 +35,7 @@ public module sun_serve {
     var out = String(alloc, "");
     out.reserve(count);
     for (var i: i64 = 0; i < count; i = i + 1) {
-      out.append_char(unsafe { _load<u8>(data, off + i); });
+      out.append_char(unsafe _load<u8>(data, off + i));
     }
     return out;
   }
@@ -49,7 +60,7 @@ public module sun_serve {
 
     // Start of the unread bytes.
     const method readable_ptr() raw_ptr<u8> {
-      return unsafe { _ptr_offset(this.data.raw_data(), this.pos); };
+      return unsafe _ptr_offset(this.data.raw_data(), this.pos);
     }
 
     // The unread byte at index i, counted from the read cursor.
@@ -57,20 +68,20 @@ public module sun_serve {
       if (i < 0 or i >= this.readable_len()) {
         return 0;
       }
-      return unsafe { _load<u8>(this.data.raw_data(), this.pos + i); };
+      return unsafe _load<u8>(this.data.raw_data(), this.pos + i);
+    }
+
+    // Report whether off and count describe a range inside the unread bytes.
+    const method range_ok(off: i64, count: i64) bool {
+      return off >= 0 and count >= 0 and off <= this.readable_len() and count <= this.readable_len() - off;
     }
 
     // Copy a readable range into a new String.
     public const method range_text(allocator: const ref HeapAllocator, off: i64, count: i64) String {
-      var out = String(allocator, "");
-      if (off < 0 or count < 0 or off > this.readable_len() or count > this.readable_len() - off) {
-        return out;
+      if (not this.range_ok(off, count)) {
+        return String(allocator, "");
       }
-      out.reserve(count);
-      for (var i: i64 = 0; i < count; i = i + 1) {
-        out.append_char(this.byte_at(off + i));
-      }
-      return out;
+      return bytes_to_string(allocator, this.readable_ptr(), off, count);
     }
 
     // Total bytes the block can hold.
@@ -85,7 +96,7 @@ public module sun_serve {
 
     // Where the next appended bytes go.
     method writable_ptr() raw_ptr<u8> {
-      return unsafe { _ptr_offset(this.data.raw_data(), this.len); };
+      return unsafe _ptr_offset(this.data.raw_data(), this.len);
     }
 
     // Report whether nothing is left to read.
@@ -111,7 +122,7 @@ public module sun_serve {
       }
       var grown = ContiguousBuffer<u8>(this.alloc, new_size);
       if (this.len > 0) {
-        unsafe { _memcpy(grown.raw_data(), this.data.raw_data(), this.len); };
+        unsafe _memcpy(grown.raw_data(), this.data.raw_data(), this.len);
       }
       this.data = grown;
     }
@@ -140,10 +151,7 @@ public module sun_serve {
       }
       var remaining: i64 = this.len - this.pos;
       if (remaining > 0) {
-        // Ranges may overlap, so copy through a temporary block.
-        var tmp = ContiguousBuffer<u8>(this.alloc, remaining);
-        unsafe { _memcpy(tmp.raw_data(), this.readable_ptr(), remaining); };
-        unsafe { _memcpy(this.data.raw_data(), tmp.raw_data(), remaining); };
+        unsafe _memmove(this.data.raw_data(), this.readable_ptr(), remaining);
       }
       this.len = remaining;
       this.pos = 0;
@@ -172,18 +180,14 @@ public module sun_serve {
         return;
       }
       this.reserve(n);
-      unsafe { _memcpy(this.writable_ptr(), src, n); };
+      unsafe _memcpy(this.writable_ptr(), src, n);
       this.len = this.len + n;
     }
 
     // Append a readable range from another buffer without exposing pointers.
     public method append_buffer(src: const ref ByteBuffer, off: i64, count: i64) void {
-      if (off < 0 or count <= 0 or off > src.readable_len() or count > src.readable_len() - off) {
-        return;
-      }
-      this.reserve(count);
-      for (var i: i64 = 0; i < count; i = i + 1) {
-        this.append_byte(src.byte_at(off + i));
+      if (src.range_ok(off, count)) {
+        this.append_bytes(unsafe _ptr_offset(src.readable_ptr(), off), count);
       }
     }
 
@@ -192,15 +196,15 @@ public module sun_serve {
       this.append_bytes(s.raw(), s.length());
     }
 
-    // Append a String's bytes. Takes ref because c_str() may add a NUL.
-    public method append_string(s: ref String) void {
-      this.append_bytes(s.c_str(), s.length());
+    // Append a String's bytes.
+    public method append_string(s: const ref String) void {
+      this.append_bytes(s.bytes(), s.length());
     }
 
     // Append one byte.
     public method append_byte(b: u8) void {
       this.reserve(1);
-      unsafe { _store<u8>(this.data.raw_data(), this.len, b); };
+      unsafe _store<u8>(this.data.raw_data(), this.len, b);
       this.len = this.len + 1;
     }
 
@@ -216,58 +220,42 @@ public module sun_serve {
 
     // Append an unsigned integer in decimal.
     public method append_u64(value: u64) void {
-      var digits = ContiguousBuffer<u8>(this.alloc, 24);
-      var n: i64 = 0;
-      var v: u64 = value;
-      if (v == 0) {
-        this.append_byte(b'0');
-        return;
-      }
-      while (v > 0) {
-        digits.set_unchecked(n, _convert<u8>(v % 10) + b'0');
-        v = v / 10;
-        n = n + 1;
-      }
-      while (n > 0) {
-        n = n - 1;
-        this.append_byte(digits.get_unchecked(n));
-      }
+      this.append_digits(value, 10);
     }
 
     // Append an unsigned integer in lowercase hex.
     public method append_hex_u64(value: u64) void {
-      var digits = ContiguousBuffer<u8>(this.alloc, 16);
-      var n: i64 = 0;
-      var v: u64 = value;
-      if (v == 0) {
+      this.append_digits(value, 16);
+    }
+
+    // Append an unsigned integer in the given base, most significant digit first.
+    method append_digits(value: u64, base: u64) void {
+      if (value == 0) {
         this.append_byte(b'0');
         return;
       }
+      var digits = ContiguousBuffer<u8>(this.alloc, 24);
+      var n: i64 = 0;
+      var v: u64 = value;
       while (v > 0) {
-        var d: u8 = _convert<u8>(v % 16);
+        var d: u8 = _convert<u8>(v % base);
         if (d < 10) {
-          digits.set_unchecked(n, d + b'0');
+          digits[n] = d + b'0';
         } else {
-          digits.set_unchecked(n, d - 10 + b'a');
+          digits[n] = d - 10 + b'a';
         }
-        v = v / 16;
+        v = v / base;
         n = n + 1;
       }
       while (n > 0) {
         n = n - 1;
-        this.append_byte(digits.get_unchecked(n));
+        this.append_byte(digits[n]);
       }
     }
 
     // Copy the unread bytes into a new String.
     public const method to_string(allocator: const ref HeapAllocator) String {
-      var s = String(allocator, "");
-      var n: i64 = this.readable_len();
-      s.reserve(n);
-      for (var i: i64 = 0; i < n; i = i + 1) {
-        s.append_char(this.byte_at(i));
-      }
-      return s;
+      return this.range_text(allocator, 0, this.readable_len());
     }
   }
 }

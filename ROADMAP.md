@@ -45,6 +45,7 @@ self-contained piece of work; nothing here is scheduled.
   - A structured access log format alongside the current one-line form.
 
 - **aarch64 builds**
-  - The Dockerfile's dev stage has Ubuntu's aarch64 cross toolchain, but the
-    installed Sun stdlib and TLS moons are x86_64 only. Waits on per-target
-    moons upstream.
+  - The Sun package installs aarch64 stdlib and TLS bundles, and
+    `sun-config.json` can hold a `target` block for them, but the OpenSSL and
+    zlib archives the Dockerfile builds are x86_64 musl only. Build aarch64
+    archives, add the target block, and publish a second moon from CI.

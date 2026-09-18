@@ -12,10 +12,11 @@
 public module sun_serve {
   using std;
 
-  const CR: u8 = 13;
-  const LF: u8 = 10;
-  const SP: u8 = 32;
-  const HT: u8 = 9;
+  const CR: u8 = b'\r';
+  const LF: u8 = b'\n';
+  const SP: u8 = b' ';
+  const HT: u8 = b'\t';
+  const DEL: u8 = 0x7f;
 
   // What parse_head found in the bytes so far.
   public enum ParseStatus { Incomplete, Complete, Failed }
@@ -103,12 +104,12 @@ public module sun_serve {
   }
 
   // Compare bytes with a runtime ASCII string, ignoring case.
-  function bytes_equal_string_ci(base: const ref ByteBuffer, off: i64, len: i64, text: ref String) bool {
+  function bytes_equal_string_ci(base: const ref ByteBuffer, off: i64, len: i64, text: const ref String) bool {
     if (len != text.length()) {
       return false;
     }
     for (var i: i64 = 0; i < len; i = i + 1) {
-      if (lower_ascii(base.byte_at(off + i)) != lower_ascii(text.at(i))) {
+      if (lower_ascii(base.byte_at(off + i)) != lower_ascii(string_byte(text, i))) {
         return false;
       }
     }
@@ -136,11 +137,6 @@ public module sun_serve {
       i = i + 1;
     }
     return -1;
-  }
-
-  // Copy len bytes at base+off into a new String.
-  function bytes_to_string(alloc: const ref HeapAllocator, base: const ref ByteBuffer, off: i64, len: i64) String {
-    return base.range_text(alloc, off, len);
   }
 
   /*
@@ -171,7 +167,7 @@ public module sun_serve {
         out.append_char(SP);
         i = i + 1;
       } else {
-        if (c < SP or c == 127) {
+        if (c < SP or c == DEL) {
           return false;
         }
         out.append_char(c);
@@ -228,7 +224,7 @@ public module sun_serve {
       this.headers.clear();
       this.path_.clear();
       this.body.clear();
-      this.content_length_ = -1i64;
+      this.content_length_ = -1;
       this.chunked_ = false;
       this.expect_continue_ = false;
       this.conn_close_ = false;
@@ -246,7 +242,7 @@ public module sun_serve {
 
     // The request method as an owned String.
     public const method method_text(allocator: const ref HeapAllocator) String {
-      return bytes_to_string(allocator, this.head, this.method_off, this.method_len);
+      return this.head.range_text(allocator, this.method_off, this.method_len);
     }
 
     // Report whether this is a HEAD request.
@@ -266,7 +262,7 @@ public module sun_serve {
 
     // The raw request target as sent by the client.
     public const method raw_target(allocator: const ref HeapAllocator) String {
-      return bytes_to_string(allocator, this.head, this.target_off, this.target_len);
+      return this.head.range_text(allocator, this.target_off, this.target_len);
     }
 
     // Report whether the target carried a query string.
@@ -276,7 +272,7 @@ public module sun_serve {
 
     // The raw query string, without the question mark.
     public const method query(allocator: const ref HeapAllocator) String {
-      return bytes_to_string(allocator, this.head, this.query_off, this.query_len);
+      return this.head.range_text(allocator, this.query_off, this.query_len);
     }
 
     // The decoded value of the first query parameter with this name.
@@ -325,7 +321,7 @@ public module sun_serve {
      */
     const method find_header(name: static_ptr<u8>) i64 {
       for (var i: i64 = 0; i < this.headers.size(); i = i + 1) {
-        var h: const ref HeaderSpan = this.headers.get_unchecked(i);
+        var h: const ref HeaderSpan = this.headers[i];
         if (bytes_equal_ci(this.head, h.name_off, h.name_len, name)) {
           return i;
         }
@@ -339,8 +335,8 @@ public module sun_serve {
       if (i < 0) {
         return Option.None;
       }
-      var h: const ref HeaderSpan = this.headers.get_unchecked(i);
-      return Option.Some(bytes_to_string(allocator, this.head, h.value_off, h.value_len));
+      var h: const ref HeaderSpan = this.headers[i];
+      return Option.Some(this.head.range_text(allocator, h.value_off, h.value_len));
     }
 
     // Report whether a comma-separated header contains a token.
@@ -349,7 +345,7 @@ public module sun_serve {
       if (index < 0) {
         return false;
       }
-      var h: const ref HeaderSpan = this.headers.get_unchecked(index);
+      var h: const ref HeaderSpan = this.headers[index];
       var start: i64 = 0;
       while (start < h.value_len) {
         while (start < h.value_len and (this.head.byte_at(h.value_off + start) == SP or this.head.byte_at(h.value_off + start) == b',')) {
@@ -372,12 +368,12 @@ public module sun_serve {
     }
 
     // Report whether a token-valued header contains a runtime token.
-    public const method header_contains_token_string(name: static_ptr<u8>, token: ref String) bool {
+    public const method header_contains_token_string(name: static_ptr<u8>, token: const ref String) bool {
       var index: i64 = this.find_header(name);
       if (index < 0) {
         return false;
       }
-      var h: const ref HeaderSpan = this.headers.get_unchecked(index);
+      var h: const ref HeaderSpan = this.headers[index];
       var start: i64 = 0;
       while (start < h.value_len) {
         while (start < h.value_len and (this.head.byte_at(h.value_off + start) == SP or this.head.byte_at(h.value_off + start) == b',')) {
@@ -413,20 +409,20 @@ public module sun_serve {
       if (i < 0) {
         return false;
       }
-      var h: const ref HeaderSpan = this.headers.get_unchecked(i);
+      var h: const ref HeaderSpan = this.headers[i];
       return bytes_equal_ci(this.head, h.value_off, h.value_len, value);
     }
 
     // The name of the i-th header as sent.
     public const method header_name_at(i: i64, allocator: const ref HeapAllocator) String {
-      var h: const ref HeaderSpan = this.headers.get_unchecked(i);
-      return bytes_to_string(allocator, this.head, h.name_off, h.name_len);
+      var h: const ref HeaderSpan = this.headers[i];
+      return this.head.range_text(allocator, h.name_off, h.name_len);
     }
 
     // The value of the i-th header.
     public const method header_value_at(i: i64, allocator: const ref HeapAllocator) String {
-      var h: const ref HeaderSpan = this.headers.get_unchecked(i);
-      return bytes_to_string(allocator, this.head, h.value_off, h.value_len);
+      var h: const ref HeaderSpan = this.headers[i];
+      return this.head.range_text(allocator, h.value_off, h.value_len);
     }
 
     // The request body bytes, decoded if the client used chunked encoding.
@@ -593,7 +589,7 @@ public module sun_serve {
         }
         for (var k: i64 = j; k < vend; k = k + 1) {
           var c: u8 = base.byte_at(k);
-          if ((c < SP and c != HT) or c == 127) {
+          if ((c < SP and c != HT) or c == DEL) {
             return this.fail(400);
           }
         }
@@ -606,7 +602,7 @@ public module sun_serve {
 
       // Framing and connection headers
       for (var h: i64 = 0; h < this.headers.size(); h = h + 1) {
-        var span: ref HeaderSpan = this.headers.get_unchecked(h);
+        var span: ref HeaderSpan = this.headers[h];
         if (bytes_equal_ci(base, span.name_off, span.name_len, "content-length")) {
           if (span.value_len == 0 or span.value_len > 18) {
             return this.fail(400);

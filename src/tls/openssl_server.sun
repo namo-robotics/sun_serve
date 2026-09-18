@@ -80,13 +80,13 @@ public module sun_serve {
   // The queued OpenSSL error as text, prefixed by context.
   function take_openssl_error(alloc: const ref HeapAllocator, context: static_ptr<u8>) String {
     var out = String(alloc, context);
-    var code: u64 = unsafe { ssl_err_get_error(); };
+    var code: u64 = unsafe ssl_err_get_error();
     if (code == 0) {
       return out;
     }
     var buf = ContiguousBuffer<u8>(alloc, 256);
     buf.fill(0);
-    unsafe { ssl_err_error_string_n(code, buf.raw_data(), buf.size()); };
+    unsafe ssl_err_error_string_n(code, buf.raw_data(), buf.size());
     out.append(": ");
     var text: String = from_c_str(alloc, buf.raw_data());
     out.append(text);

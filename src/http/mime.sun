@@ -7,24 +7,26 @@ public module sun_serve {
   using std;
 
   /*
-   * Compare the bytes from start to the end of path with a lowercase literal,
-   * ignoring ASCII case in the path.
+   * The lowercased extension of a file path, or an empty string when the
+   * last path segment has no dot.
    */
-  function extension_is(path: const ref String, start: i64, lit: static_ptr<u8>) bool {
-    var n: i64 = path.length() - start;
-    if (n != lit.length()) {
-      return false;
+  function path_extension(path: const ref String) String {
+    var ext = String("");
+    var dot: i64 = match path.rfind_char(b'.') {
+      Option.Some(i) => i,
+      Option.None => -1
+    };
+    var slash: i64 = match path.rfind_char(b'/') {
+      Option.Some(i) => i,
+      Option.None => -1
+    };
+    if (dot < 0 or dot < slash) {
+      return ext;
     }
-    for (var i: i64 = 0; i < n; i = i + 1) {
-      var c: u8 = path.at(start + i);
-      if (c >= b'A' and c <= b'Z') {
-        c = c + 32;
-      }
-      if (c != literal_byte(lit, i)) {
-        return false;
-      }
+    for (var i: i64 = dot + 1; i < path.length(); i = i + 1) {
+      ext.append_char(lower_ascii(string_byte(path, i)));
     }
-    return true;
+    return ext;
   }
 
   /*
@@ -32,97 +34,83 @@ public module sun_serve {
    * extensions and files without one are served as generic bytes.
    */
   public function mime_for_path(path: const ref String) static_ptr<u8> {
-    var dot: i64 = -1;
-    for (var i: i64 = path.length() - 1; i >= 0; i = i - 1) {
-      var c: u8 = path.at(i);
-      if (c == b'/') {
-        break;
-      }
-      if (c == b'.') {
-        dot = i;
-        break;
-      }
-    }
-    if (dot < 0) {
-      return "application/octet-stream";
-    }
-    var s: i64 = dot + 1;
-    if (extension_is(path, s, "html") or extension_is(path, s, "htm")) {
+    var ext: String = path_extension(path);
+    if (ext.equals_literal("html") or ext.equals_literal("htm")) {
       return "text/html";
     }
-    if (extension_is(path, s, "css")) {
+    if (ext.equals_literal("css")) {
       return "text/css";
     }
-    if (extension_is(path, s, "js") or extension_is(path, s, "mjs")) {
+    if (ext.equals_literal("js") or ext.equals_literal("mjs")) {
       return "text/javascript";
     }
-    if (extension_is(path, s, "json") or extension_is(path, s, "map")) {
+    if (ext.equals_literal("json") or ext.equals_literal("map")) {
       return "application/json";
     }
-    if (extension_is(path, s, "txt") or extension_is(path, s, "md")) {
+    if (ext.equals_literal("txt") or ext.equals_literal("md")) {
       return "text/plain";
     }
-    if (extension_is(path, s, "xml")) {
+    if (ext.equals_literal("xml")) {
       return "application/xml";
     }
-    if (extension_is(path, s, "svg")) {
+    if (ext.equals_literal("svg")) {
       return "image/svg+xml";
     }
-    if (extension_is(path, s, "png")) {
+    if (ext.equals_literal("png")) {
       return "image/png";
     }
-    if (extension_is(path, s, "jpg") or extension_is(path, s, "jpeg")) {
+    if (ext.equals_literal("jpg") or ext.equals_literal("jpeg")) {
       return "image/jpeg";
     }
-    if (extension_is(path, s, "gif")) {
+    if (ext.equals_literal("gif")) {
       return "image/gif";
     }
-    if (extension_is(path, s, "webp")) {
+    if (ext.equals_literal("webp")) {
       return "image/webp";
     }
-    if (extension_is(path, s, "avif")) {
+    if (ext.equals_literal("avif")) {
       return "image/avif";
     }
-    if (extension_is(path, s, "ico")) {
+    if (ext.equals_literal("ico")) {
       return "image/x-icon";
     }
-    if (extension_is(path, s, "woff")) {
+    if (ext.equals_literal("woff")) {
       return "font/woff";
     }
-    if (extension_is(path, s, "woff2")) {
+    if (ext.equals_literal("woff2")) {
       return "font/woff2";
     }
-    if (extension_is(path, s, "ttf")) {
+    if (ext.equals_literal("ttf")) {
       return "font/ttf";
     }
-    if (extension_is(path, s, "otf")) {
+    if (ext.equals_literal("otf")) {
       return "font/otf";
     }
-    if (extension_is(path, s, "pdf")) {
+    if (ext.equals_literal("pdf")) {
       return "application/pdf";
     }
-    if (extension_is(path, s, "wasm")) {
+    if (ext.equals_literal("wasm")) {
       return "application/wasm";
     }
-    if (extension_is(path, s, "mp4")) {
+    if (ext.equals_literal("mp4")) {
       return "video/mp4";
     }
-    if (extension_is(path, s, "webm")) {
+    if (ext.equals_literal("webm")) {
       return "video/webm";
     }
-    if (extension_is(path, s, "mp3")) {
+    if (ext.equals_literal("mp3")) {
       return "audio/mpeg";
     }
-    if (extension_is(path, s, "ogg")) {
+    if (ext.equals_literal("ogg")) {
       return "audio/ogg";
     }
-    if (extension_is(path, s, "zip")) {
+    if (ext.equals_literal("zip")) {
       return "application/zip";
     }
-    if (extension_is(path, s, "gz")) {
+    if (ext.equals_literal("gz")) {
       return "application/gzip";
     }
-    if (extension_is(path, s, "tar")) {
+    if (ext.equals_literal("tar")) {
       return "application/x-tar";
     }
     return "application/octet-stream";
@@ -130,9 +118,15 @@ public module sun_serve {
 
   // Report whether a media type is text, which gets a charset parameter.
   public function mime_is_text(mime: static_ptr<u8>) bool {
-    if (mime.length() < 5) {
+    var prefix: static_ptr<u8> = "text/";
+    if (mime.length() < prefix.length()) {
       return false;
     }
-    return literal_byte(mime, 0) == b't' and literal_byte(mime, 1) == b'e' and literal_byte(mime, 2) == b'x' and literal_byte(mime, 3) == b't' and literal_byte(mime, 4) == b'/';
+    for (var i: i64 = 0; i < prefix.length(); i = i + 1) {
+      if (literal_byte(mime, i) != literal_byte(prefix, i)) {
+        return false;
+      }
+    }
+    return true;
   }
 }
