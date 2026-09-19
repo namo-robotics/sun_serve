@@ -78,12 +78,17 @@ handler the binary uses. [Using the library](#using-the-library) shows the code.
 Requires the `sun` toolchain (see the `Dockerfile` for the exact image).
 
 ```bash
-scripts/build.sh          # format check + sun -c sun-config.json -> build/
-scripts/test.sh           # compiled test suites (add --jit to run under the JIT)
+scripts/build.sh          # checks + incremental sun -c sun-config.json -> build/
+scripts/test.sh           # build, then the compiled suites (--jit runs under the JIT)
 scripts/mkcert.sh build   # self-signed localhost certificate for local use
 build/sun_serve --root ./www --listen 0.0.0.0:8080 \
     --tls-listen 0.0.0.0:8443 --cert build/cert.pem --key build/key.pem
 ```
+
+Builds are incremental: `scripts/build.sh` passes `--skip-if-unchanged`, so
+the compiler hashes each artifact's inputs (sources, test files, imported
+moons, native archives, flags, and the compiler itself) and rebuilds only the
+artifacts whose inputs changed.
 
 `build/sun_serve --help` lists every flag: listeners, worker count, log
 level, body and header limits, keep-alive timeout, index file, and

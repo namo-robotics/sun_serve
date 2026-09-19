@@ -501,17 +501,15 @@ public module sun_serve {
           return;
         }
         // Unknown frame types are ignored, as the protocol requires.
-        var kind: H2FrameKind = match h2_frame_kind(this.rbuf, 0) {
-          Option.Some(known) => known,
-          Option.None => {
-            this.finish_h2_frame(frame_len, now_ms, cfg);
-            continue;
-          }
+        match h2_frame_kind(this.rbuf, 0) {
+          Option.Some(kind) => {
+            if (not this.handle_h2_frame(kind, flags, stream, frame_len, handler, date, log, cfg, now_ms, draining)) {
+              this.close();
+              return;
+            }
+          },
+          Option.None => {}
         };
-        if (not this.handle_h2_frame(kind, flags, stream, frame_len, handler, date, log, cfg, now_ms, draining)) {
-          this.close();
-          return;
-        }
         this.finish_h2_frame(frame_len, now_ms, cfg);
       }
     }

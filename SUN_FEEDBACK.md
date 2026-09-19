@@ -2,8 +2,8 @@
 
 Each section below was filed as a GitHub issue on `namo-robotics/sun`; the
 link under each heading points at it. Repro snippets are complete programs
-unless noted. Only the issues still open as of `sun 0.dev (7b4ceb0f6b18)`
-(2026-09-18) are listed; the resolved ones (#208 through #219, #221, #223,
+unless noted. Only the issues still open as of `sun 0.dev (e9fe7a0e0338)`
+(2026-09-19) are listed; the resolved ones (#208 through #219, #221, #223,
 and #227 through #230) were removed once sun_serve dropped its workarounds
 for them.
 
@@ -95,3 +95,132 @@ the whole of libssl, so a server needs about twenty more externs
 nonblocking `handshake/read/write` that maps `SSL_ERROR_WANT_READ/WRITE`.
 sun_serve implements this in `src/tls/`; it would fit naturally in the bundle
 as `TlsListener`/`TlsServerContext`.
+
+---
+
+## Regression: `continue` or `break` in a block arm of a match that yields a value
+
+Filed as [namo-robotics/sun#309](https://github.com/namo-robotics/sun/issues/309).
+
+**Labels:** bug, semantic-analysis
+
+Worked at `7b4ceb0f6b18`; fails at `e9fe7a0e0338` with
+`Internal error: expression type was not prepared for inference`, reported at
+the `continue`. A block arm that ends in `return` still compiles.
+
+```sun
+using std;
+
+function pick(i: i64) Option<i64> {
+  if (i % 2 == 0) {
+    return Option.Some(i);
+  }
+  return Option.None;
+}
+
+function main() i32 {
+  var total: i64 = 0;
+  for (var i: i64 = 0; i < 4; i = i + 1) {
+    var v: i64 = match pick(i) {
+      Option.Some(x) => x,
+      Option.None => {
+        continue;
+      }
+    };
+    total = total + v;
+  }
+  println(total);
+  return 0;
+}
+
+manifest {
+  libraries: ["stdlib.moon"]
+}
+```
+
+sun_serve's HTTP/2 frame loop used this shape to skip unknown frame types; it
+now matches as a statement and handles the known frame inside the arm.
+
+---
+
+## Bug: string literals with `\xNN` bytes above 0x7f upset the AST serializer
+
+Filed as [namo-robotics/sun#310](https://github.com/namo-robotics/sun/issues/310).
+
+**Labels:** bug, moon
+
+`StringLiteral.value` is a protobuf `string`, which must be valid UTF-8, but
+`\xNN` escapes make byte strings.
+
+- New at `e9fe7a0e0338`: any program with such a literal prints
+  `[libprotobuf ERROR ...] String field 'sun.proto.ast.StringLiteral.value'
+  contains invalid UTF-8 data when serializing a protocol buffer` once per
+  literal, under the JIT and with `-c`. The program still runs correctly, so
+  this is noise, but it reads like a build failure. sun_serve's build prints
+  it for the WebSocket deflate trailer and for the HPACK bytes in its tests.
+- Before and after: when the literal sits in a *generic* function of a
+  library, the moon is written but cannot be read back (`invalid UTF-8 data
+  when parsing`), and every symbol of the library is then unknown to the
+  consumer.
+
+```sun
+// lib.sun: sun --emit-moon -o blib.moon lib.sun
+public module blib {
+  using std;
+
+  public function marker_len<T>(alloc: const ref HeapAllocator, x: T) i64 {
+    var s = String(alloc, "\xff\xfe");
+    return s.length();
+  }
+}
+
+manifest {
+  libraries: ["stdlib.moon"]
+}
+```
+
+```sun
+// app.sun: sun --lib-path . app.sun  ->  Unknown generic function or class 'marker_len'
+using std;
+using blib;
+
+function main() i32 {
+  var alloc = HeapAllocator();
+  println(marker_len<i32>(alloc, 1));
+  return 0;
+}
+
+manifest {
+  libraries: ["stdlib.moon", "blib.moon"]
+}
+```
+
+Suggested: make the field `bytes`.
+
+---
+
+## Crash: a `const` initialized from another `const`
+
+Filed as [namo-robotics/sun#311](https://github.com/namo-robotics/sun/issues/311).
+
+**Labels:** bug, semantic-analysis
+
+The compiler segfaults, with no diagnostic, at file scope and inside a
+module, under the JIT and with `-c`. sun_serve spells each constant out as a
+literal instead.
+
+```sun
+using std;
+
+const A: i64 = 4;
+const B: i64 = A;
+
+function main() i32 {
+  println(B);
+  return 0;
+}
+
+manifest {
+  libraries: ["stdlib.moon"]
+}
+```
