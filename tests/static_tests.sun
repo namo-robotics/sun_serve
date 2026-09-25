@@ -64,7 +64,7 @@ public module sun_serve {
             }
           }
           remove_dir(this.path);
-        } catch (e: IError) {}
+        } catch (e: ref IError) {}
       }
     }
 
@@ -107,7 +107,7 @@ public module sun_serve {
       // The scratch document root.
       public var dir: TempDir;
       // The running test server.
-      public var server: Server;
+      public var server: Server<StaticFiles>;
       // The loopback port assigned to the server.
       public var port: i32;
 
@@ -136,7 +136,7 @@ public module sun_serve {
         cfg.timeouts.tick_ms = 50;
         cfg.timeouts.drain_ms = 500;
         var opts = StaticOptions(alloc);
-        this.server = Server(alloc, cfg, static_handlers(alloc, this.dir.path, opts, 2));
+        this.server = Server<StaticFiles>(alloc, cfg, static_handlers(alloc, this.dir.path, opts, 2));
         this.server.start();
         this.port = this.server.port(0);
       }

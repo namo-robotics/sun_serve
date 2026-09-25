@@ -98,7 +98,7 @@ public module sun_serve {
         var n: i64 = 0;
         try {
           n = this.stream.recv(chunk);
-        } catch (e: IError) {
+        } catch (e: ref IError) {
           var msg = String(this.alloc, "recv failed with errno ");
           msg.append(e.code());
           msg.append(" after ");
@@ -132,7 +132,7 @@ public module sun_serve {
       public method peer_closed() bool {
         try {
           return not this.fill();
-        } catch (e: IError) {
+        } catch (e: ref IError) {
           return false;
         }
       }

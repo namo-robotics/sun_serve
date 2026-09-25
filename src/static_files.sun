@@ -137,7 +137,7 @@ public module sun_serve {
       var f = File();
       try {
         f.open(this.full_path, FileMode.Read);
-      } catch (e: IError) {
+      } catch (e: ref IError) {
         this.not_found(resp);
         return;
       }
@@ -168,7 +168,7 @@ public module sun_serve {
         var index = File();
         try {
           index.open(this.full_path, FileMode.Read);
-        } catch (e: IError) {
+        } catch (e: ref IError) {
           resp.set_status(403);
           resp.set_content_type("text/plain");
           resp.set_body("Forbidden\n");
@@ -269,9 +269,11 @@ public module sun_serve {
     public method websocket_error(socket: const ref WebSocketHandle, code: i32) void {}
   }
 
-  // Build one StaticFiles handler per worker, as a Server expects.
-  public function static_handlers(alloc: const ref HeapAllocator, root: const ref String, opts: const ref StaticOptions, count: i32) Vec<IHandler> throws IError {
-    var out = Vec<IHandler>(alloc, _convert<i64>(count));
+  /*
+   * Builds one StaticFiles handler per worker for the server to own.
+   */
+  public function static_handlers(alloc: const ref HeapAllocator, root: const ref String, opts: const ref StaticOptions, count: i32) Vec<StaticFiles> throws IError {
+    var out = Vec<StaticFiles>(alloc, _convert<i64>(count));
     for (var i: i32 = 0; i < count; i = i + 1) {
       out.push(StaticFiles(alloc, root, opts.clone(alloc)));
     }

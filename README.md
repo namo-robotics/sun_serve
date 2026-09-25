@@ -75,7 +75,9 @@ handler the binary uses. [Using the library](#using-the-library) shows the code.
 
 ## Build and run
 
-Requires the `sun` toolchain (see the `Dockerfile` for the exact image).
+Requires the rolling `sun` development toolchain (see `Dockerfile`). Tested
+with `sun 0.dev (a69c9fb35814)`; this build includes the compiler fixes used
+by the HTTP/2 frame loop and constant expressions.
 
 ```bash
 scripts/build.sh          # checks + incremental sun -c sun-config.json -> build/
@@ -85,10 +87,11 @@ build/sun_serve --root ./www --listen 0.0.0.0:8080 \
     --tls-listen 0.0.0.0:8443 --cert build/cert.pem --key build/key.pem
 ```
 
-Builds are incremental: `scripts/build.sh` passes `--skip-if-unchanged`, so
-the compiler hashes each artifact's inputs (sources, test files, imported
+Builds are incremental by default: the compiler hashes each artifact's inputs
+(sources, test files, imported
 moons, native archives, flags, and the compiler itself) and rebuilds only the
-artifacts whose inputs changed.
+artifacts whose inputs changed. Use `sun -c --force-rebuild sun-config.json`
+to rebuild all artifacts.
 
 `build/sun_serve --help` lists every flag: listeners, worker count, log
 level, body and header limits, keep-alive timeout, index file, and
@@ -115,7 +118,7 @@ function main() i32 throws IError {
   var cfg = Config(alloc);
   cfg.add_listen(ipv4_any(), 8080);
   install_signal_handlers();
-  var server = Server(alloc, cfg, fn_handlers(alloc, hello, online_cpus()));
+  var server = Server<FnHandler>(alloc, cfg, fn_handlers(alloc, hello, online_cpus()));
   return server.run();
 }
 ```
@@ -123,6 +126,10 @@ function main() i32 throws IError {
 For richer handlers implement [`IHandler`](src/handler.sun) directly, which
 is what [`StaticFiles`](src/static_files.sun) does; a handler can also hold a
 `StaticFiles` and delegate to it for the paths it does not serve itself.
+Construct `Server<MyHandler>` with a `Vec<MyHandler>`, one concrete handler
+per worker. The server owns these handlers; callbacks borrow them through
+`ref IHandler`. `fn_handlers` returns `Vec<FnHandler>` and `static_handlers`
+returns `Vec<StaticFiles>`.
 [examples/hello_handler](examples/hello_handler) is a complete program built
 this way: a handler class with per-worker state, query parameters, request
 bodies, and end-to-end tests that CI runs. The devcontainer uses host

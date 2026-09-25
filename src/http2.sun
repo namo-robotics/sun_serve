@@ -187,7 +187,7 @@ public module sun_serve {
         try {
           var oldest: H2Header = this.entries.remove(0);
           this.bytes = this.bytes - oldest.name.length() - oldest.value.length() - HPACK_ENTRY_OVERHEAD;
-        } catch (e: IError) {
+        } catch (e: ref IError) {
           // Unreachable: the table was just checked to be non-empty.
           return;
         }

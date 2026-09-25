@@ -9,5 +9,5 @@ sun --version
 scripts/check-sun-safety.sh
 scripts/check-sun-comments.sh
 sun fmt --check src cmd tests examples
-sun -c --skip-if-unchanged sun-config.json
+sun -c sun-config.json
 echo "built build/sun_serve, build/sun_serve.moon and the test binaries"

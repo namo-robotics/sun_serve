@@ -18,7 +18,7 @@ public module sun_serve {
    * slots, except for the one token reserved for the wake descriptor.
    */
   const LISTENER_TOKEN_BASE: u64 = 0x100_0000_0000;
-  const WORKER_WAKE_TOKEN: u64 = 0xff_ffff_ffff;
+  const WORKER_WAKE_TOKEN: u64 = LISTENER_TOKEN_BASE - 1;
 
   /*
    * How many connections one readiness event on a listener may accept before
@@ -26,17 +26,19 @@ public module sun_serve {
    */
   const ACCEPT_BATCH: i32 = 64;
 
-  // Everything a worker thread is given when it starts.
-  public class WorkerArgs {
+  /*
+   * Owns the concrete handler and resources for one worker thread.
+   */
+  public class WorkerArgs<H> {
     var id: i32;
     var config: Config;
-    var handler: IHandler;
+    var handler: H;
     var listeners: Vec<ListenerSocket>;
     var stop: StopToken;
     var tls: TlsAcceptor;
 
     // Bundle the pieces for one worker.
-    init(id: i32, config: Config, handler: IHandler, listeners: Vec<ListenerSocket>, stop: StopToken, tls: TlsAcceptor) {
+    init(id: i32, config: Config, handler: H, listeners: Vec<ListenerSocket>, stop: StopToken, tls: TlsAcceptor) {
       this.id = id;
       this.config = config;
       this.handler = handler;
@@ -46,9 +48,11 @@ public module sun_serve {
     }
   }
 
-  // Runs one event loop and owns its connections and listeners.
-  public class Worker {
-    var args: WorkerArgs;
+  /*
+   * Runs one event loop and owns its connections and listeners.
+   */
+  public class Worker<H> {
+    var args: WorkerArgs<H>;
     var alloc: HeapAllocator;
     var epoll: Epoll;
     var wake_fd: i32;
@@ -64,7 +68,7 @@ public module sun_serve {
     var accept_paused_until: i64 = 0;
 
     // Set up the loop's resources. Listeners are registered in run().
-    init(args: WorkerArgs) throws IError {
+    init(args: WorkerArgs<H>) throws IError {
       var alloc = make_heap_allocator();
       this.alloc = alloc.copy();
       this.log = Logger(alloc, args.config.log_level, args.id, args.config.access_log);
@@ -98,14 +102,14 @@ public module sun_serve {
     public method run() i32 {
       try {
         this.epoll.add(this.wake_fd, EPOLLIN, WORKER_WAKE_TOKEN);
-      } catch (e: IError) {
+      } catch (e: ref IError) {
         this.log.error_caught("failed to watch worker wake descriptor", e);
         return 1;
       }
       for (var i: i64 = 0; i < this.args.listeners.size(); i = i + 1) {
         try {
           this.epoll.add(this.args.listeners[i].get_fd(), EPOLLIN, LISTENER_TOKEN_BASE + _convert<u64>(i));
-        } catch (e: IError) {
+        } catch (e: ref IError) {
           this.log.error_caught("failed to watch listener", e);
           return 1;
         }
@@ -115,7 +119,7 @@ public module sun_serve {
         var n: i64 = 0;
         try {
           n = this.epoll.wait(tick);
-        } catch (e: IError) {
+        } catch (e: ref IError) {
           this.log.error_caught("epoll_wait failed", e);
           return 1;
         }
@@ -213,7 +217,7 @@ public module sun_serve {
       }
       try {
         this.epoll.add(fd, conn.want(), _convert<u64>(slot));
-      } catch (e: IError) {
+      } catch (e: ref IError) {
         this.log.error_caught("failed to watch connection", e);
         conn.close();
         return false;
@@ -252,7 +256,7 @@ public module sun_serve {
         try {
           this.epoll.modify(conn.get_fd(), conn.want(), _convert<u64>(slot));
           conn.set_registered(conn.want());
-        } catch (e: IError) {
+        } catch (e: ref IError) {
           this.log.error_caught("failed to update connection interest", e);
           conn.close();
           this.free.push(slot);
@@ -335,11 +339,11 @@ public module sun_serve {
    * The thread entry point: build a worker and run it, reporting any failure
    * on stderr instead of throwing across the thread boundary.
    */
-  public function run_worker(args: WorkerArgs) i32 {
+  public function run_worker<H>(args: WorkerArgs<H>) i32 {
     try {
-      var w = Worker(args);
+      var w = Worker<H>(args);
       return w.run();
-    } catch (e: IError) {
+    } catch (e: ref IError) {
       eprintln(`error: worker failed to start: ${e.message()}`);
       return 1;
     }

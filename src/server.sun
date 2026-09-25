@@ -14,11 +14,13 @@ public module sun_serve {
   using std.thread;
   using std.time;
 
-  // Owns listeners and worker threads for one server instance.
-  public class Server {
+  /*
+   * Owns listeners and worker threads with concrete handlers implementing IHandler.
+   */
+  public class Server<H> {
     var alloc: HeapAllocator;
     var config: Config;
-    var handlers: Vec<IHandler>;
+    var handlers: Vec<H>;
     var threads: Vec<Thread<i32>>;
     var stop_cell: Unique<i32>;
     var ports: Vec<i32>;
@@ -31,7 +33,7 @@ public module sun_serve {
      * the config, and the certificate is loaded here so problems surface
      * before any socket is bound.
      */
-    init(allocator: const ref HeapAllocator, config: Config, handlers: Vec<IHandler>) throws IError {
+    init(allocator: const ref HeapAllocator, config: Config, handlers: Vec<H>) throws IError {
       this.alloc = allocator.copy();
       this.handlers = handlers;
       this.threads = Vec<Thread<i32>>(allocator, 8);
@@ -88,14 +90,14 @@ public module sun_serve {
       this.started = true;
       // Hand out the handlers and listeners in order, first worker first.
       for (var id: i32 = 0; id < _convert<i32>(workers); id = id + 1) {
-        var handler: IHandler = this.handlers.remove(0);
+        var handler: H = this.handlers.remove(0);
         var mine = Vec<ListenerSocket>(this.alloc, specs);
         for (var s: i64 = 0; s < specs; s = s + 1) {
           mine.push(all.remove(0));
         }
         var acceptor: TlsAcceptor = this.tls.acceptor();
-        var args = WorkerArgs(id, this.config.clone(), handler, mine, StopToken(this.stop_cell), acceptor);
-        this.threads.push(spawn(run_worker, args));
+        var args = WorkerArgs<H>(id, this.config.clone(), handler, mine, StopToken(this.stop_cell), acceptor);
+        this.threads.push(spawn((args: WorkerArgs<H>) => i32 { return run_worker<H>(args); }, args));
       }
     }
 

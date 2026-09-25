@@ -28,7 +28,7 @@ public module sun_serve {
       cmd.set_stderr(Stdio.Null);
       try {
         return cmd.status() == 0;
-      } catch (e: IError) {
+      } catch (e: ref IError) {
         return false;
       }
     }
@@ -81,7 +81,7 @@ public module sun_serve {
           std.io.remove_file(this.cert_path);
           std.io.remove_file(this.key_path);
           std.io.remove_dir(this.dir);
-        } catch (e: IError) {}
+        } catch (e: ref IError) {}
       }
     }
 
@@ -103,7 +103,7 @@ public module sun_serve {
       // The generated certificate used by the server.
       public var cert: TestCert;
       // The running test server.
-      public var server: Server;
+      public var server: Server<FnHandler>;
       // The loopback port assigned to the TLS listener.
       public var tls_port: i32;
       // The loopback port assigned to the plain listener.
@@ -120,7 +120,7 @@ public module sun_serve {
         cfg.timeouts.tick_ms = 50;
         cfg.timeouts.drain_ms = 500;
         cfg.timeouts.keep_alive_ms = 400;
-        this.server = Server(alloc, cfg, fn_handlers(alloc, tls_handler, 2));
+        this.server = Server<FnHandler>(alloc, cfg, fn_handlers(alloc, tls_handler, 2));
         this.server.start();
         this.tls_port = this.server.port(0);
         this.plain_port = this.server.port(1);

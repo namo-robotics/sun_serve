@@ -220,16 +220,16 @@ public module sun_serve {
 
     // Append an unsigned integer in decimal.
     public method append_u64(value: u64) void {
-      this.append_digits(value, 10);
+      this.append_digits(value, false);
     }
 
     // Append an unsigned integer in lowercase hex.
     public method append_hex_u64(value: u64) void {
-      this.append_digits(value, 16);
+      this.append_digits(value, true);
     }
 
-    // Append an unsigned integer in the given base, most significant digit first.
-    method append_digits(value: u64, base: u64) void {
+    // Append decimal or hexadecimal digits, most significant digit first.
+    method append_digits(value: u64, hex: bool) void {
       if (value == 0) {
         this.append_byte(b'0');
         return;
@@ -238,13 +238,19 @@ public module sun_serve {
       var n: i64 = 0;
       var v: u64 = value;
       while (v > 0) {
-        var d: u8 = _convert<u8>(v % base);
+        var d: u8 = 0;
+        if (hex) {
+          d = _convert<u8>(v % 16);
+          v = v / 16;
+        } else {
+          d = _convert<u8>(v % 10);
+          v = v / 10;
+        }
         if (d < 10) {
           digits[n] = d + b'0';
         } else {
           digits[n] = d - 10 + b'a';
         }
-        v = v / base;
         n = n + 1;
       }
       while (n > 0) {

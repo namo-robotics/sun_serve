@@ -92,9 +92,11 @@ public module sun_serve {
     public method websocket_error(socket: const ref WebSocketHandle, code: i32) void {}
   }
 
-  // Build one FnHandler per worker, as a Server expects.
-  public function fn_handlers(alloc: const ref HeapAllocator, fn: function (const ref Request, ref Response) void, count: i32) Vec<IHandler> {
-    var out = Vec<IHandler>(alloc, _convert<i64>(count));
+  /*
+   * Builds one FnHandler per worker for the server to own.
+   */
+  public function fn_handlers(alloc: const ref HeapAllocator, fn: function (const ref Request, ref Response) void, count: i32) Vec<FnHandler> {
+    var out = Vec<FnHandler>(alloc, _convert<i64>(count));
     for (var i: i32 = 0; i < count; i = i + 1) {
       out.push(FnHandler(fn));
     }

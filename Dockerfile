@@ -75,7 +75,7 @@ RUN curl -fSL --connect-timeout 10 --max-time 300 \
 # Refresh the rolling compiler per workflow run, after the cached native tools.
 # SUN_DEB_URL can point at another build of the package, such as a workflow
 # artifact, when the dev release is between uploads.
-ARG SUN_REFRESH=local
+ARG SUN_REFRESH=a69c9fb35814
 ARG SUN_DEB_URL=https://github.com/namo-robotics/sun/releases/download/dev/sun_0.dev_amd64.deb
 RUN echo "Sun package refresh: ${SUN_REFRESH}" \
  && curl -fsSL --connect-timeout 10 --max-time 300 \

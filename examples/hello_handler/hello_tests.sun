@@ -23,7 +23,7 @@ module hello_handler {
      */
     class TestServer {
       // The running example server.
-      public var server: Server;
+      public var server: Server<HelloHandler>;
       // The loopback port assigned to the server.
       public var port: i32;
 
@@ -34,7 +34,7 @@ module hello_handler {
         cfg.timeouts.tick_ms = 50;
         cfg.access_log = false;
         cfg.log_level = LogLevel.Error;
-        this.server = Server(alloc, cfg, hello_handlers(alloc, 1));
+        this.server = Server<HelloHandler>(alloc, cfg, hello_handlers(alloc, 1));
         this.server.start();
         this.port = this.server.port(0);
       }

@@ -62,7 +62,7 @@ public module sun_serve {
     // A running server on a kernel-picked loopback port.
     class TestServer {
       // The running test server.
-      public var server: Server;
+      public var server: Server<FnHandler>;
       // The loopback port assigned to the server.
       public var port: i32;
 
@@ -74,7 +74,7 @@ public module sun_serve {
         cfg.timeouts.tick_ms = 50;
         cfg.access_log = false;
         cfg.log_level = LogLevel.Error;
-        this.server = Server(alloc, cfg, fn_handlers(alloc, test_handler, workers));
+        this.server = Server<FnHandler>(alloc, cfg, fn_handlers(alloc, test_handler, workers));
         this.server.start();
         this.port = this.server.port(0);
       }
@@ -100,6 +100,23 @@ public module sun_serve {
       c.send_string(wire);
       var reply: String = c.read_until("hello");
       std.test.assert(reply.contains("hello"), "HTTP/2 response body");
+      c.close();
+    }
+
+    test_function http2_skips_unknown_frames_before_request() {
+      var alloc = make_heap_allocator();
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
+      /* Unknown frames include both an empty frame and one with a payload. */
+      wire.append("\x00\x00\x00\xff\x00\x00\x00\x00\x00");
+      wire.append("\x00\x00\x03\xfe\x00\x00\x00\x00\x00abc");
+      append_h2_test_frame(wire, 6, H2FrameKind.Headers, H2_END_STREAM | H2_END_HEADERS, 1);
+      wire.append("\x82\x86\x84\x01\x01a");
+      c.send_string(wire);
+      var reply: String = c.read_until("hello");
+      std.test.assert(reply.contains("hello"), "request after unknown frames is served");
       c.close();
     }
 

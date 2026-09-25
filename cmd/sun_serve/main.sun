@@ -113,7 +113,7 @@ module sun_serve_cli {
     }
     try {
       addr = parse_ipv4(host);
-    } catch (e: IError) {
+    } catch (e: ref IError) {
       return false;
     }
     return true;
@@ -288,7 +288,7 @@ module sun_serve_cli {
   }
 
   // Print one "listening on" line per listener.
-  function announce(alloc: const ref HeapAllocator, server: const ref Server, cfg: const ref Config, workers: i32) void {
+  function announce(alloc: const ref HeapAllocator, server: const ref Server<StaticFiles>, cfg: const ref Config, workers: i32) void {
     for (var i: i64 = 0; i < cfg.listen.size(); i = i + 1) {
       var spec: const ref ListenSpec = cfg.listen[i];
       var scheme: static_ptr<u8> = spec.tls ? "https" : "http";
@@ -323,8 +323,8 @@ module sun_serve_cli {
     }
     try {
       install_signal_handlers();
-      var handlers: Vec<IHandler> = static_handlers(alloc, cli.root, cli.static_opts, cli.workers);
-      var server = Server(alloc, cli.config.clone(), handlers);
+      var handlers: Vec<StaticFiles> = static_handlers(alloc, cli.root, cli.static_opts, cli.workers);
+      var server = Server<StaticFiles>(alloc, cli.config.clone(), handlers);
       server.start();
       announce(alloc, server, cli.config, cli.workers);
       var tick = std.time.create_duration_millis(cli.config.timeouts.tick_ms);
@@ -337,7 +337,7 @@ module sun_serve_cli {
         return 1;
       }
       return 0;
-    } catch (e: IError) {
+    } catch (e: ref IError) {
       eprintln(`sun_serve: ${e.message()}`);
       return 3;
     }

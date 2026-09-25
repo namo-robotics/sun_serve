@@ -122,9 +122,11 @@ module hello_handler {
     public method websocket_error(socket: const ref WebSocketHandle, code: i32) void {}
   }
 
-  // Build one HelloHandler per worker, as a Server expects.
-  public function hello_handlers(alloc: const ref HeapAllocator, count: i32) Vec<IHandler> {
-    var out = Vec<IHandler>(alloc, _convert<i64>(count));
+  /*
+   * Builds one HelloHandler per worker for the server to own.
+   */
+  public function hello_handlers(alloc: const ref HeapAllocator, count: i32) Vec<HelloHandler> {
+    var out = Vec<HelloHandler>(alloc, _convert<i64>(count));
     for (var i: i32 = 0; i < count; i = i + 1) {
       out.push(HelloHandler(alloc));
     }
@@ -139,9 +141,9 @@ function main() i32 {
   cfg.add_listen(ipv4_any(), 8080);
   try {
     install_signal_handlers();
-    var server = Server(alloc, cfg, hello_handler.hello_handlers(alloc, online_cpus()));
+    var server = Server<hello_handler.HelloHandler>(alloc, cfg, hello_handler.hello_handlers(alloc, online_cpus()));
     return server.run();
-  } catch (e: IError) {
+  } catch (e: ref IError) {
     var msg: String = e.message();
     eprintln(msg);
     return 1;
