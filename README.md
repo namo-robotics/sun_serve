@@ -4,7 +4,7 @@
 
 # Sun Serve
 
-[![ci](https://github.com/namo-robotics/sun_serve/actions/workflows/ci.yml/badge.svg)](https://github.com/namo-robotics/sun_serve/actions/workflows/ci.yml) [![release-dev](https://github.com/namo-robotics/sun_serve/actions/workflows/release-dev.yml/badge.svg)](https://github.com/namo-robotics/sun_serve/actions/workflows/release-dev.yml)
+[![CI](https://github.com/namo-robotics/sun_serve/actions/workflows/ci.yml/badge.svg)](https://github.com/namo-robotics/sun_serve/actions/workflows/ci.yml)
 
 ### A high-performance and memory-safe web server written in
 [Sun](https://namo-robotics.github.io/sun/)
