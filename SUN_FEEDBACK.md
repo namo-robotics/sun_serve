@@ -1,6 +1,6 @@
 # Sun compiler and stdlib feedback from building sun_serve
 
-Filed issues link to `namo-robotics/sun`; new findings are marked unfiled.
+Each item links to its issue on `namo-robotics/sun`.
 Repro snippets are complete programs unless noted. Open issues and remaining
 limitations were checked with `sun 0.dev (a69c9fb35814)`
 (2026-09-25). Only unresolved feedback is listed below.
@@ -82,7 +82,11 @@ as `TlsListener`/`TlsServerContext`.
 
 ## Bug: interface constraints reject concrete handlers in nested test modules
 
-**Unfiled.** Reproduced with `sun 0.dev (a69c9fb35814)` using `sun test`.
+Filed as [namo-robotics/sun#333](https://github.com/namo-robotics/sun/issues/333).
+
+**Labels:** bug
+
+Reproduced with `sun 0.dev (a69c9fb35814)` using `sun test`.
 
 The concrete class implements the required interface, but using the constrained
 server type as a field in a nested test module fails with
