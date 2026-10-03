@@ -184,13 +184,16 @@ public module sun_serve {
     // Remove oldest entries until the table fits.
     method evict() void {
       while (this.bytes > this.maximum and this.entries.size() > 0) {
-        try {
-          var oldest: H2Header = this.entries.remove(0);
-          this.bytes = this.bytes - oldest.name.length() - oldest.value.length() - HPACK_ENTRY_OVERHEAD;
-        } catch (e: ref IError) {
-          // Unreachable: the table was just checked to be non-empty.
-          return;
-        }
+        match this.entries.remove(0) {
+          AccessResult.Ok(value) => {
+            var oldest: H2Header = value;
+            this.bytes = this.bytes - oldest.name.length() - oldest.value.length() - HPACK_ENTRY_OVERHEAD;
+          },
+          (e: const ref IError) => {
+            // Unreachable: the table was just checked to be non-empty.
+            return;
+          }
+        };
       }
     }
   }

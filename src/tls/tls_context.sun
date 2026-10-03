@@ -51,13 +51,17 @@ public module sun_serve {
       this.message_ = message.clone(alloc);
     }
 
-    // TLS errors share one code; the message carries the detail.
-    public method code() i32 {
+    /*
+     * TLS errors share one code; the message carries the detail.
+     */
+    public const method code() i32 {
       return 70;
     }
 
-    // A fresh copy of the explanation.
-    public method message() String {
+    /*
+     * A fresh copy of the explanation.
+     */
+    public const method message() String {
       var alloc: HeapAllocator = HeapAllocator();
       return this.message_.clone(alloc);
     }
@@ -71,13 +75,13 @@ public module sun_serve {
      * Load the certificate chain and key, apply transport hardening, and
      * allow partial writes for the nonblocking loop.
      */
-    init(alloc: const ref HeapAllocator, spec: const ref TlsSpec, http2: bool) throws IError {
+    init(alloc: const ref HeapAllocator, spec: const ref TlsSpec, http2: bool) ServerResult<void> {
       var cert_path: String = spec.cert_path.clone(alloc);
       var key_path: String = spec.key_path.clone(alloc);
       var method: raw_ptr<u8> = unsafe ssl_tls_server_method();
       var ctx: raw_ptr<u8> = unsafe ssl_ctx_new(method);
       if (ctx == null) {
-        throw TlsError(take_openssl_error(alloc, "SSL_CTX_new failed"));
+        return ServerResult.Tls(TlsError(take_openssl_error(alloc, "SSL_CTX_new failed")));
       }
       this.ctx = ctx;
       unsafe ssl_ctx_ctrl(ctx, SSL_CTRL_SET_MIN_PROTO_VERSION, TLS1_2_VERSION, null);
@@ -90,7 +94,7 @@ public module sun_serve {
         cert_err.append(cert_path);
         cert_err.append(")");
         this.release();
-        throw TlsError(cert_err);
+        return ServerResult.Tls(TlsError(cert_err));
       }
       if (unsafe ssl_ctx_use_privatekey_file(ctx, key_path.c_str(), SSL_FILETYPE_PEM) != 1) {
         var key_err: String = take_openssl_error(alloc, "failed to load private key");
@@ -98,18 +102,19 @@ public module sun_serve {
         key_err.append(key_path);
         key_err.append(")");
         this.release();
-        throw TlsError(key_err);
+        return ServerResult.Tls(TlsError(key_err));
       }
       if (unsafe ssl_ctx_check_private_key(ctx) != 1) {
         var match_err: String = take_openssl_error(alloc, "private key does not match certificate");
         this.release();
-        throw TlsError(match_err);
+        return ServerResult.Tls(TlsError(match_err));
       }
       if (http2) {
         unsafe ssl_ctx_set_alpn_select_cb(ctx, alpn_select, null);
       } else {
         unsafe ssl_ctx_set_alpn_select_cb(ctx, alpn_select_http1, null);
       }
+      return ServerResult.Ok;
     }
 
     // A context with no certificate, for servers without TLS listeners.

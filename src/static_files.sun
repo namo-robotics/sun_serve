@@ -93,8 +93,8 @@ public module sun_serve {
     var etag: String;
     var last_modified: String;
 
-    // Serve files under root. Throws if root is not a directory.
-    init(allocator: const ref HeapAllocator, root: const ref String, opts: StaticOptions) throws IError {
+    // Serve files under root. Returns an error if root is not a directory.
+    init(allocator: const ref HeapAllocator, root: const ref String, opts: StaticOptions) ServerResult<void> {
       this.alloc = allocator.copy();
       this.root = root.clone(allocator);
       while (this.root.length() > 1 and this.root.ends_with("/")) {
@@ -103,13 +103,14 @@ public module sun_serve {
       if (not is_dir(this.root)) {
         var msg = String(allocator, "not a directory: ");
         msg.append(this.root);
-        throw Error(-1, msg);
+        return ServerResult.Error(Error(-1, msg));
       }
       this.opts = opts;
       this.mode_offset = stat_mode_offset(allocator);
       this.full_path = String(allocator, "");
       this.etag = String(allocator, "");
       this.last_modified = String(allocator, "");
+      return ServerResult.Ok;
     }
 
     // Answer GET and HEAD from the tree and reject other methods.
@@ -135,12 +136,13 @@ public module sun_serve {
         this.full_path.append(rel);
       }
       var f = File();
-      try {
-        f.open(this.full_path, FileMode.Read);
-      } catch (e: ref IError) {
-        this.not_found(resp);
-        return;
-      }
+      match f.open(this.full_path, FileMode.Read) {
+        SystemResult.Ok => {},
+        (e: const ref IError) => {
+          this.not_found(resp);
+          return;
+        }
+      };
       var metadata = read_file_metadata(this.alloc, f.get_fd(), this.mode_offset);
       if (not metadata.valid) {
         f.close();
@@ -166,14 +168,15 @@ public module sun_serve {
         this.full_path.append_char(b'/');
         this.full_path.append(this.opts.index_name);
         var index = File();
-        try {
-          index.open(this.full_path, FileMode.Read);
-        } catch (e: ref IError) {
-          resp.set_status(403);
-          resp.set_content_type("text/plain");
-          resp.set_body("Forbidden\n");
-          return;
-        }
+        match index.open(this.full_path, FileMode.Read) {
+          SystemResult.Ok => {},
+          (e: const ref IError) => {
+            resp.set_status(403);
+            resp.set_content_type("text/plain");
+            resp.set_body("Forbidden\n");
+            return;
+          }
+        };
         metadata = read_file_metadata(this.alloc, index.get_fd(), this.mode_offset);
         if (not metadata.valid) {
           index.close();
@@ -272,11 +275,11 @@ public module sun_serve {
   /*
    * Builds one StaticFiles handler per worker for the server to own.
    */
-  public function static_handlers(alloc: const ref HeapAllocator, root: const ref String, opts: const ref StaticOptions, count: i32) Vec<StaticFiles> throws IError {
+  public function static_handlers(alloc: const ref HeapAllocator, root: const ref String, opts: const ref StaticOptions, count: i32) ServerResult<Vec<StaticFiles>> {
     var out = Vec<StaticFiles>(alloc, _convert<i64>(count));
     for (var i: i32 = 0; i < count; i = i + 1) {
-      out.push(StaticFiles(alloc, root, opts.clone(alloc)));
+      out.push(try StaticFiles(alloc, root, opts.clone(alloc)));
     }
-    return out;
+    return ServerResult.Ok(out);
   }
 }

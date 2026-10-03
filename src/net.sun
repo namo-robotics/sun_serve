@@ -1,9 +1,8 @@
 /*
  * net.sun - Nonblocking listener and socket calls shaped for an event loop
  *
- * The stdlib's TcpListener and TcpStream report readiness by throwing, which
- * is the wrong shape for a loop that expects "would block" thousands of times
- * a second. These wrappers return plain numbers instead and never own a
+ * The stdlib's TCP sockets report readiness through error results. An event
+ * loop expects "would block" as a normal outcome. These wrappers return plain numbers instead and never own a
  * descriptor they did not create.
  */
 
@@ -48,10 +47,10 @@ public module sun_serve {
      * Create, configure, bind, and start listening on addr:port. Port zero
      * lets the kernel choose; read the choice back with local_port().
      */
-    public method bind(addr: const ref Ipv4Addr, port: i32, backlog: i32) void throws IError {
+    public method bind(addr: const ref Ipv4Addr, port: i32, backlog: i32) ServerResult<void> {
       var sock: i32 = unsafe __socket(AF_INET, SOCK_STREAM, 0);
       if (sock < 0) {
-        throw Error(last_errno(), "failed to create socket");
+        return ServerResult.Error(Error(last_errno(), "failed to create socket"));
       }
       this.fd = sock;
       var one: i32 = 1;
@@ -60,25 +59,28 @@ public module sun_serve {
       if (unsafe __bind_ipv4(this.fd, addr.to_network_i32(), port) < 0) {
         var bind_err: i32 = last_errno();
         this.close();
-        throw Error(bind_err, "failed to bind socket");
+        return ServerResult.Error(Error(bind_err, "failed to bind socket"));
       }
       if (unsafe __listen(this.fd, backlog) < 0) {
         var listen_err: i32 = last_errno();
         this.close();
-        throw Error(listen_err, "failed to listen");
+        return ServerResult.Error(Error(listen_err, "failed to listen"));
       }
-      set_nonblocking(this.fd);
+      try set_nonblocking(this.fd);
+      return ServerResult.Ok;
     }
 
-    // The port actually bound.
-    public method local_port() i32 throws IError {
+    /*
+     * The port actually bound.
+     */
+    public method local_port() ServerResult<i32> {
       var ip: i32 = 0;
       var port: i32 = 0;
       var rc: i32 = unsafe __getsockname_ipv4(this.fd, _address_of<i32>(ip), _address_of<i32>(port));
       if (rc < 0) {
-        throw Error(last_errno(), "failed to read socket address");
+        return ServerResult.Error(Error(last_errno(), "failed to read socket address"));
       }
-      return port;
+      return ServerResult.Ok(port);
     }
 
     /*

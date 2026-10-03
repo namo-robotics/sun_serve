@@ -37,13 +37,13 @@ public module sun_serve {
    * Measure the epoll_event layout by registering a writable pipe end with a
    * known user-data value and reading it back from epoll_wait.
    */
-  public function probe_epoll_layout(alloc: const ref HeapAllocator) EpollLayout throws IError {
+  public function probe_epoll_layout(alloc: const ref HeapAllocator) ServerResult<EpollLayout> {
     var epfd: i32 = unsafe sys_epoll_create1(EPOLL_CLOEXEC);
     if (epfd < 0) {
-      throw Error(last_errno(), "epoll_create1 failed");
+      return ServerResult.Error(Error(last_errno(), "epoll_create1 failed"));
     }
     var pipe_alloc: HeapAllocator = alloc.copy();
-    var pipe: std.process.Pipe = std.process.open_pipe(pipe_alloc);
+    var pipe: std.process.Pipe = try std.process.open_pipe(pipe_alloc);
     var write_end: i32 = pipe.write_fd();
 
     /*
@@ -64,17 +64,17 @@ public module sun_serve {
     }
     close_fd(epfd);
     if (rc != 0 or ready != 1) {
-      throw Error(-1, "epoll layout probe failed");
+      return ServerResult.Error(Error(-1, "epoll layout probe failed"));
     }
     var at8: u64 = unsafe _load<u64>(_ptr_offset(out.raw_data(), 8), 0);
     if (at8 == PROBE_MARKER) {
-      return EpollLayout(16, 8);
+      return ServerResult.Ok(EpollLayout(16, 8));
     }
     var at4: u64 = unsafe _load<u64>(_ptr_offset(out.raw_data(), 4), 0);
     if (at4 == PROBE_MARKER) {
-      return EpollLayout(12, 4);
+      return ServerResult.Ok(EpollLayout(12, 4));
     }
-    throw Error(-1, "epoll layout probe saw no marker");
+    return ServerResult.Error(Error(-1, "epoll layout probe saw no marker"));
   }
 
   // The machine name reported by uname(2), e.g. "x86_64".

@@ -134,20 +134,25 @@ module hello_handler {
   }
 }
 
-// Serve on every interface until SIGINT or SIGTERM.
-function main() i32 {
+/* Serve on every interface until SIGINT or SIGTERM. */
+function serve() ServerResult<i32> {
   var alloc = make_heap_allocator();
   var cfg = Config(alloc);
   cfg.add_listen(ipv4_any(), 8080);
-  try {
-    install_signal_handlers();
-    var server = Server<hello_handler.HelloHandler>(alloc, cfg, hello_handler.hello_handlers(alloc, online_cpus()));
-    return server.run();
-  } catch (e: ref IError) {
-    var msg: String = e.message();
-    eprintln(msg);
-    return 1;
-  }
+  try install_signal_handlers();
+  var server = try Server<hello_handler.HelloHandler>(alloc, cfg, hello_handler.hello_handlers(alloc, online_cpus()));
+  return server.run();
+}
+
+/* Report startup failures and return the server exit status. */
+function main() i32 {
+  return match serve() {
+    ServerResult.Ok(status) => status,
+    (e: const ref IError) => {
+      eprintln(e.message());
+      return 1;
+    }
+  };
 }
 
 manifest {

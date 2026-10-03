@@ -21,16 +21,17 @@ public module sun_serve {
     var layout: EpollLayout;
 
     // Create an epoll instance able to report up to max_events per wait.
-    init(alloc: const ref HeapAllocator, layout: EpollLayout, max_events: i64) throws IError {
+    init(alloc: const ref HeapAllocator, layout: EpollLayout, max_events: i64) ServerResult<void> {
       this.max_events = max_events;
       this.events = ContiguousBuffer<u8>(alloc, max_events * layout.stride);
       this.layout = layout;
       this.scratch = ContiguousBuffer<u8>(alloc, 16);
       var created: i32 = unsafe sys_epoll_create1(EPOLL_CLOEXEC);
       if (created < 0) {
-        throw Error(last_errno(), "epoll_create1 failed");
+        return ServerResult.Error(Error(last_errno(), "epoll_create1 failed"));
       }
       this.fd = created;
+      return ServerResult.Ok;
     }
 
     // Close the instance.
@@ -46,20 +47,26 @@ public module sun_serve {
       unsafe _store<u64>(_ptr_offset(this.scratch.raw_data(), this.layout.data_offset), 0, token);
     }
 
-    // Start watching a descriptor; events carry token back to the caller.
-    public method add(fd: i32, interest: u32, token: u64) void throws IError {
+    /*
+     * Start watching a descriptor; events carry token back to the caller.
+     */
+    public method add(fd: i32, interest: u32, token: u64) ServerResult<void> {
       this.fill(interest, token);
       if (unsafe sys_epoll_ctl(this.fd, EPOLL_CTL_ADD, fd, this.scratch.raw_data()) < 0) {
-        throw Error(last_errno(), "epoll_ctl add failed");
+        return ServerResult.Error(Error(last_errno(), "epoll_ctl add failed"));
       }
+      return ServerResult.Ok;
     }
 
-    // Change the interest mask of a watched descriptor.
-    public method modify(fd: i32, interest: u32, token: u64) void throws IError {
+    /*
+     * Change the interest mask of a watched descriptor.
+     */
+    public method modify(fd: i32, interest: u32, token: u64) ServerResult<void> {
       this.fill(interest, token);
       if (unsafe sys_epoll_ctl(this.fd, EPOLL_CTL_MOD, fd, this.scratch.raw_data()) < 0) {
-        throw Error(last_errno(), "epoll_ctl mod failed");
+        return ServerResult.Error(Error(last_errno(), "epoll_ctl mod failed"));
       }
+      return ServerResult.Ok;
     }
 
     /*
@@ -74,16 +81,16 @@ public module sun_serve {
      * Wait up to timeout_ms (negative waits forever) and return how many
      * events are ready. A signal interruption counts as zero events.
      */
-    public method wait(timeout_ms: i32) i64 throws IError {
+    public method wait(timeout_ms: i32) ServerResult<i64> {
       var n: i32 = unsafe sys_epoll_wait(this.fd, this.events.raw_data(), _convert<i32>(this.max_events), timeout_ms);
       if (n < 0) {
         var code: i32 = last_errno();
         if (code == EINTR) {
-          return 0;
+          return ServerResult.Ok(0);
         }
-        throw Error(code, "epoll_wait failed");
+        return ServerResult.Error(Error(code, "epoll_wait failed"));
       }
-      return _convert<i64>(n);
+      return ServerResult.Ok(_convert<i64>(n));
     }
 
     // The readiness bits of the i-th event from the last wait.

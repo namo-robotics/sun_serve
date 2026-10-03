@@ -50,22 +50,24 @@ public module sun_serve {
     }
 
     // Parse the Content-Length value from a lowercased header block.
-    function content_length_of(alloc: const ref HeapAllocator, lower: const ref String) i64 throws IError {
+    function content_length_of(alloc: const ref HeapAllocator, lower: const ref String) ServerResult<i64> {
       var name: static_ptr<u8> = "content-length:";
       var idx: i64 = match lower.find(name) {
         Option.Some(v) => v,
         Option.None => -1
       };
       if (idx < 0) {
-        return -1;
+        return ServerResult.Ok(-1);
       }
-      var rest: String = lower.substr(alloc, idx + name.length(), lower.length() - idx - name.length());
+      var rest: String = try lower.substr(alloc, idx + name.length(), lower.length() - idx - name.length());
       var value: String = rest.split(alloc, "\r\n")[0].clone(alloc);
       value.trim();
-      return match value.parse_i64() {
-        Option.Some(v) => v,
-        Option.None => -1
-      };
+      return ServerResult.Ok(
+        match value.parse_i64() {
+          Option.Some(v) => v,
+          Option.None => -1
+        }
+      );
     }
 
     // Provides the blocking socket operations used by integration tests.
@@ -75,54 +77,66 @@ public module sun_serve {
       var alloc: HeapAllocator;
 
       // Connect to loopback on port with a receive timeout.
-      init(allocator: const ref HeapAllocator, port: i32) throws IError {
+      init(allocator: const ref HeapAllocator, port: i32) ServerResult<void> {
         this.alloc = allocator.copy();
         this.pending = String(allocator, "");
-        this.stream.connect_local(port);
+        try this.stream.connect_local(port);
         set_socket_receive_timeout(this.stream.get_fd(), 10);
+        return ServerResult.Ok;
       }
 
-      // Send a literal.
-      public method send(text: static_ptr<u8>) void throws IError {
-        this.stream.send_str(text);
+      /*
+       * Send a literal.
+       */
+      public method send(text: static_ptr<u8>) ServerResult<void> {
+        try this.stream.send_str(text);
+        return ServerResult.Ok;
       }
 
-      // Send a String.
-      public method send_string(text: const ref String) void throws IError {
-        this.stream.send_string(text);
+      /*
+       * Send a String.
+       */
+      public method send_string(text: const ref String) ServerResult<void> {
+        try this.stream.send_string(text);
+        return ServerResult.Ok;
       }
 
       // Read more bytes into pending. Returns false at end of stream.
-      method fill() bool throws IError {
+      method fill() ServerResult<bool> {
         var chunk = ContiguousBuffer<u8>(this.alloc, 65536);
         var n: i64 = 0;
-        try {
-          n = this.stream.recv(chunk);
-        } catch (e: ref IError) {
-          var msg = String(this.alloc, "recv failed with errno ");
-          msg.append(e.code());
-          msg.append(" after ");
-          msg.append(this.pending.length());
-          msg.append(" bytes");
-          throw Error(e.code(), msg);
-        }
+        match this.stream.recv(chunk) {
+          SystemResult.Ok(value) => {
+            n = value;
+          },
+          (e: const ref IError) => {
+            var msg = String(this.alloc, "recv failed with errno ");
+            msg.append(e.code());
+            msg.append(" after ");
+            msg.append(this.pending.length());
+            msg.append(" bytes");
+            return ServerResult.Error(Error(e.code(), msg));
+          }
+        };
         if (n <= 0) {
-          return false;
+          return ServerResult.Ok(false);
         }
         for (var i: i64 = 0; i < n; i = i + 1) {
           this.pending.append_char(chunk[i]);
         }
-        return true;
+        return ServerResult.Ok(true);
       }
 
-      // Read until pending bytes contain a literal or the peer stops sending.
-      public method read_until(needle: static_ptr<u8>) String throws IError {
+      /*
+       * Read until pending bytes contain a literal or the peer stops sending.
+       */
+      public method read_until(needle: static_ptr<u8>) ServerResult<String> {
         while (not this.pending.contains(needle)) {
-          if (not this.fill()) {
+          if (not try this.fill()) {
             break;
           }
         }
-        return this.pending.clone(this.alloc);
+        return ServerResult.Ok(this.pending.clone(this.alloc));
       }
 
       /*
@@ -130,55 +144,58 @@ public module sun_serve {
        * nothing within the timeout counts as still open).
        */
       public method peer_closed() bool {
-        try {
-          return not this.fill();
-        } catch (e: ref IError) {
-          return false;
-        }
+        match this.fill() {
+          ServerResult.Ok(value) => {
+            return not value;
+          },
+          (e: const ref IError) => {
+            return false;
+          }
+        };
       }
 
       /*
        * Read one response, framed by Content-Length or chunked encoding.
        * Interim 1xx responses are skipped.
        */
-      public method read_response() ClientResponse throws IError {
+      public method read_response() ServerResult<ClientResponse> {
         while (true) {
-          var resp: ClientResponse = this.read_one();
+          var resp: ClientResponse = try this.read_one();
           if (resp.status >= 200) {
-            return resp;
+            return ServerResult.Ok(resp);
           }
         }
-        return ClientResponse(this.alloc);
+        return ServerResult.Ok(ClientResponse(this.alloc));
       }
 
       /*
        * Read a response to a HEAD request: head only, whatever length it
        * declares.
        */
-      public method read_head_response() ClientResponse throws IError {
+      public method read_head_response() ServerResult<ClientResponse> {
         return this.read_framed(true);
       }
 
       // Read exactly one status line, header block, and body.
-      method read_one() ClientResponse throws IError {
+      method read_one() ServerResult<ClientResponse> {
         return this.read_framed(false);
       }
 
       // Read one response; head_only skips the body a HEAD response omits.
-      method read_framed(head_only: bool) ClientResponse throws IError {
+      method read_framed(head_only: bool) ServerResult<ClientResponse> {
         var header_end: i64 = -1;
         while (true) {
           header_end = std.find_header_end(this.pending);
           if (header_end >= 0) {
             break;
           }
-          if (not this.fill()) {
-            throw Error(-1, "connection closed before response head");
+          if (not try this.fill()) {
+            return ServerResult.Error(Error(-1, "connection closed before response head"));
           }
         }
         var resp = ClientResponse(this.alloc);
         // The status line is "HTTP/1.1 <code> <reason>"; the head follows it.
-        var head: String = this.pending.substr(this.alloc, 0, header_end);
+        var head: String = try this.pending.substr(this.alloc, 0, header_end);
         var lines: Vec<String> = head.split(this.alloc, "\r\n");
         var status_line: Vec<String> = lines[0].split_whitespace(this.alloc);
         if (status_line.size() >= 2) {
@@ -196,9 +213,9 @@ public module sun_serve {
         lower.to_lower();
         var consumed: i64 = body_start;
         if (lower.contains("transfer-encoding: chunked")) {
-          consumed = this.read_chunked(body_start, resp.body);
+          consumed = try this.read_chunked(body_start, resp.body);
         } else {
-          var length: i64 = content_length_of(this.alloc, lower);
+          var length: i64 = try content_length_of(this.alloc, lower);
           if (head_only or resp.status < 200 or resp.status == 204 or resp.status == 304) {
             length = 0;
           }
@@ -206,22 +223,22 @@ public module sun_serve {
             length = 0;
           }
           while (this.pending.length() < body_start + length) {
-            if (not this.fill()) {
-              throw Error(-1, "connection closed before body ended");
+            if (not try this.fill()) {
+              return ServerResult.Error(Error(-1, "connection closed before body ended"));
             }
           }
-          resp.body = this.pending.substr(this.alloc, body_start, length);
+          resp.body = try this.pending.substr(this.alloc, body_start, length);
           consumed = body_start + length;
         }
-        this.pending = this.pending.substr(this.alloc, consumed, this.pending.length() - consumed);
-        return resp;
+        this.pending = try this.pending.substr(this.alloc, consumed, this.pending.length() - consumed);
+        return ServerResult.Ok(resp);
       }
 
       /*
        * Decode a chunked body starting at from, filling more as needed.
        * Returns the index just past the terminating chunk.
        */
-      method read_chunked(from: i64, out: ref String) i64 throws IError {
+      method read_chunked(from: i64, out: ref String) ServerResult<i64> {
         var i: i64 = from;
         while (true) {
           // Need a full size line.
@@ -229,7 +246,7 @@ public module sun_serve {
           while (true) {
             var k: i64 = i;
             while (k + 1 < this.pending.length()) {
-              if (this.pending.at(k) == b'\r' and this.pending.at(k + 1) == b'\n') {
+              if (try this.pending.at(k) == b'\r' and try this.pending.at(k + 1) == b'\n') {
                 eol = k;
                 break;
               }
@@ -238,13 +255,13 @@ public module sun_serve {
             if (eol >= 0) {
               break;
             }
-            if (not this.fill()) {
-              throw Error(-1, "connection closed inside chunked body");
+            if (not try this.fill()) {
+              return ServerResult.Error(Error(-1, "connection closed inside chunked body"));
             }
           }
           var size: i64 = 0;
           for (var k: i64 = i; k < eol; k = k + 1) {
-            var d: i32 = hex_value(this.pending.at(k));
+            var d: i32 = hex_value(try this.pending.at(k));
             if (d < 0) {
               break;
             }
@@ -253,21 +270,21 @@ public module sun_serve {
           i = eol + 2;
           if (size == 0) {
             while (this.pending.length() < i + 2) {
-              if (not this.fill()) {
-                throw Error(-1, "connection closed before chunk terminator");
+              if (not try this.fill()) {
+                return ServerResult.Error(Error(-1, "connection closed before chunk terminator"));
               }
             }
-            return i + 2;
+            return ServerResult.Ok(i + 2);
           }
           while (this.pending.length() < i + size + 2) {
-            if (not this.fill()) {
-              throw Error(-1, "connection closed inside chunk");
+            if (not try this.fill()) {
+              return ServerResult.Error(Error(-1, "connection closed inside chunk"));
             }
           }
-          out.append(this.pending.substr(this.alloc, i, size));
+          out.append(try this.pending.substr(this.alloc, i, size));
           i = i + size + 2;
         }
-        return i;
+        return ServerResult.Ok(i);
       }
 
       // Close the socket.

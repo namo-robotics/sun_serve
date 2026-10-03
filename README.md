@@ -76,8 +76,8 @@ handler the binary uses. [Using the library](#using-the-library) shows the code.
 ## Build and run
 
 Requires the rolling `sun` development toolchain (see `Dockerfile`). Tested
-with `sun 0.dev (a69c9fb35814)`; this build includes the compiler fixes used
-by the HTTP/2 frame loop and constant expressions.
+with `sun 0.dev (fe773e38a88b)`. This version uses returned result enums
+and prefix `try` for error propagation.
 
 ```bash
 scripts/build.sh          # checks + incremental sun -c sun-config.json -> build/
@@ -113,13 +113,23 @@ function hello(req: const ref Request, resp: ref Response) void {
   resp.set_body("hello\n");
 }
 
-function main() i32 throws IError {
+function serve() ServerResult<i32> {
   var alloc = make_heap_allocator();
   var cfg = Config(alloc);
   cfg.add_listen(ipv4_any(), 8080);
-  install_signal_handlers();
-  var server = Server<FnHandler>(alloc, cfg, fn_handlers(alloc, hello, online_cpus()));
+  try install_signal_handlers();
+  var server = try Server<FnHandler>(alloc, cfg, fn_handlers(alloc, hello, online_cpus()));
   return server.run();
+}
+
+function main() i32 {
+  return match serve() {
+    ServerResult.Ok(status) => status,
+    (error: const ref IError) => {
+      eprintln(error.message());
+      return 1;
+    }
+  };
 }
 ```
 
@@ -129,7 +139,9 @@ is what [`StaticFiles`](src/static_files.sun) does; a handler can also hold a
 Construct `Server<MyHandler>` with a `Vec<MyHandler>`, one concrete handler
 per worker. The server owns these handlers; callbacks borrow them through
 `ref IHandler`. `fn_handlers` returns `Vec<FnHandler>` and `static_handlers`
-returns `Vec<StaticFiles>`.
+returns `ServerResult<Vec<StaticFiles>>`. Fallible server operations return
+`ServerResult<T>`; use prefix `try` to propagate failures or `match` to handle
+the owned `Error`, `IndexOutOfBoundsError`, and `TlsError` payloads.
 [examples/hello_handler](examples/hello_handler) is a complete program built
 this way: a handler class with per-worker state, query parameters, request
 bodies, and end-to-end tests that CI runs. The devcontainer uses host

@@ -68,20 +68,21 @@ public module sun_serve {
     var accept_paused_until: i64 = 0;
 
     // Set up the loop's resources. Listeners are registered in run().
-    init(args: WorkerArgs<H>) throws IError {
+    init(args: WorkerArgs<H>) ServerResult<void> {
       var alloc = make_heap_allocator();
       this.alloc = alloc.copy();
       this.log = Logger(alloc, args.config.log_level, args.id, args.config.access_log);
       this.date = DateCache(alloc);
-      var layout: EpollLayout = probe_epoll_layout(alloc);
-      this.epoll = Epoll(alloc, layout, 256);
+      var layout: EpollLayout = try probe_epoll_layout(alloc);
+      this.epoll = try Epoll(alloc, layout, 256);
       this.wake_fd = create_event_counter();
       if (this.wake_fd < 0) {
-        throw Error(last_errno(), "eventfd failed");
+        return ServerResult.Error(Error(last_errno(), "eventfd failed"));
       }
       this.conns = Vec<Connection>(alloc, 64);
       this.free = Vec<i64>(alloc, 64);
       this.args = args;
+      return ServerResult.Ok;
     }
 
     // Close the worker wake descriptor.
@@ -100,29 +101,34 @@ public module sun_serve {
      * Returns the process exit status the worker would like.
      */
     public method run() i32 {
-      try {
-        this.epoll.add(this.wake_fd, EPOLLIN, WORKER_WAKE_TOKEN);
-      } catch (e: ref IError) {
-        this.log.error_caught("failed to watch worker wake descriptor", e);
-        return 1;
-      }
-      for (var i: i64 = 0; i < this.args.listeners.size(); i = i + 1) {
-        try {
-          this.epoll.add(this.args.listeners[i].get_fd(), EPOLLIN, LISTENER_TOKEN_BASE + _convert<u64>(i));
-        } catch (e: ref IError) {
-          this.log.error_caught("failed to watch listener", e);
+      match this.epoll.add(this.wake_fd, EPOLLIN, WORKER_WAKE_TOKEN) {
+        ServerResult.Ok => {},
+        (e: const ref IError) => {
+          this.log.error_caught("failed to watch worker wake descriptor", e);
           return 1;
         }
+      };
+      for (var i: i64 = 0; i < this.args.listeners.size(); i = i + 1) {
+        match this.epoll.add(this.args.listeners[i].get_fd(), EPOLLIN, LISTENER_TOKEN_BASE + _convert<u64>(i)) {
+          ServerResult.Ok => {},
+          (e: const ref IError) => {
+            this.log.error_caught("failed to watch listener", e);
+            return 1;
+          }
+        };
       }
       var tick: i32 = _convert<i32>(this.args.config.timeouts.tick_ms);
       while (true) {
         var n: i64 = 0;
-        try {
-          n = this.epoll.wait(tick);
-        } catch (e: ref IError) {
-          this.log.error_caught("epoll_wait failed", e);
-          return 1;
-        }
+        match this.epoll.wait(tick) {
+          ServerResult.Ok(value) => {
+            n = value;
+          },
+          (e: const ref IError) => {
+            this.log.error_caught("epoll_wait failed", e);
+            return 1;
+          }
+        };
         this.date.refresh();
         var now_ms: i64 = this.now_ms();
         for (var i: i64 = 0; i < n; i = i + 1) {
@@ -215,13 +221,14 @@ public module sun_serve {
         close_fd(fd);
         return false;
       }
-      try {
-        this.epoll.add(fd, conn.want(), _convert<u64>(slot));
-      } catch (e: ref IError) {
-        this.log.error_caught("failed to watch connection", e);
-        conn.close();
-        return false;
-      }
+      match this.epoll.add(fd, conn.want(), _convert<u64>(slot)) {
+        ServerResult.Ok => {},
+        (e: const ref IError) => {
+          this.log.error_caught("failed to watch connection", e);
+          conn.close();
+          return false;
+        }
+      };
       conn.set_registered(conn.want());
       return true;
     }
@@ -253,15 +260,17 @@ public module sun_serve {
         return;
       }
       if (conn.want() != conn.registered()) {
-        try {
-          this.epoll.modify(conn.get_fd(), conn.want(), _convert<u64>(slot));
-          conn.set_registered(conn.want());
-        } catch (e: ref IError) {
-          this.log.error_caught("failed to update connection interest", e);
-          conn.close();
-          this.free.push(slot);
-          this.live = this.live - 1;
-        }
+        match this.epoll.modify(conn.get_fd(), conn.want(), _convert<u64>(slot)) {
+          ServerResult.Ok => {
+            conn.set_registered(conn.want());
+          },
+          (e: const ref IError) => {
+            this.log.error_caught("failed to update connection interest", e);
+            conn.close();
+            this.free.push(slot);
+            this.live = this.live - 1;
+          }
+        };
       }
     }
 
@@ -337,15 +346,18 @@ public module sun_serve {
 
   /*
    * The thread entry point: build a worker and run it, reporting any failure
-   * on stderr instead of throwing across the thread boundary.
+   * on stderr before returning an exit status.
    */
   public function run_worker<H>(args: WorkerArgs<H>) i32 {
-    try {
-      var w = Worker<H>(args);
-      return w.run();
-    } catch (e: ref IError) {
-      eprintln(`error: worker failed to start: ${e.message()}`);
-      return 1;
-    }
+    match Worker<H>(args) {
+      ServerResult.Ok(value) => {
+        var w = value;
+        return w.run();
+      },
+      (e: const ref IError) => {
+        eprintln(`error: worker failed to start: ${e.message()}`);
+        return 1;
+      }
+    };
   }
 }

@@ -167,15 +167,16 @@ public module sun_serve {
   }
 
   // Switch a descriptor to nonblocking mode, keeping its other flags.
-  function set_nonblocking(fd: i32) void throws IError {
+  function set_nonblocking(fd: i32) ServerResult<void> {
     var flags: i32 = unsafe sys_fcntl(fd, F_GETFL);
     if (flags < 0) {
-      throw Error(last_errno(), "failed to read descriptor flags");
+      return ServerResult.Error(Error(last_errno(), "failed to read descriptor flags"));
     }
     var result: i32 = unsafe sys_fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     if (result < 0) {
-      throw Error(last_errno(), "failed to set descriptor flags");
+      return ServerResult.Error(Error(last_errno(), "failed to set descriptor flags"));
     }
+    return ServerResult.Ok;
   }
 
   /*

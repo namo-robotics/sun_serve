@@ -24,7 +24,7 @@ public module sun_serve {
     test_function websocket_cross_thread_wake_stale_and_overflow() {
       var alloc = make_heap_allocator();
       var wake_fd: i32 = create_event_counter();
-      std.test.assert(wake_fd > 0, "eventfd created");
+      try std.test.assert(wake_fd > 0, "eventfd created");
       var mailbox = Shared<WebSocketMailbox>(alloc, WebSocketMailbox(alloc));
       var generation: i64 = 0;
       if (true) {
@@ -33,26 +33,26 @@ public module sun_serve {
       }
       var handle = WebSocketHandle(mailbox.clone(), generation);
       var sender = spawn(send_from_thread, handle.clone());
-      std.test.assert(sender.join(), "cross-thread send queued");
+      try std.test.assert(sender.join(), "cross-thread send queued");
       var wake_count: u64 = 0;
-      std.test.assert_eq(read_event_counter(wake_fd, wake_count), 8);
-      std.test.assert(wake_count >= 1, "worker notified");
+      try std.test.assert_eq(read_event_counter(wake_fd, wake_count), 8);
+      try std.test.assert(wake_count >= 1, "worker notified");
       var frames = ByteBuffer(alloc, 32);
       if (true) {
         var guard = mailbox.lock();
         guard.get().drain(generation, frames);
       }
-      std.test.assert(frames.to_string(alloc).contains("thread"), "queued frame retained");
+      try std.test.assert(frames.to_string(alloc).contains("thread"), "queued frame retained");
       if (true) {
         var guard = mailbox.lock();
         guard.get().activate(4, false, wake_fd);
       }
       var stale = String(alloc, "x");
-      std.test.assert(handle.send_text(stale) == WebSocketSendResult.Invalid, "stale handle rejected");
+      try std.test.assert(handle.send_text(stale) == WebSocketSendResult.Invalid, "stale handle rejected");
       var current_generation: i64 = generation + 1;
       var current = WebSocketHandle(mailbox.clone(), current_generation);
       var too_large = String(alloc, "overflow");
-      std.test.assert(current.send_text(too_large) == WebSocketSendResult.Overloaded, "overflow reported");
+      try std.test.assert(current.send_text(too_large) == WebSocketSendResult.Overloaded, "overflow reported");
       close_fd(wake_fd);
     }
 
@@ -60,8 +60,8 @@ public module sun_serve {
       var alloc = make_heap_allocator();
       var key = String(alloc, "dGhlIHNhbXBsZSBub25jZQ==");
       var accept = websocket_accept(alloc, key);
-      std.test.assert(accept.equals_literal("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "RFC accept value");
-      std.test.assert(websocket_valid_key(key), "valid client nonce");
+      try std.test.assert(accept.equals_literal("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "RFC accept value");
+      try std.test.assert(websocket_valid_key(key), "valid client nonce");
     }
 
     test_function websocket_frames_and_utf8() {
@@ -70,23 +70,23 @@ public module sun_serve {
       var hello = ByteBuffer(alloc, 5);
       hello.append_literal("hello");
       websocket_append_frame(out, WebSocketOpcode.Text, hello, 0, 5);
-      std.test.assert_eq(out.readable_len(), 7);
-      std.test.assert_eq(out.byte_at(0), 0x81);
-      std.test.assert_eq(out.byte_at(1), 5);
-      std.test.assert(websocket_valid_utf8(hello, 0, 5), "ASCII is UTF-8");
+      try std.test.assert_eq(out.readable_len(), 7);
+      try std.test.assert_eq(out.byte_at(0), 0x81);
+      try std.test.assert_eq(out.byte_at(1), 5);
+      try std.test.assert(websocket_valid_utf8(hello, 0, 5), "ASCII is UTF-8");
       var bad = ByteBuffer(alloc, 2);
       bad.append_byte(192);
       bad.append_byte(128);
-      std.test.assert(not websocket_valid_utf8(bad, 0, 2), "overlong UTF-8 rejected");
+      try std.test.assert(not websocket_valid_utf8(bad, 0, 2), "overlong UTF-8 rejected");
       var offers = String(alloc, "other; value=1, permessage-deflate; client_max_window_bits");
-      std.test.assert(websocket_offers_deflate(alloc, offers), "compression offer found");
+      try std.test.assert(websocket_offers_deflate(alloc, offers), "compression offer found");
       var prefix = String(alloc, "not-permessage-deflate");
-      std.test.assert(not websocket_offers_deflate(alloc, prefix), "extension token is exact");
-      std.test.assert_eq(websocket_close_payload_status(bad, 1), 1002);
+      try std.test.assert(not websocket_offers_deflate(alloc, prefix), "extension token is exact");
+      try std.test.assert_eq(websocket_close_payload_status(bad, 1), 1002);
       var invalid_code = ByteBuffer(alloc, 2);
       invalid_code.append_byte(3);
       invalid_code.append_byte(237);
-      std.test.assert_eq(websocket_close_payload_status(invalid_code, 2), 1002);
+      try std.test.assert_eq(websocket_close_payload_status(invalid_code, 2), 1002);
     }
 
     test_function websocket_permessage_deflate_round_trip() {
@@ -95,27 +95,27 @@ public module sun_serve {
       var source_bytes = ByteBuffer(alloc, source.length());
       source_bytes.append_string(source);
       var compressed = ByteBuffer(alloc, 64);
-      std.test.assert(websocket_deflate(source_bytes, 0, source_bytes.readable_len(), compressed), "message compressed");
-      std.test.assert(compressed.readable_len() < source.length(), "repetition compressed");
+      try std.test.assert(websocket_deflate(source_bytes, 0, source_bytes.readable_len(), compressed), "message compressed");
+      try std.test.assert(compressed.readable_len() < source.length(), "repetition compressed");
       var inflated = ByteBuffer(alloc, 64);
-      std.test.assert_eq(websocket_inflate(alloc, compressed, 0, compressed.readable_len(), 1024, inflated), 0);
+      try std.test.assert_eq(websocket_inflate(alloc, compressed, 0, compressed.readable_len(), 1024, inflated), 0);
       var restored = inflated.to_string(alloc);
-      std.test.assert(restored.equals_literal("hello hello hello hello hello"), "message restored");
+      try std.test.assert(restored.equals_literal("hello hello hello hello hello"), "message restored");
       var limited = ByteBuffer(alloc, 8);
-      std.test.assert_eq(websocket_inflate(alloc, compressed, 0, compressed.readable_len(), 8, limited), 2);
+      try std.test.assert_eq(websocket_inflate(alloc, compressed, 0, compressed.readable_len(), 8, limited), 2);
     }
 
     test_function h2c_settings_use_unpadded_base64url() {
       var alloc = make_heap_allocator();
       var encoded = String(alloc, "AAMAAABkAAQAAP__");
       var decoded = ByteBuffer(alloc, 16);
-      std.test.assert(h2_decode_settings_header(encoded, decoded), "settings decoded");
-      std.test.assert_eq(decoded.readable_len(), 12);
-      std.test.assert_eq(h2_u32(decoded, 2), 100);
-      std.test.assert_eq(h2_u32(decoded, 8), 65535);
+      try std.test.assert(h2_decode_settings_header(encoded, decoded), "settings decoded");
+      try std.test.assert_eq(decoded.readable_len(), 12);
+      try std.test.assert_eq(h2_u32(decoded, 2), 100);
+      try std.test.assert_eq(h2_u32(decoded, 8), 65535);
       var invalid = String(alloc, "A===");
       var discarded = ByteBuffer(alloc, 4);
-      std.test.assert(not h2_decode_settings_header(invalid, discarded), "padding rejected");
+      try std.test.assert(not h2_decode_settings_header(invalid, discarded), "padding rejected");
     }
 
     test_function http2_large_response_headers_use_continuation() {
@@ -129,11 +129,11 @@ public module sun_serve {
       var date = DateCache(alloc);
       date.refresh();
       conn.queue_h2_response(date, 1, false, false);
-      std.test.assert_eq(conn.wbuf.byte_at(3), _convert<u8>(H2FrameKind.Headers));
-      std.test.assert_eq(conn.wbuf.byte_at(4) & H2_END_HEADERS, 0);
+      try std.test.assert_eq(conn.wbuf.byte_at(3), _convert<u8>(H2FrameKind.Headers));
+      try std.test.assert_eq(conn.wbuf.byte_at(4) & H2_END_HEADERS, 0);
       var continuation: i64 = H2_FRAME_HEADER_LEN + h2_frame_len(conn.wbuf, 0);
-      std.test.assert_eq(conn.wbuf.byte_at(continuation + 3), _convert<u8>(H2FrameKind.Continuation));
-      std.test.assert((conn.wbuf.byte_at(continuation + 4) & H2_END_HEADERS) != 0, "continuation ends block");
+      try std.test.assert_eq(conn.wbuf.byte_at(continuation + 3), _convert<u8>(H2FrameKind.Continuation));
+      try std.test.assert((conn.wbuf.byte_at(continuation + 4) & H2_END_HEADERS) != 0, "continuation ends block");
     }
 
     test_function http2_chunks_are_unframed_data() {
@@ -146,8 +146,8 @@ public module sun_serve {
       var encoded = ByteBuffer(alloc, 128);
       response.serialize_h2(encoded, date, 1, false, true);
       var wire = encoded.to_string(alloc);
-      std.test.assert(wire.contains("firstsecond"), "chunk payload is contiguous");
-      std.test.assert(not wire.contains("5\r\nfirst"), "HTTP/1.1 chunk framing omitted");
+      try std.test.assert(wire.contains("firstsecond"), "chunk payload is contiguous");
+      try std.test.assert(not wire.contains("5\r\nfirst"), "HTTP/1.1 chunk framing omitted");
     }
 
     test_function http2_response_waits_for_window_update() {
@@ -160,14 +160,14 @@ public module sun_serve {
       date.refresh();
       conn.queue_h2_response(date, 1, false, true);
       conn.flush_h2_response_data();
-      std.test.assert_eq(conn.h2.send_window, 0);
+      try std.test.assert_eq(conn.h2.send_window, 0);
       var response_index: i64 = conn.find_h2_response_stream(1);
-      std.test.assert(response_index >= 0, "response remains queued");
-      std.test.assert_eq(conn.h2.responses[response_index].data.readable_len(), 4465);
+      try std.test.assert(response_index >= 0, "response remains queued");
+      try std.test.assert_eq(conn.h2.responses[response_index].data.readable_len(), 4465);
       conn.h2.send_window = 4465;
       conn.h2.responses[response_index].window = 4465;
       conn.flush_h2_response_data();
-      std.test.assert(conn.find_h2_response_stream(1) < 0, "response completed after update");
+      try std.test.assert(conn.find_h2_response_stream(1) < 0, "response completed after update");
     }
 
     test_function hpack_huffman_and_dynamic_table() {
@@ -178,7 +178,7 @@ public module sun_serve {
         Option.Some(v) => v,
         Option.None => String(alloc, "")
       };
-      std.test.assert(text.equals_literal("www.example.com"), "RFC Huffman example");
+      try std.test.assert(text.equals_literal("www.example.com"), "RFC Huffman example");
 
       var decoder = HpackDecoder(alloc);
       var first = ByteBuffer(alloc, 11);
@@ -186,12 +186,12 @@ public module sun_serve {
       first.append_byte(9);
       first.append_literal("localhost");
       var headers = Vec<H2Header>(alloc, 4);
-      std.test.assert(hpack_decode(alloc, first, 11, decoder, headers), "literal decoded");
+      try std.test.assert(hpack_decode(alloc, first, 11, decoder, headers), "literal decoded");
       headers.clear();
       var indexed = ByteBuffer(alloc, 1);
       indexed.append_byte(190);
-      std.test.assert(hpack_decode(alloc, indexed, 1, decoder, headers), "dynamic index decoded");
-      std.test.assert(headers[0].value.equals_literal("localhost"), "dynamic value");
+      try std.test.assert(hpack_decode(alloc, indexed, 1, decoder, headers), "dynamic index decoded");
+      try std.test.assert(headers[0].value.equals_literal("localhost"), "dynamic value");
 
       var first_name = String(alloc, "x");
       var first_value = String(alloc, "old");
@@ -200,11 +200,11 @@ public module sun_serve {
       var eviction = HpackDecoder(alloc);
       eviction.add(first_name, first_value);
       eviction.add(second_name, second_value);
-      std.test.assert(eviction.resize(36), "table resized");
+      try std.test.assert(eviction.resize(36), "table resized");
       var kept_name = String(alloc, "");
       var kept_value = String(alloc, "");
-      std.test.assert(eviction.lookup(62, kept_name, kept_value), "newest entry retained");
-      std.test.assert(kept_value.equals_literal("new"), "oldest entry evicted first");
+      try std.test.assert(eviction.lookup(62, kept_name, kept_value), "newest entry retained");
+      try std.test.assert(kept_value.equals_literal("new"), "oldest entry evicted first");
     }
   }
 }

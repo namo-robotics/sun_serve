@@ -3,5 +3,8 @@
         {
             "file": "AGENTS.md"
         }
+    ],
+    "sun.sun_configs": [
+        "sun-config.json"
     ]
 }

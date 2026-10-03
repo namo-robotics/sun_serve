@@ -20,7 +20,7 @@ public module sun_serve {
   }
 
   /*
-   * Read one byte of a String without throwing: indexes outside the string
+   * Read one byte of a String without returning an error: indexes outside the string
    * read as zero, the same convention as ByteBuffer.byte_at().
    */
   function string_byte(text: const ref String, index: i64) u8 {

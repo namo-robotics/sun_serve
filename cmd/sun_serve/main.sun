@@ -111,11 +111,15 @@ module sun_serve_cli {
       addr = ipv4_loopback();
       return true;
     }
-    try {
-      addr = parse_ipv4(host);
-    } catch (e: ref IError) {
-      return false;
-    }
+    match parse_ipv4(host) {
+      SystemResult.Ok(value) => {
+        addr = value;
+        return true;
+      },
+      (e: const ref IError) => {
+        return false;
+      }
+    };
     return true;
   }
 
@@ -321,26 +325,32 @@ module sun_serve_cli {
       eprint(usage());
       return 2;
     }
-    try {
-      install_signal_handlers();
-      var handlers: Vec<StaticFiles> = static_handlers(alloc, cli.root, cli.static_opts, cli.workers);
-      var server = Server<StaticFiles>(alloc, cli.config.clone(), handlers);
-      server.start();
-      announce(alloc, server, cli.config, cli.workers);
-      var tick = std.time.create_duration_millis(cli.config.timeouts.tick_ms);
-      while (not shutdown_requested()) {
-        std.time.sleep(tick);
+    return match serve(alloc, cli) {
+      ServerResult.Ok(status) => status,
+      (e: const ref IError) => {
+        eprintln(`sun_serve: ${e.message()}`);
+        return 3;
       }
-      eprintln("shutting down");
-      server.stop();
-      if (server.join() != 0) {
-        return 1;
-      }
-      return 0;
-    } catch (e: ref IError) {
-      eprintln(`sun_serve: ${e.message()}`);
-      return 3;
+    };
+  }
+
+  /* Start the configured server and wait for shutdown. */
+  function serve(alloc: const ref HeapAllocator, cli: ref Cli) ServerResult<i32> {
+    try install_signal_handlers();
+    var handlers: Vec<StaticFiles> = try static_handlers(alloc, cli.root, cli.static_opts, cli.workers);
+    var server = try Server<StaticFiles>(alloc, cli.config.clone(), handlers);
+    try server.start();
+    announce(alloc, server, cli.config, cli.workers);
+    var tick = std.time.create_duration_millis(cli.config.timeouts.tick_ms);
+    while (not shutdown_requested()) {
+      std.time.sleep(tick);
     }
+    eprintln("shutting down");
+    server.stop();
+    if (server.join() != 0) {
+      return ServerResult.Ok(1);
+    }
+    return ServerResult.Ok(0);
   }
 }
 

@@ -33,25 +33,26 @@ public module sun_serve {
      * the config, and the certificate is loaded here so problems surface
      * before any socket is bound.
      */
-    init(allocator: const ref HeapAllocator, config: Config, handlers: Vec<H>) throws IError {
+    init(allocator: const ref HeapAllocator, config: Config, handlers: Vec<H>) ServerResult<void> {
       this.alloc = allocator.copy();
       this.handlers = handlers;
       this.threads = Vec<Thread<i32>>(allocator, 8);
       this.stop_cell = this.alloc.create_unique<i32>(0);
       this.ports = Vec<i32>(allocator, 4);
       if (this.handlers.size() == 0) {
-        throw Error(-1, "a server needs at least one handler");
+        return ServerResult.Error(Error(-1, "a server needs at least one handler"));
       }
       if (config.listen.size() == 0) {
-        throw Error(-1, "a server needs at least one listen address");
+        return ServerResult.Error(Error(-1, "a server needs at least one listen address"));
       }
       if (config.has_tls_listener()) {
         if (not config.has_tls) {
-          throw Error(-1, "TLS listeners need a certificate and key");
+          return ServerResult.Error(Error(-1, "TLS listeners need a certificate and key"));
         }
-        this.tls = TlsServerContext(allocator, config.tls, config.http2);
+        this.tls = try TlsServerContext(allocator, config.tls, config.http2);
       }
       this.config = config;
+      return ServerResult.Ok;
     }
 
     // Stop and join on drop.
@@ -62,11 +63,11 @@ public module sun_serve {
 
     /*
      * Bind every listener and start the worker threads. Returns once the
-     * workers are running; bind failures throw before any thread starts.
+     * workers are running; bind failures return before any thread starts.
      */
-    public method start() void throws IError {
+    public method start() ServerResult<void> {
       if (this.started) {
-        throw Error(-1, "server already started");
+        return ServerResult.Error(Error(-1, "server already started"));
       }
       var workers: i64 = this.handlers.size();
       var specs: i64 = this.config.listen.size();
@@ -80,9 +81,9 @@ public module sun_serve {
         for (var s: i64 = 0; s < specs; s = s + 1) {
           var spec: ref ListenSpec = this.config.listen[s];
           var l = ListenerSocket(spec.tls, s);
-          l.bind(spec.addr, this.ports[s], this.config.backlog);
+          try l.bind(spec.addr, this.ports[s], this.config.backlog);
           if (this.ports[s] == 0) {
-            this.ports.set(s, l.local_port());
+            try this.ports.set(s, try l.local_port());
           }
           all.push(l);
         }
@@ -90,15 +91,16 @@ public module sun_serve {
       this.started = true;
       // Hand out the handlers and listeners in order, first worker first.
       for (var id: i32 = 0; id < _convert<i32>(workers); id = id + 1) {
-        var handler: H = this.handlers.remove(0);
+        var handler: H = try this.handlers.remove(0);
         var mine = Vec<ListenerSocket>(this.alloc, specs);
         for (var s: i64 = 0; s < specs; s = s + 1) {
-          mine.push(all.remove(0));
+          mine.push(try all.remove(0));
         }
         var acceptor: TlsAcceptor = this.tls.acceptor();
         var args = WorkerArgs<H>(id, this.config.clone(), handler, mine, StopToken(this.stop_cell), acceptor);
         this.threads.push(spawn((args: WorkerArgs<H>) => i32 { return run_worker<H>(args); }, args));
       }
+      return ServerResult.Ok;
     }
 
     /*
@@ -145,17 +147,17 @@ public module sun_serve {
      * Start, then block until stop() is called or a shutdown signal arrives,
      * then join. Returns zero on a clean shutdown.
      */
-    public method run() i32 throws IError {
-      this.start();
+    public method run() ServerResult<i32> {
+      try this.start();
       var tick: Duration = create_duration_millis(this.config.timeouts.tick_ms);
       while (not shutdown_requested() and StopToken(this.stop_cell).load() == 0) {
         sleep(tick);
       }
       this.stop();
       if (this.join() != 0) {
-        return 1;
+        return ServerResult.Ok(1);
       }
-      return 0;
+      return ServerResult.Ok(0);
     }
   }
 }

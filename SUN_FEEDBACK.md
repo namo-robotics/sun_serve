@@ -3,19 +3,9 @@
 Each item links to its issue on `namo-robotics/sun`.
 Repro snippets are complete programs unless noted. Open issues and remaining
 limitations were checked with `sun 0.dev (a69c9fb35814)`
-(2026-09-25). Only unresolved feedback is listed below.
-
----
-
-## Feature: `throws` on interface methods
-
-Filed as [namo-robotics/sun#220](https://github.com/namo-robotics/sun/issues/220).
-
-**Labels:** enhancement, semantic-analysis
-
-`interface I { method f() void throws IError; }` is a parse error
-(`Expected '{' or ';' after method signature in interface`), so an
-interface cannot describe a fallible operation.
+(2026-09-25). The result-enum migration was verified with `fe773e38a88b`; the earlier
+request for fallible interface methods is superseded by returned results.
+The remaining items below retain their earlier verification date.
 
 ---
 
@@ -41,9 +31,9 @@ Filed as [namo-robotics/sun#224](https://github.com/namo-robotics/sun/issues/224
 private to `module std`. A server module has to redeclare `fcntl`, `close`,
 `__errno_location` itself just to distinguish EAGAIN from a real error.
 Suggested: make `errno()` and `set_fd_nonblocking(fd, enabled)` public, or
-add a non-throwing readiness API to `TcpStream`/`TcpListener` (e.g.
+add a readiness API to `TcpStream`/`TcpListener` (e.g.
 `try_recv`/`try_accept` returning a count or a would-block/closed status)
-instead of throwing on EAGAIN.
+instead of returning an error on EAGAIN.
 
 ---
 

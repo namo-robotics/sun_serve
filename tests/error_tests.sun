@@ -1,0 +1,88 @@
+/*
+ * Defines test outcomes and checks returned errors from server setup.
+ */
+public module sun_serve {
+  /*
+   * Reports assertion failures and errors from test fixtures.
+   */
+  public enum ServerTestResult {
+    Ok,
+    Assertion(std.test.AssertionError),
+    Error(std.Error),
+    OutOfBounds(std.IndexOutOfBoundsError),
+    Tls(TlsError)
+  }
+
+  /*
+   * Exercises failures that callers can handle without starting workers.
+   */
+  module error_tests {
+    using std;
+
+    /* Answer requests for the server startup tests. */
+    function handle(req: const ref Request, resp: ref Response) void {
+      resp.set_body("ok");
+    }
+
+    test_function missing_handlers_returns_error() sun_serve.ServerTestResult {
+      var alloc = make_heap_allocator();
+      var cfg = Config(alloc);
+      cfg.add_listen(ipv4_loopback(), 0);
+      var message = match Server<FnHandler>(alloc, cfg, fn_handlers(alloc, handle, 0)) {
+        ServerResult.Error(error) => error.message(),
+        _ => String(alloc, "unexpected result")
+      };
+      try std.test.assert(message.equals_literal("a server needs at least one handler"));
+    }
+
+    test_function invalid_document_root_returns_error() sun_serve.ServerTestResult {
+      var alloc = make_heap_allocator();
+      var root = String(alloc, "/dev/null");
+      var message = match static_handlers(alloc, root, StaticOptions(alloc), 1) {
+        ServerResult.Error(error) => error.message(),
+        _ => String(alloc, "unexpected result")
+      };
+      try std.test.assert(message.equals_literal("not a directory: /dev/null"));
+    }
+
+    test_function invalid_certificate_preserves_tls_error() sun_serve.ServerTestResult {
+      var alloc = make_heap_allocator();
+      var cfg = Config(alloc);
+      cfg.add_tls_listen(ipv4_loopback(), 0);
+      var path = String(alloc, "/dev/null");
+      cfg.set_tls(path, path);
+      var message = match Server<FnHandler>(alloc, cfg, fn_handlers(alloc, handle, 1)) {
+        ServerResult.Tls(error) => error.message(),
+        _ => String(alloc, "unexpected result")
+      };
+      try std.test.assert(message.contains("failed to load certificate chain"));
+    }
+
+    test_function repeated_start_returns_error_and_still_joins() sun_serve.ServerTestResult {
+      var alloc = make_heap_allocator();
+      var cfg = Config(alloc);
+      cfg.add_listen(ipv4_loopback(), 0);
+      cfg.timeouts.tick_ms = 10;
+      cfg.access_log = false;
+      var server = try Server<FnHandler>(alloc, cfg, fn_handlers(alloc, handle, 1));
+      try server.start();
+      var message = match server.start() {
+        ServerResult.Error(error) => error.message(),
+        _ => String(alloc, "unexpected result")
+      };
+      try std.test.assert(message.equals_literal("server already started"));
+      server.stop();
+      try std.test.assert_eq(server.join(), 0);
+    }
+
+    test_function invalid_epoll_descriptor_returns_system_error() sun_serve.ServerTestResult {
+      var alloc = make_heap_allocator();
+      var epoll = try Epoll(alloc, try probe_epoll_layout(alloc), 1);
+      var failed = match epoll.add(-1, EPOLLIN, 0) {
+        ServerResult.Error(error) => error.code() != 0,
+        _ => false
+      };
+      try std.test.assert(failed);
+    }
+  }
+}

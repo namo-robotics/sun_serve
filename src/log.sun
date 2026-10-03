@@ -125,8 +125,10 @@ public module sun_serve {
       this.emit(level, message, String(""));
     }
 
-    // Log the message text of a caught error.
-    public method error_caught(message: static_ptr<u8>, e: ref IError) void {
+    /*
+     * Log the message text of a caught error.
+     */
+    public method error_caught(message: static_ptr<u8>, e: const ref IError) void {
       this.error(message, e.message());
     }
 
