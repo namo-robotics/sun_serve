@@ -25,7 +25,9 @@ jobs:
           cache-to: type=gha,mode=max
       - name: Format check, build, and test
         run: |
-          docker run --rm -v "$PWD:/workspace" -w /workspace sun_serve-ci \
+          # Match the checkout owner so the container can write build outputs.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/workspace" -w /workspace sun_serve-ci \
             bash -c "scripts/build.sh && scripts/test.sh"
 
   release-dev:
@@ -57,7 +59,9 @@ jobs:
 
       - name: Build and test sun_serve
         run: |
-          docker run --rm -v "$PWD:/workspace" -w /workspace sun_serve-release \
+          # Match the checkout owner so the container can write build outputs.
+          docker run --rm --user "$(id -u):$(id -g)" \
+            -v "$PWD:/workspace" -w /workspace sun_serve-release \
             bash -c "scripts/build.sh && scripts/test.sh && sun --version > build/SUN_VERSION"
 
       # The binary ships in a tarball; the library ships as a bare moon named
