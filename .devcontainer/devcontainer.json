@@ -8,7 +8,6 @@
 	// Bind mounts fail if the host source path is missing, so create the
 	// optional ones on the host before the container starts.
 	"initializeCommand": "mkdir -p \"${localEnv:HOME}${localEnv:USERPROFILE}/.codex\"",
-	"remoteUser": "ubuntu",
 	"updateRemoteUserUID": true,
 	"workspaceFolder": "/workspace",
 	"workspaceMount": "source=${localWorkspaceFolder},target=/workspace,type=bind,consistency=cached",
@@ -27,6 +26,11 @@
 		"--cap-drop=ALL",
 		"--security-opt=no-new-privileges"
 	],
+	"containerEnv": {
+		"CCACHE_DIR": "/workspace/tmp/ccache",
+		"CCACHE_MAXSIZE": "10G"
+	},
+	"postCreateCommand": "bash .devcontainer/post-create.sh",
 	"customizations": {
 		"vscode": {
 			"extensions": [
@@ -37,6 +41,11 @@
 				"openai.chatgpt"
 			],
 			"settings": {
+				"cmake.configureOnOpen": false,
+				"[sun]": {
+					"editor.defaultFormatter": "namo-robotics.sun-language",
+					"editor.formatOnSave": true
+				},
 				"terminal.integrated.defaultProfile.linux": "bash",
 				"files.eol": "\n",
 				"claudeCode.allowDangerouslySkipPermissions": true,

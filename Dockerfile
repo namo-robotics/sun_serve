@@ -93,6 +93,7 @@ RUN echo "Sun package refresh: ${SUN_REFRESH}" \
 # host directly; plain `docker run` needs -p or --network=host.
 EXPOSE 8080 8443
 
+USER ubuntu
 CMD ["/bin/bash"]
 
 
