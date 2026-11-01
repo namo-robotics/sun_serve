@@ -35,9 +35,8 @@ public module sun_serve {
 
   extern "C" function sys_eventfd(initial: u32, flags: i32) i32 as "eventfd";
 
-  extern "C" function sys_read_u64(fd: i32, buf: raw_ptr<u64>, count: i64) i64 as "read";
-
-  extern "C" function sys_write_u64(fd: i32, buf: raw_ptr<u64>, count: i64) i64 as "write";
+  /** Reads bytes into caller-owned storage. */
+  extern "C" function sys_read(fd: i32, buf: raw_ptr<u8>, count: i64) i64 as "read";
 
   extern "C" function sys_write(fd: i32, buf: raw_ptr<u8>, count: i64) i64 as "write";
 
@@ -51,7 +50,8 @@ public module sun_serve {
 
   extern "C" function sys_errno_location() raw_ptr<i32> as "__errno_location";
 
-  extern "C" function sys_sigaction(sig: i32, act: ref SigAction, old: raw_ptr<u8>) i32 as "sigaction";
+  /** Installs a signal action using the standard library native signature. */
+  extern "C" function sys_sigaction(sig: i32, act: raw_ptr<u8>, old: raw_ptr<u8>) i32 as "sigaction";
 
   extern "C" function sys_signal(sig: i32, handler: i64) i64 as "signal";
 
@@ -136,13 +136,13 @@ public module sun_serve {
 
   // Read one event-counter value, returning the syscall byte count.
   function read_event_counter(fd: i32, value: ref u64) i64 {
-    return unsafe sys_read_u64(fd, _address_of<u64>(value), 8);
+    return unsafe sys_read(fd, _bitcast<raw_ptr<u8>>(_address_of<u64>(value)), 8);
   }
 
   // Add one to an event counter, returning the syscall byte count.
   function notify_event_counter(fd: i32) i64 {
     var one: u64 = 1;
-    return unsafe sys_write_u64(fd, _address_of<u64>(one), 8);
+    return unsafe sys_write(fd, _bitcast<raw_ptr<u8>>(_address_of<u64>(one)), 8);
   }
 
   // File metadata read through the platform stat layout.
