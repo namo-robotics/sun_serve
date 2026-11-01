@@ -209,7 +209,7 @@ public module sun_serve {
           close_fd(fd);
           continue;
         }
-        set_tcp_nodelay(fd);
+        sun_serve.set_tcp_nodelay(fd);
         var slot: i64 = this.take_slot();
         var opened: bool = this.open_slot(slot, fd, tls, now_ms);
         if (not opened) {
