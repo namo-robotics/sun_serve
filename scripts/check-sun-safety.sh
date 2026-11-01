@@ -3,8 +3,10 @@
 set -euo pipefail
 cd "$(dirname "$0")/.."
 
-shopt -s globstar nullglob
-sun_files=(src/**/*.sun cmd/**/*.sun tests/**/*.sun examples/**/*.sun)
+sun_files=()
+while IFS= read -r -d '' file; do
+  sun_files+=("$file")
+done < <(find src cmd tests examples -type f -name '*.sun' -print0)
 
 status=0
 while IFS=: read -r file line source; do

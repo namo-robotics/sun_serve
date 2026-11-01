@@ -252,15 +252,13 @@ public module sun_serve {
       if (want > this.file_remaining) {
         want = this.file_remaining;
       }
-      out.reserve(want);
-      var n: i64 = this.file.read_into(out.writable_ptr(), want);
+      var n: i64 = out.read_file(this.file, want);
       if (n <= 0) {
         this.file.close();
         this.has_file = false;
         this.file_remaining = 0;
         return 0;
       }
-      out.commit(n);
       this.file_remaining = this.file_remaining - n;
       if (this.file_remaining == 0) {
         this.file.close();

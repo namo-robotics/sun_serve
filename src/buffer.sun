@@ -138,6 +138,21 @@ public module sun_serve {
       this.data = grown;
     }
 
+    /**
+     * Appends up to max bytes from a file, returning its read count or error.
+     */
+    public method read_file(file: ref std.io.File, max: i64) i64 {
+      if (max <= 0) {
+        return 0;
+      }
+      this.reserve(max);
+      var count = unsafe file.read_into(this.writable_ptr(), max);
+      if (count > 0) {
+        this.commit(count);
+      }
+      return count;
+    }
+
     // Record that n bytes were written at writable_ptr().
     public method commit(n: i64) void {
       this.len = this.len + n;

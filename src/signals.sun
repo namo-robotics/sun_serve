@@ -48,10 +48,18 @@ public module sun_serve {
       flags: 0,
       restorer: null
     };
-    if (unsafe sys_sigaction(std.process.SIGINT, _bitcast<raw_ptr<u8>>(_address_of<SigAction>(act)), null) != 0) {
+    if (unsafe sys_sigaction(
+      std.process.SIGINT,
+      _bitcast<raw_ptr<u8>>(_address_of<SigAction>(act)),
+      null
+    ) != 0) {
       return ServerResult.Error(Error(last_errno(), "failed to install SIGINT handler"));
     }
-    if (unsafe sys_sigaction(std.process.SIGTERM, _bitcast<raw_ptr<u8>>(_address_of<SigAction>(act)), null) != 0) {
+    if (unsafe sys_sigaction(
+      std.process.SIGTERM,
+      _bitcast<raw_ptr<u8>>(_address_of<SigAction>(act)),
+      null
+    ) != 0) {
       return ServerResult.Error(Error(last_errno(), "failed to install SIGTERM handler"));
     }
     return ServerResult.Ok;

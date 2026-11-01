@@ -260,11 +260,7 @@ public module sun_serve {
       if (size <= SMALL_FILE_MAX) {
         var body: ref ByteBuffer = resp.body_buffer();
         body.clear();
-        body.reserve(size);
-        var got: i64 = f.read_into(body.writable_ptr(), size);
-        if (got > 0) {
-          body.commit(got);
-        }
+        body.read_file(f, size);
         return;
       }
       resp.send_file(f, size);
