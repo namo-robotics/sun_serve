@@ -75,9 +75,7 @@ handler the binary uses. [Using the library](#using-the-library) shows the code.
 
 ## Build and run
 
-Requires the rolling `sun` development toolchain (see `Dockerfile`). Tested
-with `sun 0.dev (fe773e38a88b)`. This version uses returned result enums
-and prefix `try` for error propagation.
+Requires the rolling `sun` development toolchain (see `Dockerfile`).
 
 ```bash
 scripts/build.sh          # checks + incremental sun -c sun-config.json -> build/
