@@ -10,6 +10,7 @@
  * Runs the server event loop for one worker thread.
  */
 public module sun_serve {
+
   using std;
   using std.time;
 
@@ -38,7 +39,14 @@ public module sun_serve {
     var tls: TlsAcceptor;
 
     // Bundle the pieces for one worker.
-    init(id: i32, config: Config, handler: H, listeners: Vec<ListenerSocket>, stop: StopToken, tls: TlsAcceptor) {
+    init(
+      id: i32,
+      config: Config,
+      handler: H,
+      listeners: Vec<ListenerSocket>,
+      stop: StopToken,
+      tls: TlsAcceptor
+    ) {
       this.id = id;
       this.config = config;
       this.handler = handler;
@@ -109,7 +117,11 @@ public module sun_serve {
         }
       };
       for (var i: i64 = 0; i < this.args.listeners.size(); i = i + 1) {
-        match this.epoll.add(this.args.listeners[i].get_fd(), EPOLLIN, LISTENER_TOKEN_BASE + _convert<u64>(i)) {
+        match this.epoll.add(
+          this.args.listeners[i].get_fd(),
+          EPOLLIN,
+          LISTENER_TOKEN_BASE + _convert<u64>(i)
+        ) {
           ServerResult.Ok => {},
           (e: const ref IError) => {
             this.log.error_caught("failed to watch listener", e);
@@ -253,7 +265,15 @@ public module sun_serve {
       if (not conn.is_open()) {
         return;
       }
-      conn.on_event(mask, this.args.handler, this.date, this.log, this.args.config, now_ms, this.stopping);
+      conn.on_event(
+        mask,
+        this.args.handler,
+        this.date,
+        this.log,
+        this.args.config,
+        now_ms,
+        this.stopping
+      );
       if (not conn.is_open()) {
         this.free.push(slot);
         this.live = this.live - 1;

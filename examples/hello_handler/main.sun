@@ -27,6 +27,7 @@ using sun_serve;
  * Implements the custom handler example.
  */
 module hello_handler {
+
   using std;
   using sun_serve;
 
@@ -106,7 +107,10 @@ module hello_handler {
     public method websocket_open(socket: const ref WebSocketHandle) void {}
 
     // Echo complete text and binary messages.
-    public method websocket_message(socket: const ref WebSocketHandle, message: const ref WebSocketMessage) void {
+    public method websocket_message(
+      socket: const ref WebSocketHandle,
+      message: const ref WebSocketMessage
+    ) void {
       if (message.kind == WebSocketMessageKind.Text) {
         var text = message.text(this.alloc);
         socket.send_text(text);
@@ -140,7 +144,11 @@ function serve() ServerResult<i32> {
   var cfg = Config(alloc);
   cfg.add_listen(ipv4_any(), 8080);
   try install_signal_handlers();
-  var server = try Server<hello_handler.HelloHandler>(alloc, cfg, hello_handler.hello_handlers(alloc, online_cpus()));
+  var server = try Server<hello_handler.HelloHandler>(
+    alloc,
+    cfg,
+    hello_handler.hello_handlers(alloc, online_cpus())
+  );
   return server.run();
 }
 
@@ -156,6 +164,11 @@ function main() i32 {
 }
 
 manifest {
-  test_files: ["hello_tests.sun"]
-  libraries: ["stdlib.moon", "sun_serve.moon"]
+  test_files: [
+    "hello_tests.sun"
+  ]
+  libraries: [
+    "stdlib.moon",
+    "sun_serve.moon"
+  ]
 }

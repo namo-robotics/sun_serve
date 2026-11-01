@@ -12,6 +12,7 @@
  * Drives client connections through the supported protocols.
  */
 public module sun_serve {
+
   using std;
 
   enum ConnState { Vacant, Handshaking, ReadingHead, ReadingBody, Writing, WebSocket, Http2, Closed }
@@ -92,7 +93,14 @@ public module sun_serve {
      * Take over an accepted socket. For TLS the handshake starts on the first
      * event. Returns false if a TLS session could not be created.
      */
-    public method open(fd: i32, tls: bool, acceptor: ref TlsAcceptor, now_ms: i64, timeouts: const ref Timeouts, wake_fd: i32) bool {
+    public method open(
+      fd: i32,
+      tls: bool,
+      acceptor: ref TlsAcceptor,
+      now_ms: i64,
+      timeouts: const ref Timeouts,
+      wake_fd: i32
+    ) bool {
       if (not this.transport.open(fd, tls, acceptor)) {
         return false;
       }
@@ -153,7 +161,8 @@ public module sun_serve {
 
     // Report whether this connection needs asynchronous WebSocket polling.
     public const method is_websocket() bool {
-      return this.state == ConnState.WebSocket or (this.state == ConnState.Http2 and this.h2_ws.stream != 0);
+      return this.state == ConnState.WebSocket or
+        (this.state == ConnState.Http2 and this.h2_ws.stream != 0);
     }
 
     // Report whether the connection is sending a response.
@@ -213,7 +222,15 @@ public module sun_serve {
      * closed its side; draining says the server is shutting down and no
      * further requests should be accepted on this connection.
      */
-    public method on_event(mask: u32, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) void {
+    public method on_event(
+      mask: u32,
+      handler: ref IHandler,
+      date: ref DateCache,
+      log: ref Logger,
+      cfg: const ref Config,
+      now_ms: i64,
+      draining: bool
+    ) void {
       if ((mask & EPOLLERR) != 0) {
         this.close();
         return;
@@ -225,7 +242,14 @@ public module sun_serve {
     }
 
     // Advance through as many states as the socket allows.
-    method drive(handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) void {
+    method drive(
+      handler: ref IHandler,
+      date: ref DateCache,
+      log: ref Logger,
+      cfg: const ref Config,
+      now_ms: i64,
+      draining: bool
+    ) void {
       while (true) {
         if (this.state == ConnState.Handshaking) {
           var r: i64 = this.transport.handshake();
@@ -271,7 +295,11 @@ public module sun_serve {
             }
           }
           if (this.rbuf.readable_len() > 0) {
-            var st: ParseStatus = this.request.parse_head(this.rbuf, this.rbuf.readable_len(), cfg.limits);
+            var st: ParseStatus = this.request.parse_head(
+              this.rbuf,
+              this.rbuf.readable_len(),
+              cfg.limits
+            );
             if (st == ParseStatus.Complete) {
               this.started_ms = now_ms;
               this.begin_body();
@@ -442,7 +470,14 @@ public module sun_serve {
     }
 
     // Process HTTP/2 frames until the transport would block.
-    method drive_http2(handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) void {
+    method drive_http2(
+      handler: ref IHandler,
+      date: ref DateCache,
+      log: ref Logger,
+      cfg: const ref Config,
+      now_ms: i64,
+      draining: bool
+    ) void {
       while (true) {
         if (this.h2_ws.stream != 0) {
           var websocket_active: bool = this.ws.drain_to(this.h2_ws.outbound);
@@ -496,7 +531,8 @@ public module sun_serve {
         var flags: u8 = this.rbuf.byte_at(4);
         var stream: u32 = h2_u32(this.rbuf, 5) & H2_STREAM_ID_MASK;
         // Only CONTINUATION may follow an unfinished header block.
-        if (this.h2.continuation_stream != 0 and this.rbuf.byte_at(3) != _convert<u8>(H2FrameKind.Continuation)) {
+        if (this.h2.continuation_stream != 0 and
+          this.rbuf.byte_at(3) != _convert<u8>(H2FrameKind.Continuation)) {
           this.close();
           return;
         }
@@ -508,7 +544,18 @@ public module sun_serve {
             continue;
           }
         };
-        if (not this.handle_h2_frame(kind, flags, stream, frame_len, handler, date, log, cfg, now_ms, draining)) {
+        if (not this.handle_h2_frame(
+          kind,
+          flags,
+          stream,
+          frame_len,
+          handler,
+          date,
+          log,
+          cfg,
+          now_ms,
+          draining
+        )) {
           this.close();
           return;
         }
@@ -528,7 +575,18 @@ public module sun_serve {
      * in rbuf. Returns false for a connection error, which closes the
      * connection.
      */
-    method handle_h2_frame(kind: H2FrameKind, flags: u8, stream: u32, frame_len: i64, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) bool {
+    method handle_h2_frame(
+      kind: H2FrameKind,
+      flags: u8,
+      stream: u32,
+      frame_len: i64,
+      handler: ref IHandler,
+      date: ref DateCache,
+      log: ref Logger,
+      cfg: const ref Config,
+      now_ms: i64,
+      draining: bool
+    ) bool {
       var payload: i64 = H2_FRAME_HEADER_LEN;
       match kind {
         H2FrameKind.Settings => {
@@ -616,7 +674,17 @@ public module sun_serve {
               this.h2_ws.stream = 0;
             }
           } else {
-            this.receive_h2_request_data(stream, payload + data_pos, data_len, (flags & H2_END_STREAM) != 0, handler, date, log, cfg, now_ms);
+            this.receive_h2_request_data(
+              stream,
+              payload + data_pos,
+              data_len,
+              (flags & H2_END_STREAM) != 0,
+              handler,
+              date,
+              log,
+              cfg,
+              now_ms
+            );
           }
           if (frame_len > 0) {
             this.h2_send_window_update(0, frame_len);
@@ -690,7 +758,8 @@ public module sun_serve {
 
     // Apply a SETTINGS frame and acknowledge it. Returns false on a protocol error.
     method handle_h2_settings(flags: u8, stream: u32, frame_len: i64) bool {
-      if (stream != 0 or ((flags & H2_ACK) != 0 and frame_len != 0) or ((flags & H2_ACK) == 0 and frame_len % 6 != 0)) {
+      if (stream != 0 or ((flags & H2_ACK) != 0 and frame_len != 0) or
+        ((flags & H2_ACK) == 0 and frame_len % 6 != 0)) {
         return false;
       }
       if ((flags & H2_ACK) != 0) {
@@ -698,7 +767,11 @@ public module sun_serve {
       }
       for (var setting: i64 = 0; setting < frame_len; setting = setting + 6) {
         var at: i64 = H2_FRAME_HEADER_LEN + setting;
-        if (not this.apply_h2_setting(h2_setting_id(this.rbuf, at), h2_u32(this.rbuf, at + 2), true)) {
+        if (not this.apply_h2_setting(
+          h2_setting_id(this.rbuf, at),
+          h2_u32(this.rbuf, at + 2),
+          true
+        )) {
           return false;
         }
       }
@@ -733,7 +806,8 @@ public module sun_serve {
         return true;
       }
       if (identifier == H2_SETTINGS_MAX_FRAME_SIZE) {
-        if (_convert<i64>(value) < H2_DEFAULT_FRAME_SIZE or _convert<i64>(value) > H2_MAX_FRAME_SIZE) {
+        if (_convert<i64>(value) < H2_DEFAULT_FRAME_SIZE or
+          _convert<i64>(value) > H2_MAX_FRAME_SIZE) {
           return false;
         }
         this.h2.peer_frame_size = _convert<i64>(value);
@@ -750,23 +824,57 @@ public module sun_serve {
     }
 
     // Decode a complete header block and act on the request it describes.
-    method finish_h2_header_block(stream: u32, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) bool {
-      if (not hpack_decode(this.alloc, this.h2.header_block, this.h2.header_block.readable_len(), this.h2.hpack, this.h2.headers)) {
+    method finish_h2_header_block(
+      stream: u32,
+      handler: ref IHandler,
+      date: ref DateCache,
+      log: ref Logger,
+      cfg: const ref Config,
+      now_ms: i64,
+      draining: bool
+    ) bool {
+      if (not hpack_decode(
+        this.alloc,
+        this.h2.header_block,
+        this.h2.header_block.readable_len(),
+        this.h2.hpack,
+        this.h2.headers
+      )) {
         return false;
       }
-      this.accept_h2_headers(stream, this.h2.header_end_stream, handler, date, log, cfg, now_ms, draining);
+      this.accept_h2_headers(
+        stream,
+        this.h2.header_end_stream,
+        handler,
+        date,
+        log,
+        cfg,
+        now_ms,
+        draining
+      );
       return true;
     }
 
     // Buffer request DATA for a stream, dispatching the request at END_STREAM.
-    method receive_h2_request_data(stream: u32, off: i64, len: i64, end_stream: bool, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64) void {
+    method receive_h2_request_data(
+      stream: u32,
+      off: i64,
+      len: i64,
+      end_stream: bool,
+      handler: ref IHandler,
+      date: ref DateCache,
+      log: ref Logger,
+      cfg: const ref Config,
+      now_ms: i64
+    ) void {
       var stream_index: i64 = this.find_h2_request_stream(stream);
       if (stream_index < 0) {
         this.h2_send_rst(stream, H2_ERROR_STREAM_CLOSED);
         return;
       }
       var stream_body_len: i64 = this.h2.streams[stream_index].body.readable_len();
-      if (stream_body_len + len > cfg.limits.max_body_bytes or this.h2.buffered_bytes + len > cfg.limits.max_h2_buffered_bytes) {
+      if (stream_body_len + len > cfg.limits.max_body_bytes or
+        this.h2.buffered_bytes + len > cfg.limits.max_h2_buffered_bytes) {
         this.h2_send_rst(stream, H2_ERROR_ENHANCE_YOUR_CALM);
         this.reset_h2_request_stream(stream_index);
         return;
@@ -810,7 +918,12 @@ public module sun_serve {
     }
 
     // Split a serialized response into immediate HEADERS and queued DATA.
-    method queue_h2_response(date: ref DateCache, stream: u32, server_header: bool, send_body: bool) void {
+    method queue_h2_response(
+      date: ref DateCache,
+      stream: u32,
+      server_header: bool,
+      send_body: bool
+    ) void {
       var encoded = ByteBuffer(this.alloc, 1024);
       this.response.serialize_h2(encoded, date.value(), stream, server_header, send_body);
       var response_index: i64 = -1;
@@ -828,7 +941,11 @@ public module sun_serve {
           if (response_index < 0) {
             response_index = this.open_h2_response_stream(stream);
           }
-          this.h2.responses[response_index].data.append_buffer(encoded, H2_FRAME_HEADER_LEN, length);
+          this.h2.responses[response_index].data.append_buffer(
+            encoded,
+            H2_FRAME_HEADER_LEN,
+            length
+          );
         } else if (kind == H2FrameKind.Headers and length > this.h2.peer_frame_size) {
           var original_flags: u8 = encoded.byte_at(4);
           var header_pos: i64 = 0;
@@ -861,7 +978,8 @@ public module sun_serve {
 
     // Emit RFC 8441 bytes within the peer's HTTP/2 flow-control windows.
     method flush_h2_websocket_data() void {
-      while (this.h2_ws.stream != 0 and this.h2_ws.send_window > 0 and this.h2.send_window > 0 and this.h2_ws.outbound.readable_len() > 0) {
+      while (this.h2_ws.stream != 0 and this.h2_ws.send_window > 0 and this.h2.send_window > 0 and
+        this.h2_ws.outbound.readable_len() > 0) {
         var take: i64 = this.h2_ws.outbound.readable_len();
         if (take > this.h2.peer_frame_size) {
           take = this.h2.peer_frame_size;
@@ -878,7 +996,8 @@ public module sun_serve {
         this.h2_ws.send_window = this.h2_ws.send_window - take;
         this.h2.send_window = this.h2.send_window - take;
       }
-      if (this.h2_ws.stream != 0 and this.h2_ws.outbound.readable_len() == 0 and this.h2_ws.end_pending) {
+      if (this.h2_ws.stream != 0 and this.h2_ws.outbound.readable_len() == 0 and
+        this.h2_ws.end_pending) {
         h2_frame(this.wbuf, 0, H2FrameKind.Data, H2_END_STREAM, this.h2_ws.stream);
         this.h2_ws.stream = 0;
         this.h2_ws.end_pending = false;
@@ -891,7 +1010,8 @@ public module sun_serve {
         return;
       }
       for (var pending: ref H2ResponseStream in this.h2.responses) {
-        while (pending.active and pending.window > 0 and this.h2.send_window > 0 and pending.data.readable_len() > 0) {
+        while (pending.active and pending.window > 0 and this.h2.send_window > 0 and
+          pending.data.readable_len() > 0) {
           var take: i64 = pending.data.readable_len();
           if (take > this.h2.peer_frame_size) {
             take = this.h2.peer_frame_size;
@@ -931,7 +1051,8 @@ public module sun_serve {
 
     // Allocate a reusable request stream slot.
     method open_h2_request_stream(id: u32, cfg: const ref Config) i64 {
-      if (this.find_h2_request_stream(id) >= 0 or this.h2.open_streams >= cfg.limits.max_h2_concurrent_streams) {
+      if (this.find_h2_request_stream(id) >= 0 or
+        this.h2.open_streams >= cfg.limits.max_h2_concurrent_streams) {
         return -1;
       }
       for (var i: i64 = 0; i < this.h2.streams.size(); i = i + 1) {
@@ -968,7 +1089,16 @@ public module sun_serve {
     }
 
     // Store a decoded request header block or dispatch a bodyless request.
-    method accept_h2_headers(stream: u32, end_stream: bool, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64, draining: bool) void {
+    method accept_h2_headers(
+      stream: u32,
+      end_stream: bool,
+      handler: ref IHandler,
+      date: ref DateCache,
+      log: ref Logger,
+      cfg: const ref Config,
+      now_ms: i64,
+      draining: bool
+    ) void {
       if (draining) {
         this.h2_send_rst(stream, H2_ERROR_REFUSED_STREAM);
         this.h2.headers.clear();
@@ -1002,7 +1132,14 @@ public module sun_serve {
     }
 
     // Move one completed stream into the shared request view and invoke it.
-    method dispatch_h2_request_stream(index: i64, handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64) void {
+    method dispatch_h2_request_stream(
+      index: i64,
+      handler: ref IHandler,
+      date: ref DateCache,
+      log: ref Logger,
+      cfg: const ref Config,
+      now_ms: i64
+    ) void {
       this.h2.headers.clear();
       this.body_buf.clear();
       if (true) {
@@ -1028,7 +1165,13 @@ public module sun_serve {
     }
 
     // Convert decoded HTTP/2 headers into the existing handler request view.
-    method handle_h2_request(handler: ref IHandler, date: ref DateCache, log: ref Logger, cfg: const ref Config, now_ms: i64) void {
+    method handle_h2_request(
+      handler: ref IHandler,
+      date: ref DateCache,
+      log: ref Logger,
+      cfg: const ref Config,
+      now_ms: i64
+    ) void {
       if (not h2_valid_request_headers(this.h2.headers, cfg.limits)) {
         this.close();
         return;
@@ -1233,7 +1376,9 @@ public module sun_serve {
       if (not cfg.http2 or not this.request.header_equals("upgrade", "h2c")) {
         return false;
       }
-      if (not this.request.header_contains_token("connection", "upgrade") or not this.request.header_contains_token("connection", "http2-settings") or not this.request.has_header("http2-settings")) {
+      if (not this.request.header_contains_token("connection", "upgrade") or
+        not this.request.header_contains_token("connection", "http2-settings") or
+        not this.request.has_header("http2-settings")) {
         return false;
       }
       var encoded_settings: String = match this.request.header("http2-settings", this.alloc) {
@@ -1241,17 +1386,24 @@ public module sun_serve {
         Option.None => String(this.alloc, "")
       };
       var settings_payload = ByteBuffer(this.alloc, 32);
-      if (not h2_decode_settings_header(encoded_settings, settings_payload) or settings_payload.readable_len() % 6 != 0) {
+      if (not h2_decode_settings_header(encoded_settings, settings_payload) or
+        settings_payload.readable_len() % 6 != 0) {
         return false;
       }
       for (var setting: i64 = 0; setting < settings_payload.readable_len(); setting = setting + 6) {
-        if (not this.apply_h2_setting(h2_setting_id(settings_payload, setting), h2_u32(settings_payload, setting + 2), false)) {
+        if (not this.apply_h2_setting(
+          h2_setting_id(settings_payload, setting),
+          h2_u32(settings_payload, setting + 2),
+          false
+        )) {
           return false;
         }
       }
       this.response.reset();
       handler.handle(this.request, this.response);
-      this.wbuf.append_literal("HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n");
+      this.wbuf.append_literal(
+        "HTTP/1.1 101 Switching Protocols\r\nConnection: Upgrade\r\nUpgrade: h2c\r\n\r\n"
+      );
       this.proto = Protocol.Http2;
       this.h2.preface = true;
       this.h2.headers_ready = false;
@@ -1289,11 +1441,16 @@ public module sun_serve {
     }
 
     // Validate and dispatch an HTTP/1.1 WebSocket opening handshake.
-    method try_websocket_upgrade(handler: ref IHandler, date: ref DateCache, cfg: const ref Config) bool {
+    method try_websocket_upgrade(
+      handler: ref IHandler,
+      date: ref DateCache,
+      cfg: const ref Config
+    ) bool {
       if (not this.request.method_is("GET") or this.request.version_minor() != 1) {
         return false;
       }
-      if (not this.request.header_contains_token("connection", "upgrade") or not this.request.header_equals("upgrade", "websocket")) {
+      if (not this.request.header_contains_token("connection", "upgrade") or
+        not this.request.header_equals("upgrade", "websocket")) {
         return false;
       }
       if (not this.request.header_equals("sec-websocket-version", "13")) {
@@ -1313,11 +1470,16 @@ public module sun_serve {
       if (not websocket_valid_key(key)) {
         return false;
       }
-      var compression_available: bool = cfg.websocket_compression and this.websocket_compression_offered();
+      var compression_available: bool = cfg.websocket_compression and
+        this.websocket_compression_offered();
       var handshake = WebSocketHandshake(this.alloc, compression_available);
       handler.handle_websocket(this.request, handshake);
       handshake.compression = handshake.compression and compression_available;
-      if (not handshake.subprotocol.is_empty() and not this.request.header_contains_token_string("sec-websocket-protocol", handshake.subprotocol)) {
+      if (not handshake.subprotocol.is_empty() and
+        not this.request.header_contains_token_string(
+          "sec-websocket-protocol",
+          handshake.subprotocol
+        )) {
         handshake.reject(400);
       }
       if (not handshake.accepted) {
@@ -1332,7 +1494,9 @@ public module sun_serve {
       var accept = websocket_accept(this.alloc, key);
       this.response.reset();
       this.response.set_status(101);
-      this.wbuf.append_literal("HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: ");
+      this.wbuf.append_literal(
+        "HTTP/1.1 101 Switching Protocols\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Accept: "
+      );
       this.wbuf.append_string(accept);
       this.wbuf.append_literal("\r\n");
       if (not handshake.subprotocol.is_empty()) {
@@ -1421,7 +1585,13 @@ public module sun_serve {
      * replies and reassemble data frames into a message for the handler.
      * Returns false after a protocol error has been reported.
      */
-    method receive_websocket_frame(frame: const ref WebSocketFrame, decoded: const ref ByteBuffer, replies: ref ByteBuffer, handler: ref IHandler, cfg: const ref Config) bool {
+    method receive_websocket_frame(
+      frame: const ref WebSocketFrame,
+      decoded: const ref ByteBuffer,
+      replies: ref ByteBuffer,
+      handler: ref IHandler,
+      cfg: const ref Config
+    ) bool {
       var len: i64 = decoded.readable_len();
       if (frame.opcode == WebSocketOpcode.Close) {
         var close_status: i32 = websocket_close_payload_status(decoded, len);
@@ -1449,7 +1619,8 @@ public module sun_serve {
         this.body_buf.clear();
         this.ws.fragment_opcode = frame.opcode;
         this.ws.fragment_compressed = frame.compressed;
-      } else if (not this.ws.fragmenting or this.body_buf.readable_len() + len > cfg.limits.max_body_bytes) {
+      } else if (not this.ws.fragmenting or
+        this.body_buf.readable_len() + len > cfg.limits.max_body_bytes) {
         this.websocket_protocol_error(handler, 1002);
         return false;
       }
@@ -1474,8 +1645,13 @@ public module sun_serve {
     }
 
     // Accept or reject an RFC 8441 extended CONNECT stream.
-    method begin_h2_websocket(handler: ref IHandler, date: ref DateCache, cfg: const ref Config) void {
-      var compression_available: bool = cfg.websocket_compression and this.websocket_compression_offered();
+    method begin_h2_websocket(
+      handler: ref IHandler,
+      date: ref DateCache,
+      cfg: const ref Config
+    ) void {
+      var compression_available: bool = cfg.websocket_compression and
+        this.websocket_compression_offered();
       var handshake = WebSocketHandshake(this.alloc, compression_available);
       if (this.h2.enable_connect and this.request.method_is("CONNECT")) {
         handler.handle_websocket(this.request, handshake);
@@ -1496,7 +1672,13 @@ public module sun_serve {
       if (handshake.compression) {
         hpack_header_literal(block, "sec-websocket-extensions", WS_DEFLATE_PARAMS);
       }
-      h2_frame(this.wbuf, block.readable_len(), H2FrameKind.Headers, H2_END_HEADERS, this.h2.stream);
+      h2_frame(
+        this.wbuf,
+        block.readable_len(),
+        H2FrameKind.Headers,
+        H2_END_HEADERS,
+        this.h2.stream
+      );
       this.wbuf.append_buffer(block, 0, block.readable_len());
       this.ws.activate(cfg.limits.max_body_bytes, handshake.compression);
       this.h2_ws.stream = this.h2.stream;
@@ -1512,7 +1694,11 @@ public module sun_serve {
       var replies = ByteBuffer(this.alloc, 128);
       while (this.h2_ws.stream != 0) {
         var frame = WebSocketFrame();
-        var parsed: WebSocketParse = websocket_parse_frame(this.h2_ws.inbound, this.ws.compression, frame);
+        var parsed: WebSocketParse = websocket_parse_frame(
+          this.h2_ws.inbound,
+          this.ws.compression,
+          frame
+        );
         if (parsed == WebSocketParse.Malformed) {
           this.websocket_protocol_error(handler, 1002);
           break;
@@ -1521,7 +1707,8 @@ public module sun_serve {
           this.websocket_protocol_error(handler, 1009);
           break;
         }
-        if (parsed == WebSocketParse.Incomplete or this.h2_ws.inbound.readable_len() < frame.total_len()) {
+        if (parsed == WebSocketParse.Incomplete or
+          this.h2_ws.inbound.readable_len() < frame.total_len()) {
           break;
         }
         var decoded: ByteBuffer = websocket_unmask(this.alloc, this.h2_ws.inbound, frame);
@@ -1541,7 +1728,14 @@ public module sun_serve {
     method deliver_websocket_message(handler: ref IHandler, cfg: const ref Config) void {
       var message_data = ByteBuffer(this.alloc, this.body_buf.readable_len());
       if (this.ws.fragment_compressed) {
-        var inflate_status: i32 = websocket_inflate(this.alloc, this.body_buf, 0, this.body_buf.readable_len(), cfg.limits.max_body_bytes, message_data);
+        var inflate_status: i32 = websocket_inflate(
+          this.alloc,
+          this.body_buf,
+          0,
+          this.body_buf.readable_len(),
+          cfg.limits.max_body_bytes,
+          message_data
+        );
         if (inflate_status != 0) {
           if (inflate_status == 2) {
             this.websocket_protocol_error(handler, 1009);
@@ -1555,7 +1749,8 @@ public module sun_serve {
       } else {
         message_data.append_buffer(this.body_buf, 0, this.body_buf.readable_len());
       }
-      if (this.ws.fragment_opcode == WebSocketOpcode.Text and not websocket_valid_utf8(message_data, 0, message_data.readable_len())) {
+      if (this.ws.fragment_opcode == WebSocketOpcode.Text and
+        not websocket_valid_utf8(message_data, 0, message_data.readable_len())) {
         this.websocket_protocol_error(handler, 1007);
         this.body_buf.clear();
         this.ws.fragment_compressed = false;
@@ -1588,7 +1783,12 @@ public module sun_serve {
     }
 
     // Run the handler and serialize its response into wbuf.
-    method handle_request(handler: ref IHandler, date: ref DateCache, cfg: const ref Config, draining: bool) void {
+    method handle_request(
+      handler: ref IHandler,
+      date: ref DateCache,
+      cfg: const ref Config,
+      draining: bool
+    ) void {
       this.response.reset();
       this.keep_alive = this.request.keep_alive() and not draining;
       if (not draining and this.try_h2c_upgrade(handler, date, cfg)) {

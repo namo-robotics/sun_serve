@@ -4,6 +4,7 @@
  * Reports the server library version.
  */
 public module sun_serve {
+
   using std;
 
   // The sun_serve version.

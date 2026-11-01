@@ -2,6 +2,7 @@
  * Defines test outcomes and checks returned errors from server setup.
  */
 public module sun_serve {
+
   /*
    * Reports assertion failures and errors from test fixtures.
    */
@@ -17,6 +18,7 @@ public module sun_serve {
    * Exercises failures that callers can handle without starting workers.
    */
   module error_tests {
+
     using std;
 
     /* Answer requests for the server startup tests. */

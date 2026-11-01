@@ -4,15 +4,23 @@
  * Extends the command module with parser tests.
  */
 module sun_serve_cli {
+
   /*
    * Contains command-line parser tests.
    */
   module cli_tests {
+
     using std;
     using sun_serve;
 
     // Build an argument vector from literals.
-    function argv(alloc: ref HeapAllocator, a: static_ptr<u8>, b: static_ptr<u8>, c: static_ptr<u8>, d: static_ptr<u8>) Vec<String> {
+    function argv(
+      alloc: ref HeapAllocator,
+      a: static_ptr<u8>,
+      b: static_ptr<u8>,
+      c: static_ptr<u8>,
+      d: static_ptr<u8>
+    ) Vec<String> {
       var v = Vec<String>(alloc, 8);
       v.push(String(alloc, "sun_serve"));
       if (a.length() > 0) {

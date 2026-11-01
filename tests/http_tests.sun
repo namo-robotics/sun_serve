@@ -4,10 +4,12 @@
  * Extends the server module with HTTP tests.
  */
 public module sun_serve {
+
   /*
    * Contains HTTP parsing and response tests.
    */
   module http_tests {
+
     using std;
 
     // Parse a literal as a request head.
@@ -36,7 +38,10 @@ public module sun_serve {
     test_function parses_request_line_and_headers() {
       var alloc = make_heap_allocator();
       var req = Request(alloc);
-      var st: ParseStatus = parse(req, "GET /a/b%20c?x=1&y=two HTTP/1.1\r\nHost: example.com\r\nX-Thing:  spaced  \r\n\r\nrest");
+      var st: ParseStatus = parse(
+        req,
+        "GET /a/b%20c?x=1&y=two HTTP/1.1\r\nHost: example.com\r\nX-Thing:  spaced  \r\n\r\nrest"
+      );
       try std.test.assert(st == ParseStatus.Complete, "complete head");
       try std.test.assert(req.method_is("GET"), "method");
       try std.test.assert(req.path().equals_literal("/a/b c"), "decoded path");
@@ -79,17 +84,39 @@ public module sun_serve {
       try std.test.assert_eq(parse_status("GET /%zz HTTP/1.1\r\nHost: a\r\n\r\n"), 400);
       try std.test.assert_eq(parse_status("GET /%00 HTTP/1.1\r\nHost: a\r\n\r\n"), 400);
       try std.test.assert_eq(parse_status("GET nopath HTTP/1.1\r\nHost: a\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip\r\n\r\n"), 501);
-      try std.test.assert_eq(parse_status("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 99999999999\r\n\r\n"), 413);
-      try std.test.assert_eq(parse_status("GET / HTTP/1.1\r\nHost: a\r\nExpect: nope\r\n\r\n"), 417);
+      try std.test.assert_eq(
+        parse_status(
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n"
+        ),
+        400
+      );
+      try std.test.assert_eq(
+        parse_status(
+          "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n"
+        ),
+        400
+      );
+      try std.test.assert_eq(
+        parse_status("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip\r\n\r\n"),
+        501
+      );
+      try std.test.assert_eq(
+        parse_status("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 99999999999\r\n\r\n"),
+        413
+      );
+      try std.test.assert_eq(
+        parse_status("GET / HTTP/1.1\r\nHost: a\r\nExpect: nope\r\n\r\n"),
+        417
+      );
     }
 
     test_function accepts_duplicate_equal_content_length_and_1_0() {
       var alloc = make_heap_allocator();
       var req = Request(alloc);
-      var st: ParseStatus = parse(req, "POST /x HTTP/1.0\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: Keep-Alive\r\n\r\n");
+      var st: ParseStatus = parse(
+        req,
+        "POST /x HTTP/1.0\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: Keep-Alive\r\n\r\n"
+      );
       try std.test.assert(st == ParseStatus.Complete, "complete");
       try std.test.assert_eq(req.content_length(), 5);
       try std.test.assert_eq(req.version_minor(), 0);
@@ -97,7 +124,10 @@ public module sun_serve {
       var st2: ParseStatus = parse(req, "GET / HTTP/1.0\r\n\r\n");
       try std.test.assert(st2 == ParseStatus.Complete, "1.0 needs no host");
       try std.test.assert(not req.keep_alive(), "1.0 closes by default");
-      var st3: ParseStatus = parse(req, "GET / HTTP/1.1\r\nHost: a\r\nConnection: x, close\r\n\r\n");
+      var st3: ParseStatus = parse(
+        req,
+        "GET / HTTP/1.1\r\nHost: a\r\nConnection: x, close\r\n\r\n"
+      );
       try std.test.assert(st3 == ParseStatus.Complete, "complete");
       try std.test.assert(not req.keep_alive(), "close token honored");
     }
@@ -105,12 +135,18 @@ public module sun_serve {
     test_function absolute_form_and_asterisk() {
       var alloc = make_heap_allocator();
       var req = Request(alloc);
-      var st: ParseStatus = parse(req, "GET http://example.com/p?q=1 HTTP/1.1\r\nHost: example.com\r\n\r\n");
+      var st: ParseStatus = parse(
+        req,
+        "GET http://example.com/p?q=1 HTTP/1.1\r\nHost: example.com\r\n\r\n"
+      );
       try std.test.assert(st == ParseStatus.Complete, "complete");
       try std.test.assert(req.path().equals_literal("/p"), "authority stripped");
       var q: String = req.query(alloc);
       try std.test.assert(q.equals_literal("q=1"), "query kept");
-      var st2: ParseStatus = parse(req, "GET HTTP://example.com HTTP/1.1\r\nHost: example.com\r\n\r\n");
+      var st2: ParseStatus = parse(
+        req,
+        "GET HTTP://example.com HTTP/1.1\r\nHost: example.com\r\n\r\n"
+      );
       try std.test.assert(st2 == ParseStatus.Complete, "complete");
       try std.test.assert(req.path().equals_literal("/"), "empty path becomes slash");
       var st3: ParseStatus = parse(req, "OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n");
@@ -121,7 +157,10 @@ public module sun_serve {
     test_function chunked_and_expect_flags() {
       var alloc = make_heap_allocator();
       var req = Request(alloc);
-      var st: ParseStatus = parse(req, "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: Chunked\r\nExpect: 100-Continue\r\n\r\n");
+      var st: ParseStatus = parse(
+        req,
+        "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: Chunked\r\nExpect: 100-Continue\r\n\r\n"
+      );
       try std.test.assert(st == ParseStatus.Complete, "complete");
       try std.test.assert(req.is_chunked(), "chunked");
       try std.test.assert(req.expects_continue(), "expect");
@@ -138,14 +177,20 @@ public module sun_serve {
       }
       var big_input = ByteBuffer(alloc, big.length());
       big_input.append_string(big);
-      try std.test.assert(req.parse_head(big_input, big_input.readable_len(), limits) == ParseStatus.Failed, "failed");
+      try std.test.assert(
+        req.parse_head(big_input, big_input.readable_len(), limits) == ParseStatus.Failed,
+        "failed"
+      );
       try std.test.assert_eq(req.error_status(), 431);
       limits.max_header_bytes = 16384;
       limits.max_headers = 2;
       var many = String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nA: 1\r\nB: 2\r\n\r\n");
       var many_input = ByteBuffer(alloc, many.length());
       many_input.append_string(many);
-      try std.test.assert(req.parse_head(many_input, many_input.readable_len(), limits) == ParseStatus.Failed, "failed");
+      try std.test.assert(
+        req.parse_head(many_input, many_input.readable_len(), limits) == ParseStatus.Failed,
+        "failed"
+      );
       try std.test.assert_eq(req.error_status(), 431);
     }
 
@@ -159,14 +204,24 @@ public module sun_serve {
       var date = String(alloc, "Thu, 01 Jan 1970 00:00:00 GMT");
       resp.serialize_head(out, date, true, true);
       var text: String = out.to_string(alloc);
-      try std.test.assert(text.equals_literal("HTTP/1.1 200 OK\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nServer: sun_serve\r\nContent-Type: text/plain\r\nX-A: 1\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\n"), "head bytes");
+      try std.test.assert(
+        text.equals_literal(
+          "HTTP/1.1 200 OK\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nServer: sun_serve\r\nContent-Type: text/plain\r\nX-A: 1\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\n"
+        ),
+        "head bytes"
+      );
 
       resp.reset();
       resp.set_status(304);
       out.clear();
       resp.serialize_head(out, date, false, false);
       var t2: String = out.to_string(alloc);
-      try std.test.assert(t2.equals_literal("HTTP/1.1 304 Not Modified\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nConnection: close\r\n\r\n"), "304 has no length");
+      try std.test.assert(
+        t2.equals_literal(
+          "HTTP/1.1 304 Not Modified\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nConnection: close\r\n\r\n"
+        ),
+        "304 has no length"
+      );
 
       resp.reset();
       resp.write_chunk_literal("abc");
@@ -178,7 +233,10 @@ public module sun_serve {
       try std.test.assert(t3.contains("Transfer-Encoding: chunked\r\n"), "chunked header");
       try std.test.assert(not t3.contains("Content-Length"), "no length when chunked");
       var body: String = resp.body_buffer().to_string(alloc);
-      try std.test.assert(body.equals_literal("3\r\nabc\r\n5\r\ndefgh\r\n0\r\n\r\n"), "chunk framing");
+      try std.test.assert(
+        body.equals_literal("3\r\nabc\r\n5\r\ndefgh\r\n0\r\n\r\n"),
+        "chunk framing"
+      );
     }
 
     test_function http_date_format() {

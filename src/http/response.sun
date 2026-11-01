@@ -11,6 +11,7 @@
  * Builds responses for the connection layer to send.
  */
 public module sun_serve {
+
   using std;
   using std.io;
 
@@ -285,7 +286,12 @@ public module sun_serve {
      * Write the status line and headers into out. head_only is set for HEAD
      * requests, which still declare the length of the body they omit.
      */
-    public method serialize_head(out: ref ByteBuffer, date: const ref String, keep_alive: bool, server_header: bool) void {
+    public method serialize_head(
+      out: ref ByteBuffer,
+      date: const ref String,
+      keep_alive: bool,
+      server_header: bool
+    ) void {
       if (this.chunked and not this.chunks_ended) {
         this.end_chunks();
       }
@@ -318,8 +324,15 @@ public module sun_serve {
       }
       out.append_literal("\r\n");
     }
+
     // Serialize this response as HTTP/2 HEADERS and DATA frames.
-    public method serialize_h2(out: ref ByteBuffer, date: const ref String, stream: u32, server_header: bool, send_body: bool) void {
+    public method serialize_h2(
+      out: ref ByteBuffer,
+      date: const ref String,
+      stream: u32,
+      server_header: bool,
+      send_body: bool
+    ) void {
       if (this.chunked and not this.chunks_ended) {
         this.end_chunks();
       }

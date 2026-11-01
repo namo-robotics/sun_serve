@@ -9,6 +9,7 @@
  * Provides process signal handling for server shutdown.
  */
 public module sun_serve {
+
   using std;
 
   // Set once a shutdown signal has arrived.
@@ -24,7 +25,29 @@ public module sun_serve {
    */
   public function install_signal_handlers() ServerResult<void> {
     ignore_sigpipe();
-    var act: SigAction = { handler: on_shutdown_signal, mask: [0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64, 0u64], flags: 0, restorer: null };
+    var act: SigAction = {
+      handler: on_shutdown_signal,
+      mask: [
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64,
+        0u64
+      ],
+      flags: 0,
+      restorer: null
+    };
     if (unsafe sys_sigaction(std.process.SIGINT, act, null) != 0) {
       return ServerResult.Error(Error(last_errno(), "failed to install SIGINT handler"));
     }

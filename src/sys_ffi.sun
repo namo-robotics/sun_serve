@@ -11,28 +11,48 @@
  * Defines the system foreign-function boundary.
  */
 public module sun_serve {
+
   using std;
 
   // --- readiness and descriptors -----------------------------------------
 
   extern "C" function sys_epoll_create1(flags: i32) i32 as "epoll_create1";
+
   extern "C" function sys_epoll_ctl(epfd: i32, op: i32, fd: i32, event: raw_ptr<u8>) i32 as "epoll_ctl";
-  extern "C" function sys_epoll_wait(epfd: i32, events: raw_ptr<u8>, max_events: i32, timeout_ms: i32) i32 as "epoll_wait";
+
+  extern "C" function sys_epoll_wait(
+    epfd: i32,
+    events: raw_ptr<u8>,
+    max_events: i32,
+    timeout_ms: i32
+  ) i32 as "epoll_wait";
+
   extern "C" function sys_accept4(fd: i32, addr: raw_ptr<u8>, len: raw_ptr<u8>, flags: i32) i32 as "accept4";
+
   extern "C" function sys_fcntl(fd: i32, command: i32, ...) i32 as "fcntl";
+
   extern "C" function sys_close(fd: i32) i32 as "close";
+
   extern "C" function sys_eventfd(initial: u32, flags: i32) i32 as "eventfd";
+
   extern "C" function sys_read_u64(fd: i32, buf: raw_ptr<u64>, count: i64) i64 as "read";
+
   extern "C" function sys_write_u64(fd: i32, buf: raw_ptr<u64>, count: i64) i64 as "write";
+
   extern "C" function sys_write(fd: i32, buf: raw_ptr<u8>, count: i64) i64 as "write";
+
   extern "C" function sys_fstat(fd: i32, buf: raw_ptr<u8>) i32 as "fstat";
 
   // --- process and platform ----------------------------------------------
 
   extern "C" function sys_sysconf(name: i32) i64 as "sysconf";
+
   extern "C" function sys_uname(buf: raw_ptr<u8>) i32 as "uname";
+
   extern "C" function sys_errno_location() raw_ptr<i32> as "__errno_location";
+
   extern "C" function sys_sigaction(sig: i32, act: ref SigAction, old: raw_ptr<u8>) i32 as "sigaction";
+
   extern "C" function sys_signal(sig: i32, handler: i64) i64 as "signal";
 
   // --- constants (Linux ABI values) --------------------------------------
@@ -142,7 +162,11 @@ public module sun_serve {
   }
 
   // Read the file metadata fields used by the static-file handler.
-  function read_file_metadata(alloc: const ref HeapAllocator, fd: i32, mode_offset: i64) FileMetadata {
+  function read_file_metadata(
+    alloc: const ref HeapAllocator,
+    fd: i32,
+    mode_offset: i64
+  ) FileMetadata {
     var stat = ContiguousBuffer<u8>(alloc, 256);
     if (unsafe sys_fstat(fd, stat.raw_data()) != 0) {
       return FileMetadata(false, 0, 0, 0);

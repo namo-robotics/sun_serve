@@ -10,6 +10,7 @@
  * Wraps Linux readiness polling for server workers.
  */
 public module sun_serve {
+
   using std;
 
   // Owns an epoll instance and decodes its ready events.
@@ -82,7 +83,12 @@ public module sun_serve {
      * events are ready. A signal interruption counts as zero events.
      */
     public method wait(timeout_ms: i32) ServerResult<i64> {
-      var n: i32 = unsafe sys_epoll_wait(this.fd, this.events.raw_data(), _convert<i32>(this.max_events), timeout_ms);
+      var n: i32 = unsafe sys_epoll_wait(
+        this.fd,
+        this.events.raw_data(),
+        _convert<i32>(this.max_events),
+        timeout_ms
+      );
       if (n < 0) {
         var code: i32 = last_errno();
         if (code == EINTR) {
@@ -100,7 +106,10 @@ public module sun_serve {
 
     // The token of the i-th event from the last wait.
     public const method event_token(i: i64) u64 {
-      return unsafe _load<u64>(_ptr_offset(this.events.raw_data(), i * this.layout.stride + this.layout.data_offset), 0);
+      return unsafe _load<u64>(
+        _ptr_offset(this.events.raw_data(), i * this.layout.stride + this.layout.data_offset),
+        0
+      );
     }
 
     // The epoll descriptor itself.

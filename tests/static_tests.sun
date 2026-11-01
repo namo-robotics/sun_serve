@@ -4,10 +4,12 @@
  * Extends the server module with static-file tests.
  */
 public module sun_serve {
+
   /*
    * Contains static-file handler tests.
    */
   module static_tests {
+
     using std;
     using std.io;
     using sun_serve.tests;
@@ -144,7 +146,11 @@ public module sun_serve {
         cfg.timeouts.tick_ms = 50;
         cfg.timeouts.drain_ms = 500;
         var opts = StaticOptions(alloc);
-        this.server = try Server<StaticFiles>(alloc, cfg, try static_handlers(alloc, this.dir.path, opts, 2));
+        this.server = try Server<StaticFiles>(
+          alloc,
+          cfg,
+          try static_handlers(alloc, this.dir.path, opts, 2)
+        );
         try this.server.start();
         this.port = this.server.port(0);
         return ServerResult.Ok;
@@ -159,13 +165,19 @@ public module sun_serve {
       var r: ClientResponse = try c.read_response();
       try std.test.assert_eq(r.status, 200);
       try std.test.assert(r.body.equals_literal("body{}"), "css body");
-      try std.test.assert(r.has_header("content-type: text/css; charset=utf-8"), "css type with charset");
+      try std.test.assert(
+        r.has_header("content-type: text/css; charset=utf-8"),
+        "css type with charset"
+      );
       try std.test.assert(r.has_header("etag: \""), "etag present");
       try std.test.assert(r.has_header("last-modified: "), "last-modified present");
 
       try c.send("GET /data.bin HTTP/1.1\r\nHost: a\r\n\r\n");
       var r2: ClientResponse = try c.read_response();
-      try std.test.assert(r2.has_header("content-type: application/octet-stream"), "unknown extension");
+      try std.test.assert(
+        r2.has_header("content-type: application/octet-stream"),
+        "unknown extension"
+      );
 
       // Conditional request with the ETag we were given.
       var etag_start: i64 = match r.head.find("ETag: ") {
@@ -202,7 +214,10 @@ public module sun_serve {
       try c.send("GET /sub?x=1 HTTP/1.1\r\nHost: a\r\n\r\n");
       var r2: ClientResponse = try c.read_response();
       try std.test.assert_eq(r2.status, 301);
-      try std.test.assert(r2.has_header("location: /sub/?x=1"), "redirect adds slash and keeps query");
+      try std.test.assert(
+        r2.has_header("location: /sub/?x=1"),
+        "redirect adds slash and keeps query"
+      );
 
       try c.send("GET /sub/ HTTP/1.1\r\nHost: a\r\n\r\n");
       var r3: ClientResponse = try c.read_response();
@@ -245,7 +260,9 @@ public module sun_serve {
       }
       try std.test.assert(ok, "streamed bytes match");
       // HEAD declares the size without a body, and the connection stays usable.
-      try c.send("HEAD /big.txt HTTP/1.1\r\nHost: a\r\n\r\nGET /style.css HTTP/1.1\r\nHost: a\r\n\r\n");
+      try c.send(
+        "HEAD /big.txt HTTP/1.1\r\nHost: a\r\n\r\nGET /style.css HTTP/1.1\r\nHost: a\r\n\r\n"
+      );
       var h: ClientResponse = try c.read_head_response();
       try std.test.assert_eq(h.status, 200);
       try std.test.assert(h.has_header("content-length: 300000"), "head declares length");

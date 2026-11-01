@@ -10,10 +10,12 @@
  * Extends the example module with integration tests.
  */
 module hello_handler {
+
   /*
    * Contains the example integration tests.
    */
   module tests {
+
     using std;
     using sun_serve;
 
@@ -54,7 +56,10 @@ module hello_handler {
        * A receive timeout turns a server that never answers into a failure
        * instead of a hang.
        */
-      public method exchange(alloc: ref HeapAllocator, request: static_ptr<u8>) ServerResult<String> {
+      public method exchange(
+        alloc: ref HeapAllocator,
+        request: static_ptr<u8>
+      ) ServerResult<String> {
         var stream = TcpStream();
         try stream.connect_local(this.port);
         set_socket_receive_timeout(stream.get_fd(), 10);
@@ -74,7 +79,13 @@ module hello_handler {
     }
 
     // Append an HTTP/2 frame header to a binary test string.
-    function append_h2_frame(out: ref String, len: i64, kind: H2FrameKind, flags: u8, stream: u32) void {
+    function append_h2_frame(
+      out: ref String,
+      len: i64,
+      kind: H2FrameKind,
+      flags: u8,
+      stream: u32
+    ) void {
       out.append_char(_convert<u8>((len >> 16) & 0xff));
       out.append_char(_convert<u8>((len >> 8) & 0xff));
       out.append_char(_convert<u8>(len & 0xff));
@@ -101,17 +112,27 @@ module hello_handler {
     const TEST_MASK_FIRST_BYTE: i64 = 1;
 
     // Build a masked client text frame from a literal.
-    function masked_text_frame(alloc: const ref HeapAllocator, text: static_ptr<u8>, compressed: bool) std.test.AssertionResult<ContiguousBuffer<u8>> {
+    function masked_text_frame(
+      alloc: const ref HeapAllocator,
+      text: static_ptr<u8>,
+      compressed: bool
+    ) std.test.AssertionResult<ContiguousBuffer<u8>> {
       var source = ByteBuffer(alloc, text.length());
       source.append_literal(text);
       var payload = ByteBuffer(alloc, text.length());
       if (compressed) {
-        try std.test.assert(websocket_deflate(source, 0, source.readable_len(), payload), "compress test frame");
+        try std.test.assert(
+          websocket_deflate(source, 0, source.readable_len(), payload),
+          "compress test frame"
+        );
       } else {
         payload.append_buffer(source, 0, source.readable_len());
       }
       var payload_len: i64 = payload.readable_len();
-      try std.test.assert(payload_len <= WS_SHORT_PAYLOAD_MAX, "test frame uses short payload encoding");
+      try std.test.assert(
+        payload_len <= WS_SHORT_PAYLOAD_MAX,
+        "test frame uses short payload encoding"
+      );
       var wire = ByteBuffer(alloc, WS_HEADER_BYTES + WS_MASK_BYTES + payload_len);
       var first: u8 = WS_FIN_FLAG | WS_TEXT_OPCODE;
       if (compressed) {
@@ -142,7 +163,10 @@ module hello_handler {
     test_function greets_by_name() hello_handler.tests.ServerTestResult {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(alloc, "GET /hi?name=sun HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var reply: String = try ts.exchange(
+        alloc,
+        "GET /hi?name=sun HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
       try std.test.assert(reply.starts_with("HTTP/1.1 200 "), "status");
       try std.test.assert(reply.contains("Content-Type: text/plain"), "content type");
       var body: String = try body_of(alloc, reply);
@@ -152,7 +176,10 @@ module hello_handler {
     test_function greets_the_world_without_a_name() hello_handler.tests.ServerTestResult {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var reply: String = try ts.exchange(
+        alloc,
+        "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
       var body: String = try body_of(alloc, reply);
       try std.test.assert(body.equals_literal("hello, world\n"), "default greeting");
     }
@@ -160,7 +187,10 @@ module hello_handler {
     test_function echoes_a_posted_body() hello_handler.tests.ServerTestResult {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(alloc, "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nping");
+      var reply: String = try ts.exchange(
+        alloc,
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nping"
+      );
       try std.test.assert(reply.starts_with("HTTP/1.1 200 "), "status");
       var body: String = try body_of(alloc, reply);
       try std.test.assert(body.equals_literal("ping"), "echoed body");
@@ -169,7 +199,10 @@ module hello_handler {
     test_function echo_rejects_other_methods() hello_handler.tests.ServerTestResult {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(alloc, "GET /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var reply: String = try ts.exchange(
+        alloc,
+        "GET /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
       try std.test.assert(reply.starts_with("HTTP/1.1 405 "), "method not allowed");
       try std.test.assert(reply.contains("Allow: POST"), "allow header");
     }
@@ -179,9 +212,15 @@ module hello_handler {
       var ts = try TestServer(alloc);
       try ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
       try ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-      var reply: String = try ts.exchange(alloc, "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var reply: String = try ts.exchange(
+        alloc,
+        "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
       var body: String = try body_of(alloc, reply);
-      try std.test.assert(body.equals_literal("requests handled by this worker: 3\n"), "third request");
+      try std.test.assert(
+        body.equals_literal("requests handled by this worker: 3\n"),
+        "third request"
+      );
     }
 
     test_function websocket_upgrade_and_echo() hello_handler.tests.ServerTestResult {
@@ -190,7 +229,9 @@ module hello_handler {
       var stream = TcpStream();
       try stream.connect_local(ts.port);
       set_socket_receive_timeout(stream.get_fd(), 2);
-      try stream.send_str("GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n");
+      try stream.send_str(
+        "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
+      );
       var reply = ContiguousBuffer<u8>(alloc, 4096);
       var got: i64 = try stream.recv(reply);
       var head = try String(alloc, reply, got);
@@ -204,7 +245,11 @@ module hello_handler {
       try std.test.assert_eq(echoed_len, WS_HEADER_BYTES + message.length());
       try std.test.assert_eq(echoed[0], WS_FIN_FLAG | WS_TEXT_OPCODE);
       try std.test.assert_eq(echoed[1], _convert<u8>(message.length()));
-      var text: String = try (try String(alloc, echoed, echoed_len)).substr(alloc, WS_HEADER_BYTES, message.length());
+      var text: String = try (try String(alloc, echoed, echoed_len)).substr(
+        alloc,
+        WS_HEADER_BYTES,
+        message.length()
+      );
       try std.test.assert(text.equals(message), "message echoed");
       stream.close();
     }
@@ -253,11 +298,18 @@ module hello_handler {
       var stream = TcpStream();
       try stream.connect_local(ts.port);
       set_socket_receive_timeout(stream.get_fd(), 2);
-      try stream.send_str("GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n");
+      try stream.send_str(
+        "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n"
+      );
       var reply = ContiguousBuffer<u8>(alloc, 4096);
       var got: i64 = try stream.recv(reply);
       var head = try String(alloc, reply, got);
-      try std.test.assert(head.contains("permessage-deflate; server_no_context_takeover; client_no_context_takeover"), "compression negotiated");
+      try std.test.assert(
+        head.contains(
+          "permessage-deflate; server_no_context_takeover; client_no_context_takeover"
+        ),
+        "compression negotiated"
+      );
       var message = String(alloc, "hello");
       var frame = try masked_text_frame(alloc, "hello", true);
       try stream.send_bytes(frame.raw_data(), frame.size());
@@ -271,7 +323,17 @@ module hello_handler {
         compressed.append_byte(echoed[i]);
       }
       var decoded = ByteBuffer(alloc, message.length());
-      try std.test.assert_eq(websocket_inflate(alloc, compressed, 0, compressed.readable_len(), message.length(), decoded), 0);
+      try std.test.assert_eq(
+        websocket_inflate(
+          alloc,
+          compressed,
+          0,
+          compressed.readable_len(),
+          message.length(),
+          decoded
+        ),
+        0
+      );
       var text: String = decoded.range_text(alloc, 0, decoded.readable_len());
       try std.test.assert(text.equals(message), "compressed message echoed");
       stream.close();
@@ -280,7 +342,10 @@ module hello_handler {
     test_function unknown_paths_are_404() hello_handler.tests.ServerTestResult {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(alloc, "GET /missing HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var reply: String = try ts.exchange(
+        alloc,
+        "GET /missing HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
       try std.test.assert(reply.starts_with("HTTP/1.1 404 "), "not found");
     }
   }

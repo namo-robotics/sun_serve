@@ -10,6 +10,7 @@
  * Parses requests and exposes them to handlers.
  */
 public module sun_serve {
+
   using std;
 
   const CR: u8 = b'\r';
@@ -60,7 +61,9 @@ public module sun_serve {
     if (c >= b'0' and c <= b'9') {
       return true;
     }
-    return c == b'!' or c == b'#' or c == b'$' or c == b'%' or c == b'&' or c == b'\'' or c == b'*' or c == b'+' or c == b'-' or c == b'.' or c == b'^' or c == b'_' or c == b'`' or c == b'|' or c == b'~';
+    return c == b'!' or c == b'#' or c == b'$' or c == b'%' or c == b'&' or c == b'\'' or
+      c == b'*' or c == b'+' or c == b'-' or c == b'.' or c == b'^' or c == b'_' or c == b'`' or
+      c == b'|' or c == b'~';
   }
 
   // The value of a hex digit, or a negative number for anything else.
@@ -91,7 +94,12 @@ public module sun_serve {
   }
 
   // Compare len bytes at base+off with a lowercase literal, ignoring case.
-  function bytes_equal_ci(base: const ref ByteBuffer, off: i64, len: i64, lit: static_ptr<u8>) bool {
+  function bytes_equal_ci(
+    base: const ref ByteBuffer,
+    off: i64,
+    len: i64,
+    lit: static_ptr<u8>
+  ) bool {
     if (len != lit.length()) {
       return false;
     }
@@ -104,7 +112,12 @@ public module sun_serve {
   }
 
   // Compare bytes with a runtime ASCII string, ignoring case.
-  function bytes_equal_string_ci(base: const ref ByteBuffer, off: i64, len: i64, text: const ref String) bool {
+  function bytes_equal_string_ci(
+    base: const ref ByteBuffer,
+    off: i64,
+    len: i64,
+    text: const ref String
+  ) bool {
     if (len != text.length()) {
       return false;
     }
@@ -120,7 +133,12 @@ public module sun_serve {
    * Report whether the bytes at base+off end with a lowercase literal,
    * ignoring case.
    */
-  function bytes_end_with_ci(base: const ref ByteBuffer, off: i64, len: i64, lit: static_ptr<u8>) bool {
+  function bytes_end_with_ci(
+    base: const ref ByteBuffer,
+    off: i64,
+    len: i64,
+    lit: static_ptr<u8>
+  ) bool {
     if (len < lit.length()) {
       return false;
     }
@@ -144,7 +162,13 @@ public module sun_serve {
    * when plus_is_space is set (form queries). Returns false for a malformed
    * escape, an encoded NUL, or a control byte.
    */
-  function percent_decode(base: const ref ByteBuffer, off: i64, len: i64, plus_is_space: bool, out: ref String) bool {
+  function percent_decode(
+    base: const ref ByteBuffer,
+    off: i64,
+    len: i64,
+    plus_is_space: bool,
+    out: ref String
+  ) bool {
     var i: i64 = 0;
     while (i < len) {
       var c: u8 = base.byte_at(off + i);
@@ -276,7 +300,10 @@ public module sun_serve {
     }
 
     // The decoded value of the first query parameter with this name.
-    public const method query_param(name: static_ptr<u8>, allocator: const ref HeapAllocator) Option<String> {
+    public const method query_param(
+      name: static_ptr<u8>,
+      allocator: const ref HeapAllocator
+    ) Option<String> {
       var i: i64 = 0;
       var end: i64 = this.query_len;
       while (i < end) {
@@ -330,7 +357,10 @@ public module sun_serve {
     }
 
     // The value of the first header with this lowercase name.
-    public const method header(name: static_ptr<u8>, allocator: const ref HeapAllocator) Option<String> {
+    public const method header(
+      name: static_ptr<u8>,
+      allocator: const ref HeapAllocator
+    ) Option<String> {
       var i: i64 = this.find_header(name);
       if (i < 0) {
         return Option.None;
@@ -348,7 +378,9 @@ public module sun_serve {
       var h: const ref HeaderSpan = this.headers[index];
       var start: i64 = 0;
       while (start < h.value_len) {
-        while (start < h.value_len and (this.head.byte_at(h.value_off + start) == SP or this.head.byte_at(h.value_off + start) == b',')) {
+        while (start < h.value_len and
+          (this.head.byte_at(h.value_off + start) == SP or
+            this.head.byte_at(h.value_off + start) == b',')) {
           start = start + 1;
         }
         var finish: i64 = start;
@@ -356,7 +388,9 @@ public module sun_serve {
           finish = finish + 1;
         }
         var trimmed: i64 = finish;
-        while (trimmed > start and (this.head.byte_at(h.value_off + trimmed - 1) == SP or this.head.byte_at(h.value_off + trimmed - 1) == HT)) {
+        while (trimmed > start and
+          (this.head.byte_at(h.value_off + trimmed - 1) == SP or
+            this.head.byte_at(h.value_off + trimmed - 1) == HT)) {
           trimmed = trimmed - 1;
         }
         if (bytes_equal_ci(this.head, h.value_off + start, trimmed - start, token)) {
@@ -368,7 +402,10 @@ public module sun_serve {
     }
 
     // Report whether a token-valued header contains a runtime token.
-    public const method header_contains_token_string(name: static_ptr<u8>, token: const ref String) bool {
+    public const method header_contains_token_string(
+      name: static_ptr<u8>,
+      token: const ref String
+    ) bool {
       var index: i64 = this.find_header(name);
       if (index < 0) {
         return false;
@@ -376,7 +413,9 @@ public module sun_serve {
       var h: const ref HeaderSpan = this.headers[index];
       var start: i64 = 0;
       while (start < h.value_len) {
-        while (start < h.value_len and (this.head.byte_at(h.value_off + start) == SP or this.head.byte_at(h.value_off + start) == b',')) {
+        while (start < h.value_len and
+          (this.head.byte_at(h.value_off + start) == SP or
+            this.head.byte_at(h.value_off + start) == b',')) {
           start = start + 1;
         }
         var finish: i64 = start;
@@ -498,7 +537,11 @@ public module sun_serve {
      * Incomplete when more bytes are needed, Failed with error_status() set,
      * or Complete with every accessor ready and head_len() set.
      */
-    public method parse_head(base: const ref ByteBuffer, len: i64, limits: const ref Limits) ParseStatus {
+    public method parse_head(
+      base: const ref ByteBuffer,
+      len: i64,
+      limits: const ref Limits
+    ) ParseStatus {
       this.reset();
       var i: i64 = 0;
       while (i + 1 < len and base.byte_at(i) == CR and base.byte_at(i + 1) == LF) {
@@ -713,11 +756,14 @@ public module sun_serve {
     method scan_connection_tokens(base: const ref ByteBuffer, off: i64, len: i64) void {
       var i: i64 = 0;
       while (i < len) {
-        while (i < len and (base.byte_at(off + i) == b',' or base.byte_at(off + i) == SP or base.byte_at(off + i) == HT)) {
+        while (i < len and
+          (base.byte_at(off + i) == b',' or base.byte_at(off + i) == SP or
+            base.byte_at(off + i) == HT)) {
           i = i + 1;
         }
         var tstart: i64 = i;
-        while (i < len and base.byte_at(off + i) != b',' and base.byte_at(off + i) != SP and base.byte_at(off + i) != HT) {
+        while (i < len and base.byte_at(off + i) != b',' and base.byte_at(off + i) != SP and
+          base.byte_at(off + i) != HT) {
           i = i + 1;
         }
         if (bytes_equal_ci(base, off + tstart, i - tstart, "close")) {

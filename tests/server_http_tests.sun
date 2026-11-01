@@ -4,10 +4,12 @@
  * Extends the server module with integration tests.
  */
 public module sun_serve {
+
   /*
    * Contains plain HTTP server integration tests.
    */
   module server_http_tests {
+
     using std;
     using std.time;
     using sun_serve.tests;
@@ -23,7 +25,10 @@ public module sun_serve {
         resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
       } else if (req.path_is("/big")) {
         resp.set_content_type("text/plain");
-        var line = String(alloc, "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n");
+        var line = String(
+          alloc,
+          "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n"
+        );
         for (var i: i64 = 0; i < 16384; i = i + 1) {
           resp.append_body_string(line);
         }
@@ -82,7 +87,13 @@ public module sun_serve {
     }
 
     // Append a test frame header to a binary String.
-    function append_h2_test_frame(out: ref String, len: i64, kind: H2FrameKind, flags: u8, stream: u32) void {
+    function append_h2_test_frame(
+      out: ref String,
+      len: i64,
+      kind: H2FrameKind,
+      flags: u8,
+      stream: u32
+    ) void {
       var header = ByteBuffer(HeapAllocator(), H2_FRAME_HEADER_LEN);
       h2_frame(header, len, kind, flags, stream);
       out.append(header.to_string(HeapAllocator()));
@@ -180,7 +191,9 @@ public module sun_serve {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc, 1, 5000);
       var c = try RawClient(alloc, ts.port);
-      try c.send("GET / HTTP/1.1\r\nHost: a\r\n\r\nGET /missing HTTP/1.1\r\nHost: a\r\n\r\nGET /query?name=pipe HTTP/1.1\r\nHost: a\r\n\r\n");
+      try c.send(
+        "GET / HTTP/1.1\r\nHost: a\r\n\r\nGET /missing HTTP/1.1\r\nHost: a\r\n\r\nGET /query?name=pipe HTTP/1.1\r\nHost: a\r\n\r\n"
+      );
       var r1: ClientResponse = try c.read_response();
       var r2: ClientResponse = try c.read_response();
       var r3: ClientResponse = try c.read_response();
@@ -215,7 +228,9 @@ public module sun_serve {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc, 1, 5000);
       var c = try RawClient(alloc, ts.port);
-      try c.send("POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\nTrailer: x\r\n\r\n");
+      try c.send(
+        "POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\nTrailer: x\r\n\r\n"
+      );
       var r: ClientResponse = try c.read_response();
       try std.test.assert_eq(r.status, 200);
       try std.test.assert(r.body.equals_literal("hello world"), "decoded chunks");
@@ -321,7 +336,9 @@ public module sun_serve {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc, 1, 5000);
       var c = try RawClient(alloc, ts.port);
-      try c.send("POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: 4\r\nExpect: 100-continue\r\n\r\n");
+      try c.send(
+        "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: 4\r\nExpect: 100-continue\r\n\r\n"
+      );
       sleep(create_duration_millis(50));
       try c.send("data");
       var r: ClientResponse = try c.read_response();
@@ -363,7 +380,10 @@ public module sun_serve {
       ts.server.stop();
       var failures: i32 = ts.server.join();
       try std.test.assert_eq(failures, 0);
-      try std.test.assert(t0.elapsed().as_millis() < 3000, "join returned within the drain window");
+      try std.test.assert(
+        t0.elapsed().as_millis() < 3000,
+        "join returned within the drain window"
+      );
       try std.test.assert(c.peer_closed(), "idle connection dropped at shutdown");
     }
   }

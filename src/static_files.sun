@@ -11,6 +11,7 @@
  * Serves files from a normalized directory tree.
  */
 public module sun_serve {
+
   using std;
   using std.io;
 
@@ -50,7 +51,10 @@ public module sun_serve {
    * nothing left to pop means the client tried to escape, which yields None.
    * The result starts with a slash and never ends with one (root is "/").
    */
-  public function normalize_path(alloc: const ref HeapAllocator, path: const ref String) Option<String> {
+  public function normalize_path(
+    alloc: const ref HeapAllocator,
+    path: const ref String
+  ) Option<String> {
     var kept = Vec<String>(alloc, 8);
     var segments: Vec<String> = path.split(alloc, b'/');
     for (var segment: ref String in segments) {
@@ -94,7 +98,11 @@ public module sun_serve {
     var last_modified: String;
 
     // Serve files under root. Returns an error if root is not a directory.
-    init(allocator: const ref HeapAllocator, root: const ref String, opts: StaticOptions) ServerResult<void> {
+    init(
+      allocator: const ref HeapAllocator,
+      root: const ref String,
+      opts: StaticOptions
+    ) ServerResult<void> {
       this.alloc = allocator.copy();
       this.root = root.clone(allocator);
       while (this.root.length() > 1 and this.root.ends_with("/")) {
@@ -208,7 +216,13 @@ public module sun_serve {
     }
 
     // Send an open regular file with its previously-read metadata.
-    method serve_file(req: const ref Request, resp: ref Response, f: File, size: i64, mtime: i64) void {
+    method serve_file(
+      req: const ref Request,
+      resp: ref Response,
+      f: File,
+      size: i64,
+      mtime: i64
+    ) void {
       this.etag.clear();
       this.etag.append_char(b'"');
       this.etag.append_hex(mtime);
@@ -263,7 +277,10 @@ public module sun_serve {
     public method websocket_open(socket: const ref WebSocketHandle) void {}
 
     // Ignore message events because files never upgrade.
-    public method websocket_message(socket: const ref WebSocketHandle, message: const ref WebSocketMessage) void {}
+    public method websocket_message(
+      socket: const ref WebSocketHandle,
+      message: const ref WebSocketMessage
+    ) void {}
 
     // Ignore close events because files never upgrade.
     public method websocket_close(socket: const ref WebSocketHandle, code: i32) void {}
@@ -275,7 +292,12 @@ public module sun_serve {
   /*
    * Builds one StaticFiles handler per worker for the server to own.
    */
-  public function static_handlers(alloc: const ref HeapAllocator, root: const ref String, opts: const ref StaticOptions, count: i32) ServerResult<Vec<StaticFiles>> {
+  public function static_handlers(
+    alloc: const ref HeapAllocator,
+    root: const ref String,
+    opts: const ref StaticOptions,
+    count: i32
+  ) ServerResult<Vec<StaticFiles>> {
     var out = Vec<StaticFiles>(alloc, _convert<i64>(count));
     for (var i: i32 = 0; i < count; i = i + 1) {
       out.push(try StaticFiles(alloc, root, opts.clone(alloc)));

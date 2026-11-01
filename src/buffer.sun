@@ -12,6 +12,7 @@
  * Provides the byte buffer used by server protocols.
  */
 public module sun_serve {
+
   using std;
 
   // Read one byte from a static string inside the low-level buffer boundary.
@@ -31,7 +32,12 @@ public module sun_serve {
   }
 
   // Copy a raw byte range at a foreign-function boundary into a String.
-  function bytes_to_string(alloc: const ref HeapAllocator, data: raw_ptr<u8>, off: i64, count: i64) String {
+  function bytes_to_string(
+    alloc: const ref HeapAllocator,
+    data: raw_ptr<u8>,
+    off: i64,
+    count: i64
+  ) String {
     var out = String(alloc, "");
     out.reserve(count);
     for (var i: i64 = 0; i < count; i = i + 1) {
@@ -73,11 +79,16 @@ public module sun_serve {
 
     // Report whether off and count describe a range inside the unread bytes.
     const method range_ok(off: i64, count: i64) bool {
-      return off >= 0 and count >= 0 and off <= this.readable_len() and count <= this.readable_len() - off;
+      return off >= 0 and count >= 0 and off <= this.readable_len() and
+        count <= this.readable_len() - off;
     }
 
     // Copy a readable range into a new String.
-    public const method range_text(allocator: const ref HeapAllocator, off: i64, count: i64) String {
+    public const method range_text(
+      allocator: const ref HeapAllocator,
+      off: i64,
+      count: i64
+    ) String {
       if (not this.range_ok(off, count)) {
         return String(allocator, "");
       }

@@ -4,10 +4,12 @@
  * Extends the server module with buffer tests.
  */
 public module sun_serve {
+
   /*
    * Contains byte-buffer tests.
    */
   module buffer_tests {
+
     using std;
 
     test_function append_and_read_back() {
@@ -70,7 +72,10 @@ public module sun_serve {
       b.append_byte(b' ');
       b.append_hex_u64(48879);
       var text: String = b.to_string(alloc);
-      try std.test.assert(text.equals_literal("0 -42 9223372036854775807 beef"), "decimal and hex formatting");
+      try std.test.assert(
+        text.equals_literal("0 -42 9223372036854775807 beef"),
+        "decimal and hex formatting"
+      );
     }
 
     test_function shrink_when_empty() {

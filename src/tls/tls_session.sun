@@ -10,6 +10,7 @@
  * Manages TLS state for individual connections.
  */
 public module sun_serve {
+
   using std;
 
   // Owns an optional OpenSSL session for one connection.
@@ -117,7 +118,11 @@ public module sun_serve {
     method alpn(alloc: const ref HeapAllocator) String {
       var data: raw_ptr<u8> = null;
       var len: u32 = 0;
-      unsafe ssl_get0_alpn_selected(this.ssl, _address_of<raw_ptr<u8>>(data), _address_of<u32>(len));
+      unsafe ssl_get0_alpn_selected(
+        this.ssl,
+        _address_of<raw_ptr<u8>>(data),
+        _address_of<u32>(len)
+      );
       if (data == null) {
         return String(alloc, "");
       }

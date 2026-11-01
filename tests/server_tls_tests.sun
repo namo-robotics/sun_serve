@@ -11,10 +11,12 @@
  * Extends the server module with TLS tests.
  */
 public module sun_serve {
+
   /*
    * Contains TLS server integration tests.
    */
   module server_tls_tests {
+
     using std;
     using std.process;
     using std.time;
@@ -134,7 +136,12 @@ public module sun_serve {
        * return everything it printed. trust says whether to pass the test
        * certificate as the CA; alpn is the protocol list to offer.
        */
-      public method s_client(alloc: ref HeapAllocator, request: const ref String, trust: bool, alpn: static_ptr<u8>) ServerResult<String> {
+      public method s_client(
+        alloc: ref HeapAllocator,
+        request: const ref String,
+        trust: bool,
+        alpn: static_ptr<u8>
+      ) ServerResult<String> {
         var cli = Command(alloc, "openssl");
         cli.add_arg("s_client");
         cli.add_arg("-connect");
@@ -179,7 +186,10 @@ public module sun_serve {
       try std.test.assert(out.contains("Verify return code: 0 (ok)"), "certificate accepted");
       try std.test.assert(out.contains("HTTP/1.1 200 OK"), "status over TLS");
       try std.test.assert(out.contains("secure hello"), "body over TLS");
-      var post = String(alloc, "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 16\r\nConnection: close\r\n\r\npayload over tls");
+      var post = String(
+        alloc,
+        "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 16\r\nConnection: close\r\n\r\npayload over tls"
+      );
       var echoed: String = try ts.s_client(alloc, post, true, "");
       try std.test.assert(echoed.contains("Content-Length: 16"), "echo length");
       try std.test.assert(echoed.contains("\r\n\r\npayload over tls"), "echoed body");
@@ -198,7 +208,10 @@ public module sun_serve {
         return;
       }
       var ts = try TlsServer(alloc, "keepalive");
-      var reqs = String(alloc, "GET / HTTP/1.1\r\nHost: localhost\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var reqs = String(
+        alloc,
+        "GET / HTTP/1.1\r\nHost: localhost\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
       var out: String = try ts.s_client(alloc, reqs, true, "");
       var count: i64 = 0;
       var from: i64 = 0;
@@ -215,7 +228,10 @@ public module sun_serve {
         from = from + idx + 12;
       }
       try std.test.assert_eq(count, 3);
-      try std.test.assert(out.contains("Connection: keep-alive"), "first responses keep the session");
+      try std.test.assert(
+        out.contains("Connection: keep-alive"),
+        "first responses keep the session"
+      );
     }
 
     test_function untrusted_certificate_is_rejected_by_client() sun_serve.ServerTestResult {

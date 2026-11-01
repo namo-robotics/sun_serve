@@ -4,6 +4,7 @@
  * Implements HTTP/2 framing and header compression.
  */
 public module sun_serve {
+
   using std;
 
   // The frame types of RFC 9113, stored as they appear on the wire.
@@ -187,7 +188,8 @@ public module sun_serve {
         match this.entries.remove(0) {
           AccessResult.Ok(value) => {
             var oldest: H2Header = value;
-            this.bytes = this.bytes - oldest.name.length() - oldest.value.length() - HPACK_ENTRY_OVERHEAD;
+            this.bytes = this.bytes - oldest.name.length() - oldest.value.length() -
+              HPACK_ENTRY_OVERHEAD;
           },
           (e: const ref IError) => {
             // Unreachable: the table was just checked to be non-empty.
@@ -285,7 +287,8 @@ public module sun_serve {
 
   // Read an unsigned big-endian HTTP/2 integer.
   function h2_u32(data: const ref ByteBuffer, off: i64) u32 {
-    return (_convert<u32>(data.byte_at(off)) << 24) | (_convert<u32>(data.byte_at(off + 1)) << 16) | (_convert<u32>(data.byte_at(off + 2)) << 8) | _convert<u32>(data.byte_at(off + 3));
+    return (_convert<u32>(data.byte_at(off)) << 24) | (_convert<u32>(data.byte_at(off + 1)) << 16) |
+      (_convert<u32>(data.byte_at(off + 2)) << 8) | _convert<u32>(data.byte_at(off + 3));
   }
 
   // Append an unsigned big-endian HTTP/2 integer.
@@ -297,7 +300,10 @@ public module sun_serve {
   }
 
   // Validate HTTP/2 request-header syntax and decoded limits.
-  function h2_valid_request_headers(headers: const ref Vec<H2Header>, limits: const ref Limits) bool {
+  function h2_valid_request_headers(
+    headers: const ref Vec<H2Header>,
+    limits: const ref Limits
+  ) bool {
     if (headers.size() > limits.max_headers) {
       return false;
     }
@@ -313,7 +319,8 @@ public module sun_serve {
       if (field.name.is_empty()) {
         return false;
       }
-      decoded_bytes = decoded_bytes + field.name.length() + field.value.length() + HPACK_ENTRY_OVERHEAD;
+      decoded_bytes = decoded_bytes + field.name.length() + field.value.length() +
+        HPACK_ENTRY_OVERHEAD;
       if (decoded_bytes > limits.max_header_bytes) {
         return false;
       }
@@ -342,7 +349,9 @@ public module sun_serve {
         }
       } else {
         regular_seen = true;
-        if (field.name.equals_literal("connection") or field.name.equals_literal("proxy-connection") or field.name.equals_literal("keep-alive") or field.name.equals_literal("transfer-encoding") or field.name.equals_literal("upgrade")) {
+        if (field.name.equals_literal("connection") or
+          field.name.equals_literal("proxy-connection") or field.name.equals_literal("keep-alive") or
+          field.name.equals_literal("transfer-encoding") or field.name.equals_literal("upgrade")) {
           return false;
         }
         if (field.name.equals_literal("te") and not field.value.equals_literal("trailers")) {
@@ -404,7 +413,8 @@ public module sun_serve {
 
   // The payload length declared by a frame header at off.
   function h2_frame_len(data: const ref ByteBuffer, off: i64) i64 {
-    return (_convert<i64>(data.byte_at(off)) << 16) | (_convert<i64>(data.byte_at(off + 1)) << 8) | _convert<i64>(data.byte_at(off + 2));
+    return (_convert<i64>(data.byte_at(off)) << 16) | (_convert<i64>(data.byte_at(off + 1)) << 8) |
+      _convert<i64>(data.byte_at(off + 2));
   }
 
   // The frame type declared by a frame header at off; unknown types are None.
@@ -415,7 +425,11 @@ public module sun_serve {
   // Append a settings frame advertising the server limits.
   function h2_append_settings(out: ref ByteBuffer, max_concurrent_streams: i64) void {
     h2_frame(out, 12, H2FrameKind.Settings, 0, 0);
-    h2_append_setting(out, H2_SETTINGS_MAX_CONCURRENT_STREAMS, _convert<u32>(max_concurrent_streams));
+    h2_append_setting(
+      out,
+      H2_SETTINGS_MAX_CONCURRENT_STREAMS,
+      _convert<u32>(max_concurrent_streams)
+    );
     h2_append_setting(out, H2_SETTINGS_ENABLE_CONNECT_PROTOCOL, 1);
   }
 
@@ -1074,7 +1088,12 @@ public module sun_serve {
   }
 
   // Decode one RFC HPACK Huffman string.
-  function hpack_huffman_decode(alloc: const ref HeapAllocator, data: const ref ByteBuffer, off: i64, len: i64) Option<String> {
+  function hpack_huffman_decode(
+    alloc: const ref HeapAllocator,
+    data: const ref ByteBuffer,
+    off: i64,
+    len: i64
+  ) Option<String> {
     var out = String(alloc, "");
     var bits: i32 = 0;
     var acc: u64 = 0;
@@ -1117,7 +1136,12 @@ public module sun_serve {
   }
 
   // Decode an HPACK string and advance pos.
-  function hpack_string(alloc: const ref HeapAllocator, data: const ref ByteBuffer, len: i64, pos: ref i64) Option<String> {
+  function hpack_string(
+    alloc: const ref HeapAllocator,
+    data: const ref ByteBuffer,
+    len: i64,
+    pos: ref i64
+  ) Option<String> {
     if (pos >= len) {
       return Option.None;
     }
@@ -1137,7 +1161,13 @@ public module sun_serve {
   }
 
   // Decode one HPACK block. Dynamic references and Huffman strings are rejected.
-  function hpack_decode(alloc: const ref HeapAllocator, data: const ref ByteBuffer, len: i64, decoder: ref HpackDecoder, out: ref Vec<H2Header>) bool {
+  function hpack_decode(
+    alloc: const ref HeapAllocator,
+    data: const ref ByteBuffer,
+    len: i64,
+    decoder: ref HpackDecoder,
+    out: ref Vec<H2Header>
+  ) bool {
     var pos: i64 = 0;
     while (pos < len) {
       var first: u8 = data.byte_at(pos);
@@ -1231,7 +1261,11 @@ public module sun_serve {
   }
 
   // Encode one literal response header given as literals.
-  function hpack_header_literal(out: ref ByteBuffer, name: static_ptr<u8>, value: static_ptr<u8>) void {
+  function hpack_header_literal(
+    out: ref ByteBuffer,
+    name: static_ptr<u8>,
+    value: static_ptr<u8>
+  ) void {
     hpack_header(out, String(name), String(value));
   }
 

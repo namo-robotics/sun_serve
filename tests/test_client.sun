@@ -10,16 +10,19 @@
  * Extends the server module with shared test helpers.
  */
 public module sun_serve {
+
   /*
    * Contains integration-test client helpers.
    */
   module tests {
+
     using std;
 
     // struct timeval for SO_RCVTIMEO.
     class Timeval {
       var sec: i64;
       var usec: i64 = 0;
+
       init(sec: i64) {
         this.sec = sec;
       }
@@ -50,7 +53,10 @@ public module sun_serve {
     }
 
     // Parse the Content-Length value from a lowercased header block.
-    function content_length_of(alloc: const ref HeapAllocator, lower: const ref String) ServerResult<i64> {
+    function content_length_of(
+      alloc: const ref HeapAllocator,
+      lower: const ref String
+    ) ServerResult<i64> {
       var name: static_ptr<u8> = "content-length:";
       var idx: i64 = match lower.find(name) {
         Option.Some(v) => v,
@@ -59,7 +65,11 @@ public module sun_serve {
       if (idx < 0) {
         return ServerResult.Ok(-1);
       }
-      var rest: String = try lower.substr(alloc, idx + name.length(), lower.length() - idx - name.length());
+      var rest: String = try lower.substr(
+        alloc,
+        idx + name.length(),
+        lower.length() - idx - name.length()
+      );
       var value: String = rest.split(alloc, "\r\n")[0].clone(alloc);
       value.trim();
       return ServerResult.Ok(
@@ -230,7 +240,11 @@ public module sun_serve {
           resp.body = try this.pending.substr(this.alloc, body_start, length);
           consumed = body_start + length;
         }
-        this.pending = try this.pending.substr(this.alloc, consumed, this.pending.length() - consumed);
+        this.pending = try this.pending.substr(
+          this.alloc,
+          consumed,
+          this.pending.length() - consumed
+        );
         return ServerResult.Ok(resp);
       }
 

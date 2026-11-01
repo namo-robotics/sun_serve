@@ -9,6 +9,7 @@
  * Defines server configuration types and defaults.
  */
 public module sun_serve {
+
   using std;
 
   // One address to listen on and whether it speaks TLS.

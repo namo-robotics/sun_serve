@@ -4,16 +4,39 @@
  * Implements WebSocket callbacks, handles, and framing.
  */
 public module sun_serve {
+
   using std;
 
   extern "C" function ssl_sha1(data: raw_ptr<u8>, len: i64, out: raw_ptr<u8>) raw_ptr<u8> as "SHA1";
+
   extern "C" function zlib_version() raw_ptr<u8> as "zlibVersion";
-  extern "C" function zlib_deflate_init(stream: ref ZStream, level: i32, method: i32, window_bits: i32, memory_level: i32, strategy: i32, version: raw_ptr<u8>, stream_size: i32) i32 as "deflateInit2_";
+
+  extern "C" function zlib_deflate_init(
+    stream: ref ZStream,
+    level: i32,
+    method: i32,
+    window_bits: i32,
+    memory_level: i32,
+    strategy: i32,
+    version: raw_ptr<u8>,
+    stream_size: i32
+  ) i32 as "deflateInit2_";
+
   extern "C" function zlib_deflate_bound(stream: ref ZStream, source_len: u64) u64 as "deflateBound";
+
   extern "C" function zlib_deflate(stream: ref ZStream, flush: i32) i32 as "deflate";
+
   extern "C" function zlib_deflate_end(stream: ref ZStream) i32 as "deflateEnd";
-  extern "C" function zlib_inflate_init(stream: ref ZStream, window_bits: i32, version: raw_ptr<u8>, stream_size: i32) i32 as "inflateInit2_";
+
+  extern "C" function zlib_inflate_init(
+    stream: ref ZStream,
+    window_bits: i32,
+    version: raw_ptr<u8>,
+    stream_size: i32
+  ) i32 as "inflateInit2_";
+
   extern "C" function zlib_inflate(stream: ref ZStream, flush: i32) i32 as "inflate";
+
   extern "C" function zlib_inflate_end(stream: ref ZStream) i32 as "inflateEnd";
 
   const Z_OK: i32 = 0;
@@ -79,12 +102,19 @@ public module sun_serve {
   }
 
   // Compress one message as a raw RFC 7692 DEFLATE block.
-  public function websocket_deflate(data: const ref ByteBuffer, off: i64, len: i64, out: ref ByteBuffer) bool {
-    if (off < 0 or len < 0 or len > ZLIB_MAX_LEN or off > data.readable_len() or len > data.readable_len() - off) {
+  public function websocket_deflate(
+    data: const ref ByteBuffer,
+    off: i64,
+    len: i64,
+    out: ref ByteBuffer
+  ) bool {
+    if (off < 0 or len < 0 or len > ZLIB_MAX_LEN or off > data.readable_len() or
+      len > data.readable_len() - off) {
       return false;
     }
     var stream = ZStream();
-    if (unsafe zlib_deflate_init(stream, -1, Z_DEFLATED, -15, 8, 0, zlib_version(), Z_STREAM_SIZE) != Z_OK) {
+    if (unsafe zlib_deflate_init(stream, -1, Z_DEFLATED, -15, 8, 0, zlib_version(), Z_STREAM_SIZE) !=
+      Z_OK) {
       return false;
     }
     var bound: u64 = unsafe zlib_deflate_bound(stream, _convert<u64>(len)) + 8;
@@ -108,8 +138,16 @@ public module sun_serve {
   }
 
   // Inflate one RFC 7692 message, returning malformed or oversized status.
-  public function websocket_inflate(alloc: const ref HeapAllocator, data: const ref ByteBuffer, off: i64, len: i64, max_bytes: i64, out: ref ByteBuffer) i32 {
-    if (off < 0 or len < 0 or len > ZLIB_MAX_LEN - 4 or off > data.readable_len() or len > data.readable_len() - off or max_bytes < 0 or max_bytes >= ZLIB_MAX_LEN) {
+  public function websocket_inflate(
+    alloc: const ref HeapAllocator,
+    data: const ref ByteBuffer,
+    off: i64,
+    len: i64,
+    max_bytes: i64,
+    out: ref ByteBuffer
+  ) i32 {
+    if (off < 0 or len < 0 or len > ZLIB_MAX_LEN - 4 or off > data.readable_len() or
+      len > data.readable_len() - off or max_bytes < 0 or max_bytes >= ZLIB_MAX_LEN) {
       return 1;
     }
     var input = ByteBuffer(alloc, len + 4);
@@ -144,6 +182,7 @@ public module sun_serve {
 
   // Distinguishes text messages from binary messages.
   public enum WebSocketMessageKind { Text, Binary }
+
   // Reports what happened when application data was queued.
   public enum WebSocketSendResult { Queued, Closed, Invalid, Overloaded }
 
@@ -256,7 +295,13 @@ public module sun_serve {
     }
 
     // Queue one unmasked server frame.
-    method enqueue(generation: i64, opcode: WebSocketOpcode, data: const ref ByteBuffer, off: i64, len: i64) WebSocketSendResult {
+    method enqueue(
+      generation: i64,
+      opcode: WebSocketOpcode,
+      data: const ref ByteBuffer,
+      off: i64,
+      len: i64
+    ) WebSocketSendResult {
       if (generation != this.generation) {
         return WebSocketSendResult.Invalid;
       }
@@ -376,11 +421,21 @@ public module sun_serve {
         return WebSocketSendResult.Invalid;
       }
       var guard = this.mailbox.lock();
-      return guard.get().enqueue(this.generation, WebSocketOpcode.Text, bytes, 0, bytes.readable_len());
+      return guard.get().enqueue(
+        this.generation,
+        WebSocketOpcode.Text,
+        bytes,
+        0,
+        bytes.readable_len()
+      );
     }
 
     // Queue a binary buffer range.
-    public const method send_binary(data: const ref ByteBuffer, off: i64, len: i64) WebSocketSendResult {
+    public const method send_binary(
+      data: const ref ByteBuffer,
+      off: i64,
+      len: i64
+    ) WebSocketSendResult {
       if (off < 0 or len < 0 or off > data.readable_len() or len > data.readable_len() - off) {
         return WebSocketSendResult.Invalid;
       }
@@ -390,7 +445,8 @@ public module sun_serve {
 
     // Queue a ping control-frame buffer range.
     public const method ping(data: const ref ByteBuffer, off: i64, len: i64) WebSocketSendResult {
-      if (off < 0 or len < 0 or len > 125 or off > data.readable_len() or len > data.readable_len() - off) {
+      if (off < 0 or len < 0 or len > 125 or off > data.readable_len() or
+        len > data.readable_len() - off) {
         return WebSocketSendResult.Invalid;
       }
       var guard = this.mailbox.lock();
@@ -431,7 +487,11 @@ public module sun_serve {
    * compression says whether RSV1 may be set on data frames. Ready means the
    * header is complete; the payload may still be missing.
    */
-  function websocket_parse_frame(data: const ref ByteBuffer, compression: bool, frame: ref WebSocketFrame) WebSocketParse {
+  function websocket_parse_frame(
+    data: const ref ByteBuffer,
+    compression: bool,
+    frame: ref WebSocketFrame
+  ) WebSocketParse {
     if (data.readable_len() < 2) {
       return WebSocketParse.Incomplete;
     }
@@ -476,7 +536,11 @@ public module sun_serve {
   }
 
   // Copy a complete frame's payload out of data, removing the client mask.
-  function websocket_unmask(alloc: const ref HeapAllocator, data: const ref ByteBuffer, frame: const ref WebSocketFrame) ByteBuffer {
+  function websocket_unmask(
+    alloc: const ref HeapAllocator,
+    data: const ref ByteBuffer,
+    frame: const ref WebSocketFrame
+  ) ByteBuffer {
     var mask_pos: i64 = frame.header_len;
     var pos: i64 = mask_pos + 4;
     var decoded = ByteBuffer(alloc, frame.length);
@@ -487,12 +551,25 @@ public module sun_serve {
   }
 
   // Append one final unmasked server frame.
-  function websocket_append_frame(out: ref ByteBuffer, opcode: WebSocketOpcode, data: const ref ByteBuffer, off: i64, len: i64) void {
+  function websocket_append_frame(
+    out: ref ByteBuffer,
+    opcode: WebSocketOpcode,
+    data: const ref ByteBuffer,
+    off: i64,
+    len: i64
+  ) void {
     websocket_append_frame_flags(out, opcode, false, data, off, len);
   }
 
   // Append one final server frame with an optional RSV1 compression flag.
-  function websocket_append_frame_flags(out: ref ByteBuffer, opcode: WebSocketOpcode, compressed: bool, data: const ref ByteBuffer, off: i64, len: i64) void {
+  function websocket_append_frame_flags(
+    out: ref ByteBuffer,
+    opcode: WebSocketOpcode,
+    compressed: bool,
+    data: const ref ByteBuffer,
+    off: i64,
+    len: i64
+  ) void {
     var first: u8 = WS_FIN | _convert<u8>(opcode);
     if (compressed) {
       first = first | WS_RSV1;
@@ -631,7 +708,8 @@ public module sun_serve {
     }
     for (var i: i64 = 0; i < 22; i = i + 1) {
       var c: u8 = string_byte(key, i);
-      if (not ((c >= b'A' and c <= b'Z') or (c >= b'a' and c <= b'z') or (c >= b'0' and c <= b'9') or c == b'+' or c == b'/')) {
+      if (not ((c >= b'A' and c <= b'Z') or (c >= b'a' and c <= b'z') or (c >= b'0' and c <= b'9') or
+        c == b'+' or c == b'/')) {
         return false;
       }
     }

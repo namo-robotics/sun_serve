@@ -10,6 +10,7 @@
  * Provides nonblocking networking operations for workers.
  */
 public module sun_serve {
+
   using std;
 
   // Results of a nonblocking read or write, alongside a positive byte count.
@@ -76,7 +77,11 @@ public module sun_serve {
     public method local_port() ServerResult<i32> {
       var ip: i32 = 0;
       var port: i32 = 0;
-      var rc: i32 = unsafe __getsockname_ipv4(this.fd, _address_of<i32>(ip), _address_of<i32>(port));
+      var rc: i32 = unsafe __getsockname_ipv4(
+        this.fd,
+        _address_of<i32>(ip),
+        _address_of<i32>(port)
+      );
       if (rc < 0) {
         return ServerResult.Error(Error(last_errno(), "failed to read socket address"));
       }

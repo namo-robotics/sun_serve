@@ -15,6 +15,7 @@ using sun_serve;
  * Implements the static-file server command.
  */
 module sun_serve_cli {
+
   using std;
   using sun_serve;
 
@@ -125,7 +126,13 @@ module sun_serve_cli {
 
   // Report whether a flag is one that takes a value.
   function takes_value(flag: const ref String) bool {
-    return flag.equals_literal("--listen") or flag.equals_literal("--tls-listen") or flag.equals_literal("--cert") or flag.equals_literal("--key") or flag.equals_literal("--root") or flag.equals_literal("--workers") or flag.equals_literal("--log-level") or flag.equals_literal("--max-body") or flag.equals_literal("--max-header") or flag.equals_literal("--keep-alive-timeout") or flag.equals_literal("--index") or flag.equals_literal("--cache-control") or flag.equals_literal("--backlog");
+    return flag.equals_literal("--listen") or flag.equals_literal("--tls-listen") or
+      flag.equals_literal("--cert") or flag.equals_literal("--key") or
+      flag.equals_literal("--root") or flag.equals_literal("--workers") or
+      flag.equals_literal("--log-level") or flag.equals_literal("--max-body") or
+      flag.equals_literal("--max-header") or flag.equals_literal("--keep-alive-timeout") or
+      flag.equals_literal("--index") or flag.equals_literal("--cache-control") or
+      flag.equals_literal("--backlog");
   }
 
   // Interpret the command line. args includes the program name first.
@@ -292,7 +299,12 @@ module sun_serve_cli {
   }
 
   // Print one "listening on" line per listener.
-  function announce(alloc: const ref HeapAllocator, server: const ref Server<StaticFiles>, cfg: const ref Config, workers: i32) void {
+  function announce(
+    alloc: const ref HeapAllocator,
+    server: const ref Server<StaticFiles>,
+    cfg: const ref Config,
+    workers: i32
+  ) void {
     for (var i: i64 = 0; i < cfg.listen.size(); i = i + 1) {
       var spec: const ref ListenSpec = cfg.listen[i];
       var scheme: static_ptr<u8> = spec.tls ? "https" : "http";
@@ -337,7 +349,12 @@ module sun_serve_cli {
   /* Start the configured server and wait for shutdown. */
   function serve(alloc: const ref HeapAllocator, cli: ref Cli) ServerResult<i32> {
     try install_signal_handlers();
-    var handlers: Vec<StaticFiles> = try static_handlers(alloc, cli.root, cli.static_opts, cli.workers);
+    var handlers: Vec<StaticFiles> = try static_handlers(
+      alloc,
+      cli.root,
+      cli.static_opts,
+      cli.workers
+    );
     var server = try Server<StaticFiles>(alloc, cli.config.clone(), handlers);
     try server.start();
     announce(alloc, server, cli.config, cli.workers);
@@ -359,6 +376,11 @@ function main(argc: i32, argv: raw_ptr<raw_ptr<i8>>) i32 {
 }
 
 manifest {
-  test_files: ["cli_tests.sun"]
-  libraries: ["stdlib.moon", "sun_serve.moon"]
+  test_files: [
+    "cli_tests.sun"
+  ]
+  libraries: [
+    "stdlib.moon",
+    "sun_serve.moon"
+  ]
 }
