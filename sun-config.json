@@ -1,6 +1,5 @@
 {
   "sun_path": [
-    "build",
     "/usr/lib/sun"
   ],
   "path_variables": {
@@ -11,20 +10,25 @@
     {
       "path": "src/sun_serve.sun",
       "type": "library",
-      "output_name": "build/sun_serve.moon",
-      "test_binary_name": "build/sun_serve_lib_test"
+      "name": "sun_serve",
+      "export": true
     },
     {
       "path": "cmd/sun_serve/main.sun",
       "type": "binary",
-      "output_name": "build/sun_serve",
-      "test_binary_name": "build/sun_serve_test"
+      "name": "server",
+      "requires": [
+        "sun_serve"
+      ]
     },
     {
       "path": "examples/hello_handler/main.sun",
       "type": "binary",
-      "output_name": "build/hello_handler",
-      "test_binary_name": "build/hello_handler_test"
+      "name": "hello_handler",
+      "requires": [
+        "sun_serve"
+      ]
     }
-  ]
+  ],
+  "package_id": "namo-robotics/sun_serve"
 }
