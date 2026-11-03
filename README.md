@@ -65,7 +65,7 @@ with tests; building it needs the `sun` toolchain (see
 [Build and run](#build-and-run)):
 
 ```sh
-sun -c sun-config.json           # produces build/hello_handler
+scripts/build.sh                # produces build/hello_handler
 build/hello_handler &
 curl 'http://127.0.0.1:8080/hi?name=you'
 ```
@@ -78,7 +78,7 @@ handler the binary uses. [Using the library](#using-the-library) shows the code.
 Requires the rolling `sun` development toolchain (see `Dockerfile`).
 
 ```bash
-scripts/build.sh          # checks + incremental sun -c sun-config.json -> build/
+scripts/build.sh          # checks + incremental builds, staged into build/
 scripts/test.sh           # build, then the compiled suites (--jit runs under the JIT)
 scripts/mkcert.sh build   # self-signed localhost certificate for local use
 build/sun_serve --root ./www --listen 0.0.0.0:8080 \

@@ -28,7 +28,7 @@ jobs:
           # Match the checkout owner so the container can write build outputs.
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD:/workspace" -w /workspace sun_serve-ci \
-            bash -c "scripts/build.sh && scripts/test.sh"
+            bash -c "scripts/test.sh"
 
   release-dev:
     needs: build-and-test
@@ -62,7 +62,7 @@ jobs:
           # Match the checkout owner so the container can write build outputs.
           docker run --rm --user "$(id -u):$(id -g)" \
             -v "$PWD:/workspace" -w /workspace sun_serve-release \
-            bash -c "scripts/build.sh && scripts/test.sh && sun --version > build/SUN_VERSION"
+            bash -c "scripts/test.sh && sun --version > build/SUN_VERSION"
 
       # The binary ships in a tarball; the library ships as a bare moon named
       # for its target, the way the Sun toolchain names its own bundles.
