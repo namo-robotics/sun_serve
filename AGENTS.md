@@ -15,13 +15,17 @@ A file for guiding coding agents.
 - Run `scripts/check-sun-safety.sh` when changing Sun code.
 
 ## Code Comments
-- All code comments should be concise, plain-english written for a general audience of software engineers.
+
+- All code comments should written in crystal-clear and unambiguous plain-english describing the how the target code works and its purpose.
+- All code comments written for a general audience of software engineers.
+- Comments requiring deeper explanation should be led by concrete minimal examples.
 - Use block comments for comments that span multiple lines.
 - Put a block comment directly above every module declaration, with no blank line between them.
 - Every public function, class, module, etc should have a concise, plain-english block comment describing what it does.
 - Do not hard-code numeric values that subject to change in comments.
 
 ## Commit messages
+
 - Subject: `<scope>: <description>` (scope = subsystem/package/area; imperative; no `feat`/`fix` types).
 - Body: blank line, then one concise bullet per key change if not already captured in the subject.
 - Do not add AI attribution to commits or PRs (no Co-Authored-By, Generated-with, tool names, or session links).
