@@ -16,13 +16,13 @@ A file for guiding coding agents.
 
 ## Code Comments
 
-- All code comments should written in crystal-clear and unambiguous plain-english describing the how the target code works and its purpose.
-- All code comments written for a general audience of software engineers.
-- Comments requiring deeper explanation should be led by concrete minimal examples.
+- All code comments should be written in clear, unambiguous plain English, describing how the code works and its purpose.
+- All code comments should be written for a general audience of software engineers.
+- Comments requiring deeper explanation should begin with concrete, minimal examples.
 - Use block comments for comments that span multiple lines.
 - Put a block comment directly above every module declaration, with no blank line between them.
-- Every public function, class, module, etc should have a concise, plain-english block comment describing what it does.
-- Do not hard-code numeric values that subject to change in comments.
+- Every public function, class, module, etc. should have a concise block comment in plain English describing what it does.
+- Do not hard-code numeric values that are subject to change in comments.
 
 ## Commit messages
 
