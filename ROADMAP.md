@@ -47,5 +47,5 @@ self-contained piece of work; nothing here is scheduled.
 - **aarch64 builds**
   - The Sun package installs aarch64 stdlib and TLS bundles, and
     `sun-config.json` can hold a `target` block for them, but the OpenSSL and
-    zlib archives the Dockerfile builds are x86_64 musl only. Build aarch64
+    zlib archives the native dependency step downloads are x86_64 musl only. Build aarch64
     archives, add the target block, and publish a second moon from CI.

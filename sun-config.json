@@ -1,18 +1,18 @@
 {
-  "supported_targets": ["x86_64-linux-gnu", "x86_64-linux-musl"],
-  "sun_path": [
-    "/usr/lib/sun"
+  "supported_targets": [
+    "x86_64-linux-gnu",
+    "x86_64-linux-musl"
   ],
-  "path_variables": {
-    "MUSL_LIB": "/opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib"
-  },
   "root": true,
   "entrypoints": [
     {
       "path": "src/sun_serve.sun",
       "type": "library",
       "name": "sun_serve",
-      "export": true
+      "export": true,
+      "steps": [
+        "native-dependencies"
+      ]
     },
     {
       "path": "cmd/sun_serve/main.sun",
@@ -31,5 +31,25 @@
       ]
     }
   ],
-  "package_id": "namo-robotics/sun_serve"
+  "package_id": "namo-robotics/sun_serve",
+  "steps": [
+    {
+      "name": "native-dependencies",
+      "command": [
+        "bash",
+        "scripts/fetch-native-dependencies.sh",
+        "${SUN_BUILD}"
+      ],
+      "inputs": [
+        "scripts/fetch-native-dependencies.sh"
+      ],
+      "outputs": [
+        "${SUN_BUILD}/native/libz.a",
+        "${SUN_BUILD}/native/libssl.a",
+        "${SUN_BUILD}/native/libcrypto.a",
+        "${SUN_BUILD}/native/archives.sha256",
+        "${SUN_BUILD}/native/.recipe"
+      ]
+    }
+  ]
 }

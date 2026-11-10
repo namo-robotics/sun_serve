@@ -77,6 +77,11 @@ handler the binary uses. [Using the library](#using-the-library) shows the code.
 
 Requires the rolling `sun` development toolchain (see `Dockerfile`).
 
+The config uses the selected compiler's standard-library search paths. Build
+`sun_serve` and its consumers with the same toolchain; forcing a different
+installation's `stdlib.moon` can introduce incompatible copies of types such as
+`std.String` across their public APIs.
+
 ```bash
 scripts/build.sh          # checks + incremental builds, staged into build/
 scripts/test.sh           # build, then the compiled suites (--jit runs under the JIT)
@@ -156,7 +161,7 @@ The build produces `build/sun_serve.moon`, and the `dev` release publishes
 the same file as `sun_serve-x86_64-linux-gnu.moon`. Consumers put it in a
 directory on `sun_path` (or `/usr/lib/sun`) as `sun_serve.moon` and list
 `stdlib.moon` and `sun_serve.moon` in their manifest's `libraries`. The bundle
-carries zlib and OpenSSL, built with the musl toolchain in the `Dockerfile`;
+carries zlib and OpenSSL, prepared by the `native-dependencies` build step;
 consumers link those archives transitively, both when compiling and under the
 JIT. No `tls.moon` dependency is needed: the server provides its own TLS
 bindings, and Sun isolates each bundle's native symbols. The hello example
@@ -215,7 +220,7 @@ suites through `sun-config.json`.
 ## Status and roadmap
 
 - Linux x86_64. The Sun toolchain now installs aarch64 stdlib and TLS
-  bundles, but the OpenSSL and zlib archives the `Dockerfile` builds are
+  bundles, but the OpenSSL and zlib archives the native dependency step downloads are
   x86_64 musl only, so an aarch64 `sun_serve.moon` waits on cross-built
   archives.
 - Not yet: `Range` requests, `sendfile`, and directory listings. See
@@ -227,3 +232,17 @@ suites through `sun-config.json`.
 
 See [.devcontainer/README.md](.devcontainer/README.md) for the applied Sun template
 version, project-specific settings, and rebuild instructions.
+
+### Native build dependencies
+
+`sun build` downloads prebuilt x86_64 musl archives before compiling `sun_serve`.
+It uses Alpine Linux packages pinned to OpenSSL 3.5.9 LTS and zlib 1.4, with
+SHA-256 verification. Neither library is compiled from source. Preparation needs
+`curl`, CA certificates, GNU tar, gzip, and coreutils. The musl toolchain is still
+needed to link Sun programs, but is not used to prepare these dependencies.
+
+Archives and verified packages stay under `${SUN_BUILD}/native`; no root access
+or writes to the toolchain are needed. Subsequent builds reuse unchanged archives
+offline. Missing or damaged archives are restored from cached packages when
+available. Package versions and checksums are updated together in
+`scripts/fetch-native-dependencies.sh`; builds do not track floating releases.

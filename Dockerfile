@@ -9,11 +9,10 @@ FROM ubuntu:26.04 AS toolchain
 ENV DEBIAN_FRONTEND=noninteractive \
     TZ=Etc/UTC
 
-# curl and certificates fetch the compiler below. Perl builds OpenSSL, whose
-# command also mints the certificates the TLS tests use and acts as their client.
+# curl and certificates fetch the compiler and prebuilt native dependencies.
+# The openssl command mints certificates and acts as a client in TLS tests.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates curl make nghttp2-client openssl perl \
-    && perl -MFindBin -e 1 \
+    ca-certificates curl nghttp2-client openssl \
     && apt-get clean && rm -rf /var/lib/apt/lists/* /tmp/* /var/tmp/*
 
 # The musl toolchain provides the libstdc++ needed by Sun's static link mode.
@@ -29,48 +28,7 @@ RUN mkdir -p /opt/cross \
  && rm -f "$f"
 ENV PATH="/opt/cross/x86_64-linux-musl-cross/bin:${PATH}"
 
-ARG ZLIB_VERSION=1.3.2
-ARG ZLIB_SHA256=bb329a0a2cd0274d05519d61c667c062e06990d72e125ee2dfa8de64f0119d16
-
-# Build zlib with musl's compiler and archive tools before installing Sun.
-RUN curl -fSL --connect-timeout 10 --max-time 300 \
-      --retry 3 --retry-all-errors --retry-delay 2 \
-      -o /tmp/zlib.tar.gz \
-      "https://github.com/madler/zlib/releases/download/v${ZLIB_VERSION}/zlib-${ZLIB_VERSION}.tar.gz" \
- && echo "${ZLIB_SHA256}  /tmp/zlib.tar.gz" | sha256sum -c - \
- && mkdir -p /tmp/zlib-src \
- && tar xzf /tmp/zlib.tar.gz -C /tmp/zlib-src --strip-components=1 \
- && cd /tmp/zlib-src \
- && CC=x86_64-linux-musl-gcc \
-      AR=x86_64-linux-musl-ar \
-      RANLIB=x86_64-linux-musl-ranlib ./configure --static \
-      --prefix=/opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl \
- && make -j2 \
- && make install \
- && test -f /opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib/libz.a \
- && rm -rf /tmp/zlib-src /tmp/zlib.tar.gz
-
-ARG OPENSSL_VERSION=3.3.7
-ARG OPENSSL_SHA256=4900be54e81c4dfe00bb1a10dad33fd8414833573c40d0e9e3274d4ed32e53a2
-
-# Build static OpenSSL for sun_serve's server bindings. sun_serve.moon carries
-# these archives so consumers need no separate OpenSSL or TLS bundle.
-RUN curl -fSL --connect-timeout 10 --max-time 300 \
-      --retry 3 --retry-all-errors --retry-delay 2 \
-      -o /tmp/openssl.tar.gz \
-      "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz" \
- && echo "${OPENSSL_SHA256}  /tmp/openssl.tar.gz" | sha256sum -c - \
- && mkdir -p /tmp/openssl-src \
- && tar xzf /tmp/openssl.tar.gz -C /tmp/openssl-src --strip-components=1 \
- && cd /tmp/openssl-src \
- && ./Configure linux-x86_64 no-shared no-dso no-tests no-apps no-docs \
-      --cross-compile-prefix=x86_64-linux-musl- \
-      --prefix=/opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl --libdir=lib \
- && make -j2 build_libs \
- && make install_dev \
- && test -f /opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib/libssl.a \
- && test -f /opt/cross/x86_64-linux-musl-cross/x86_64-linux-musl/lib/libcrypto.a \
- && rm -rf /tmp/openssl-src /tmp/openssl.tar.gz
+# The declared native-dependencies step downloads pinned prebuilt archives in the project.
 
 # Refresh the rolling compiler per workflow run, after the cached native tools.
 # SUN_DEB_URL can point at another build of the package, such as a workflow

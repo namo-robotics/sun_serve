@@ -6,8 +6,8 @@
  * handler interface for application code. See README.md for the tour.
  *
  * The manifest carries zlib for WebSocket compression and OpenSSL for TLS.
- * Consumers link these archives through sun_serve.moon. $MUSL_LIB comes from
- * sun-config.json and points at the musl toolchain's static libraries.
+ * Consumers link these archives through sun_serve.moon. The native-dependencies
+ * step prepares verified musl archives beneath the selected build directory.
  */
 
 /*
@@ -72,8 +72,8 @@ manifest {
     "stdlib.moon"
   ]
   archives: [
-    "$MUSL_LIB/libz.a",
-    "$MUSL_LIB/libssl.a",
-    "$MUSL_LIB/libcrypto.a"
+    "${SUN_BUILD}/native/libz.a",
+    "${SUN_BUILD}/native/libssl.a",
+    "${SUN_BUILD}/native/libcrypto.a"
   ]
 }
