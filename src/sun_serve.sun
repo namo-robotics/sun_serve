@@ -28,7 +28,6 @@ public module sun_serve {
 }
 
 manifest {
-  id: "namo-robotics/sun_serve"
   source_files: [
     "version.sun",
     "sys_ffi.sun",
