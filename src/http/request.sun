@@ -168,37 +168,37 @@ public module sun_serve {
     len: i64,
     plus_is_space: bool,
     out: ref String
-  ) bool {
+  ) std.AllocationResult<bool> {
     var i: i64 = 0;
     while (i < len) {
       var c: u8 = base.byte_at(off + i);
       if (c == b'%') {
         if (i + 2 >= len) {
-          return false;
+          return std.AllocationResult.Ok(false);
         }
         var hi: i32 = hex_value(base.byte_at(off + i + 1));
         var lo: i32 = hex_value(base.byte_at(off + i + 2));
         if (hi < 0 or lo < 0) {
-          return false;
+          return std.AllocationResult.Ok(false);
         }
         var decoded: i32 = hi * 16 + lo;
         if (decoded == 0) {
-          return false;
+          return std.AllocationResult.Ok(false);
         }
-        out.append_char(_convert<u8>(decoded));
+        try out.append_char(_convert<u8>(decoded));
         i = i + 3;
       } else if (c == b'+' and plus_is_space) {
-        out.append_char(SP);
+        try out.append_char(SP);
         i = i + 1;
       } else {
         if (c < SP or c == DEL) {
-          return false;
+          return std.AllocationResult.Ok(false);
         }
-        out.append_char(c);
+        try out.append_char(c);
         i = i + 1;
       }
     }
-    return true;
+    return std.AllocationResult.Ok(true);
   }
 
   // Owns a parsed request and exposes stable views to handlers.
@@ -225,12 +225,12 @@ public module sun_serve {
     var alloc: HeapAllocator;
 
     // Build an empty request that a connection fills by parsing.
-    init(allocator: const ref HeapAllocator) {
+    init(allocator: const ref HeapAllocator) std.AllocationResult<void> {
       this.alloc = allocator.copy();
-      this.headers = Vec<HeaderSpan>(allocator, 32);
-      this.path_ = String(allocator, "");
-      this.head = ByteBuffer(allocator, 1024);
-      this.body = ByteBuffer(allocator, 1024);
+      this.headers = try Vec<HeaderSpan>(allocator, 32);
+      this.path_ = try String(allocator, "");
+      this.head = try ByteBuffer(allocator, 1024);
+      this.body = try ByteBuffer(allocator, 1024);
       this.reset();
     }
 
@@ -265,8 +265,12 @@ public module sun_serve {
     }
 
     // The request method as an owned String.
-    public const method method_text(allocator: const ref HeapAllocator) String {
-      return this.head.range_text(allocator, this.method_off, this.method_len);
+    public const method method_text(
+      allocator: const ref HeapAllocator
+    ) std.AllocationResult<String> {
+      return std.AllocationResult.Ok(
+        try this.head.range_text(allocator, this.method_off, this.method_len)
+      );
     }
 
     // Report whether this is a HEAD request.
@@ -285,8 +289,12 @@ public module sun_serve {
     }
 
     // The raw request target as sent by the client.
-    public const method raw_target(allocator: const ref HeapAllocator) String {
-      return this.head.range_text(allocator, this.target_off, this.target_len);
+    public const method raw_target(
+      allocator: const ref HeapAllocator
+    ) std.AllocationResult<String> {
+      return std.AllocationResult.Ok(
+        try this.head.range_text(allocator, this.target_off, this.target_len)
+      );
     }
 
     // Report whether the target carried a query string.
@@ -295,15 +303,17 @@ public module sun_serve {
     }
 
     // The raw query string, without the question mark.
-    public const method query(allocator: const ref HeapAllocator) String {
-      return this.head.range_text(allocator, this.query_off, this.query_len);
+    public const method query(allocator: const ref HeapAllocator) std.AllocationResult<String> {
+      return std.AllocationResult.Ok(
+        try this.head.range_text(allocator, this.query_off, this.query_len)
+      );
     }
 
     // The decoded value of the first query parameter with this name.
     public const method query_param(
       name: static_ptr<u8>,
       allocator: const ref HeapAllocator
-    ) Option<String> {
+    ) std.AllocationResult<Option<String>> {
       var i: i64 = 0;
       var end: i64 = this.query_len;
       while (i < end) {
@@ -317,19 +327,25 @@ public module sun_serve {
           eq = eq + 1;
         }
         if (bytes_equal(this.head, this.query_off + i, eq - i, name)) {
-          var value = String(allocator, "");
+          var value = try String(allocator, "");
           var vstart: i64 = eq;
           if (vstart < pair_end) {
             vstart = vstart + 1;
           }
-          if (percent_decode(this.head, this.query_off + vstart, pair_end - vstart, true, value)) {
-            return Option.Some(value);
+          if (try percent_decode(
+            this.head,
+            this.query_off + vstart,
+            pair_end - vstart,
+            true,
+            value
+          )) {
+            return std.AllocationResult.Ok(Option.Some(value));
           }
-          return Option.None;
+          return std.AllocationResult.Ok(Option.None);
         }
         i = pair_end + 1;
       }
-      return Option.None;
+      return std.AllocationResult.Ok(Option.None);
     }
 
     // The minor HTTP version: zero for HTTP/1.0, one for HTTP/1.1.
@@ -360,13 +376,15 @@ public module sun_serve {
     public const method header(
       name: static_ptr<u8>,
       allocator: const ref HeapAllocator
-    ) Option<String> {
+    ) std.AllocationResult<Option<String>> {
       var i: i64 = this.find_header(name);
       if (i < 0) {
-        return Option.None;
+        return std.AllocationResult.Ok(Option.None);
       }
       var h: const ref HeaderSpan = this.headers[i];
-      return Option.Some(this.head.range_text(allocator, h.value_off, h.value_len));
+      return std.AllocationResult.Ok(
+        Option.Some(try this.head.range_text(allocator, h.value_off, h.value_len))
+      );
     }
 
     // Report whether a comma-separated header contains a token.
@@ -453,15 +471,23 @@ public module sun_serve {
     }
 
     // The name of the i-th header as sent.
-    public const method header_name_at(i: i64, allocator: const ref HeapAllocator) String {
+    public const method header_name_at(
+      i: i64,
+      allocator: const ref HeapAllocator
+    ) std.AllocationResult<String> {
       var h: const ref HeaderSpan = this.headers[i];
-      return this.head.range_text(allocator, h.name_off, h.name_len);
+      return std.AllocationResult.Ok(try this.head.range_text(allocator, h.name_off, h.name_len));
     }
 
     // The value of the i-th header.
-    public const method header_value_at(i: i64, allocator: const ref HeapAllocator) String {
+    public const method header_value_at(
+      i: i64,
+      allocator: const ref HeapAllocator
+    ) std.AllocationResult<String> {
       var h: const ref HeaderSpan = this.headers[i];
-      return this.head.range_text(allocator, h.value_off, h.value_len);
+      return std.AllocationResult.Ok(
+        try this.head.range_text(allocator, h.value_off, h.value_len)
+      );
     }
 
     // The request body bytes, decoded if the client used chunked encoding.
@@ -475,8 +501,10 @@ public module sun_serve {
     }
 
     // The body as an owned String.
-    public const method body_text(allocator: const ref HeapAllocator) String {
-      return this.body.range_text(allocator, 0, this.body.readable_len());
+    public const method body_text(allocator: const ref HeapAllocator) std.AllocationResult<String> {
+      return std.AllocationResult.Ok(
+        try this.body.range_text(allocator, 0, this.body.readable_len())
+      );
     }
 
     // The declared Content-Length, or a negative number when absent.
@@ -519,10 +547,12 @@ public module sun_serve {
     }
 
     // Copy the completed body from a readable buffer range.
-    public method set_body(data: const ref ByteBuffer, off: i64, len: i64) void {
+    public method set_body(data: const ref ByteBuffer, off: i64, len: i64) std.AllocationResult<void> {
       this.body.clear();
-      this.body.append_buffer(data, off, len);
-    }
+      try this.body.append_buffer(data, off, len);
+    
+      return std.AllocationResult.Ok;
+}
 
     // --- parsing --------------------------------------------------------
 
@@ -541,7 +571,7 @@ public module sun_serve {
       base: const ref ByteBuffer,
       len: i64,
       limits: const ref Limits
-    ) ParseStatus {
+    ) std.AllocationResult<ParseStatus> {
       this.reset();
       var i: i64 = 0;
       while (i + 1 < len and base.byte_at(i) == CR and base.byte_at(i + 1) == LF) {
@@ -553,16 +583,16 @@ public module sun_serve {
       var eol: i64 = find_crlf(base, i, len);
       if (eol < 0) {
         if (len - start >= limits.max_header_bytes) {
-          return this.fail(431);
+          return std.AllocationResult.Ok(this.fail(431));
         }
-        return ParseStatus.Incomplete;
+        return std.AllocationResult.Ok(ParseStatus.Incomplete);
       }
       var j: i64 = i;
       while (j < eol and is_tchar(base.byte_at(j))) {
         j = j + 1;
       }
       if (j == i or j >= eol or base.byte_at(j) != SP) {
-        return this.fail(400);
+        return std.AllocationResult.Ok(this.fail(400));
       }
       this.method_off = i;
       this.method_len = j - i;
@@ -572,16 +602,16 @@ public module sun_serve {
         j = j + 1;
       }
       if (j == t or j >= eol) {
-        return this.fail(400);
+        return std.AllocationResult.Ok(this.fail(400));
       }
       this.target_off = t;
       this.target_len = j - t;
       j = j + 1;
       if (eol - j != 8 or not bytes_equal(base, j, 7, "HTTP/1.")) {
         if (eol - j >= 5 and bytes_equal(base, j, 5, "HTTP/")) {
-          return this.fail(505);
+          return std.AllocationResult.Ok(this.fail(505));
         }
-        return this.fail(400);
+        return std.AllocationResult.Ok(this.fail(400));
       }
       var minor: u8 = base.byte_at(j + 7);
       if (minor == b'1') {
@@ -589,7 +619,7 @@ public module sun_serve {
       } else if (minor == b'0') {
         this.version_minor_ = 0;
       } else {
-        return this.fail(505);
+        return std.AllocationResult.Ok(this.fail(505));
       }
       i = eol + 2;
 
@@ -598,27 +628,27 @@ public module sun_serve {
         eol = find_crlf(base, i, len);
         if (eol < 0) {
           if (len - start >= limits.max_header_bytes) {
-            return this.fail(431);
+            return std.AllocationResult.Ok(this.fail(431));
           }
-          return ParseStatus.Incomplete;
+          return std.AllocationResult.Ok(ParseStatus.Incomplete);
         }
         if (eol == i) {
           this.head_len_ = eol + 2;
           break;
         }
         if (eol + 2 - start > limits.max_header_bytes) {
-          return this.fail(431);
+          return std.AllocationResult.Ok(this.fail(431));
         }
         var first: u8 = base.byte_at(i);
         if (first == SP or first == HT) {
-          return this.fail(400);
+          return std.AllocationResult.Ok(this.fail(400));
         }
         j = i;
         while (j < eol and is_tchar(base.byte_at(j))) {
           j = j + 1;
         }
         if (j == i or j >= eol or base.byte_at(j) != b':') {
-          return this.fail(400);
+          return std.AllocationResult.Ok(this.fail(400));
         }
         var name_off: i64 = i;
         var name_len: i64 = j - i;
@@ -633,13 +663,14 @@ public module sun_serve {
         for (var k: i64 = j; k < vend; k = k + 1) {
           var c: u8 = base.byte_at(k);
           if ((c < SP and c != HT) or c == DEL) {
-            return this.fail(400);
+            return std.AllocationResult.Ok(this.fail(400));
           }
         }
         if (this.headers.size() >= limits.max_headers) {
-          return this.fail(431);
+          return std.AllocationResult.Ok(this.fail(431));
         }
-        this.headers.push(HeaderSpan(name_off, name_len, j, vend - j));
+        try this.headers.push(HeaderSpan(name_off, name_len, j, vend - j));
+
         i = eol + 2;
       }
 
@@ -648,25 +679,25 @@ public module sun_serve {
         var span: ref HeaderSpan = this.headers[h];
         if (bytes_equal_ci(base, span.name_off, span.name_len, "content-length")) {
           if (span.value_len == 0 or span.value_len > 18) {
-            return this.fail(400);
+            return std.AllocationResult.Ok(this.fail(400));
           }
           var value: i64 = 0;
           for (var k: i64 = 0; k < span.value_len; k = k + 1) {
             var d: u8 = base.byte_at(span.value_off + k);
             if (d < b'0' or d > b'9') {
-              return this.fail(400);
+              return std.AllocationResult.Ok(this.fail(400));
             }
             value = value * 10 + _convert<i64>(d - b'0');
           }
           if (this.content_length_ >= 0 and this.content_length_ != value) {
-            return this.fail(400);
+            return std.AllocationResult.Ok(this.fail(400));
           }
           this.content_length_ = value;
         } else if (bytes_equal_ci(base, span.name_off, span.name_len, "transfer-encoding")) {
           if (bytes_equal_ci(base, span.value_off, span.value_len, "chunked")) {
             this.chunked_ = true;
           } else {
-            return this.fail(501);
+            return std.AllocationResult.Ok(this.fail(501));
           }
         } else if (bytes_equal_ci(base, span.name_off, span.name_len, "connection")) {
           this.scan_connection_tokens(base, span.value_off, span.value_len);
@@ -674,20 +705,20 @@ public module sun_serve {
           if (bytes_equal_ci(base, span.value_off, span.value_len, "100-continue")) {
             this.expect_continue_ = true;
           } else {
-            return this.fail(417);
+            return std.AllocationResult.Ok(this.fail(417));
           }
         } else if (bytes_equal_ci(base, span.name_off, span.name_len, "host")) {
           this.has_host_ = true;
         }
       }
       if (this.chunked_ and this.content_length_ >= 0) {
-        return this.fail(400);
+        return std.AllocationResult.Ok(this.fail(400));
       }
       if (this.version_minor_ == 1 and not this.has_host_) {
-        return this.fail(400);
+        return std.AllocationResult.Ok(this.fail(400));
       }
       if (this.content_length_ > limits.max_body_bytes) {
-        return this.fail(413);
+        return std.AllocationResult.Ok(this.fail(413));
       }
 
       /*
@@ -706,11 +737,11 @@ public module sun_serve {
         tlen = this.target_len;
       }
       if (tlen == 1 and base.byte_at(toff) == b'*') {
-        this.path_.append_char(b'*');
-        return this.complete(base);
+        try this.path_.append_char(b'*');
+        return std.AllocationResult.Ok(try this.complete(base));
       }
       if (tlen == 0 or base.byte_at(toff) != b'/') {
-        return this.fail(400);
+        return std.AllocationResult.Ok(this.fail(400));
       }
       var plen: i64 = 0;
       while (plen < tlen and base.byte_at(toff + plen) != b'?') {
@@ -720,16 +751,16 @@ public module sun_serve {
         this.query_off = toff + plen + 1;
         this.query_len = tlen - plen - 1;
       }
-      if (not percent_decode(base, toff, plen, false, this.path_)) {
-        return this.fail(400);
+      if (not (try percent_decode(base, toff, plen, false, this.path_))) {
+        return std.AllocationResult.Ok(this.fail(400));
       }
-      return this.complete(base);
+      return std.AllocationResult.Ok(try this.complete(base));
     }
 
     // Finish a successful parse by retaining only the request head.
-    method complete(base: const ref ByteBuffer) ParseStatus {
-      this.head.append_buffer(base, 0, this.head_len_);
-      return ParseStatus.Complete;
+    method complete(base: const ref ByteBuffer) std.AllocationResult<ParseStatus> {
+      try this.head.append_buffer(base, 0, this.head_len_);
+      return std.AllocationResult.Ok(ParseStatus.Complete);
     }
 
     /*

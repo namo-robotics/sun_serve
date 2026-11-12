@@ -107,22 +107,22 @@ public module sun_serve {
     off: i64,
     len: i64,
     out: ref ByteBuffer
-  ) bool {
+  ) std.AllocationResult<bool> {
     if (off < 0 or len < 0 or len > ZLIB_MAX_LEN or off > data.readable_len() or
       len > data.readable_len() - off) {
-      return false;
+      return std.AllocationResult.Ok(false);
     }
     var stream = ZStream();
     if (unsafe zlib_deflate_init(stream, -1, Z_DEFLATED, -15, 8, 0, zlib_version(), Z_STREAM_SIZE) !=
       Z_OK) {
-      return false;
+      return std.AllocationResult.Ok(false);
     }
     var bound: u64 = unsafe zlib_deflate_bound(stream, _convert<u64>(len)) + 8;
     if (bound > _convert<u64>(ZLIB_MAX_LEN)) {
       unsafe zlib_deflate_end(stream);
-      return false;
+      return std.AllocationResult.Ok(false);
     }
-    out.reserve(_convert<i64>(bound));
+    try out.reserve(_convert<i64>(bound));
     stream.next_in = unsafe _ptr_offset(data.readable_ptr(), off);
     stream.avail_in = _convert<u32>(len);
     stream.next_out = out.writable_ptr();
@@ -131,10 +131,10 @@ public module sun_serve {
     var produced: i64 = _convert<i64>(stream.total_out);
     unsafe zlib_deflate_end(stream);
     if (result != Z_OK or stream.avail_in != 0 or produced < 4) {
-      return false;
+      return std.AllocationResult.Ok(false);
     }
     out.commit(produced - 4);
-    return true;
+    return std.AllocationResult.Ok(true);
   }
 
   // Inflate one RFC 7692 message, returning malformed or oversized status.
@@ -145,18 +145,18 @@ public module sun_serve {
     len: i64,
     max_bytes: i64,
     out: ref ByteBuffer
-  ) i32 {
+  ) std.AllocationResult<i32> {
     if (off < 0 or len < 0 or len > ZLIB_MAX_LEN - 4 or off > data.readable_len() or
       len > data.readable_len() - off or max_bytes < 0 or max_bytes >= ZLIB_MAX_LEN) {
-      return 1;
+      return std.AllocationResult.Ok(1);
     }
-    var input = ByteBuffer(alloc, len + 4);
-    input.append_buffer(data, off, len);
-    input.append_literal("\x00\x00\xff\xff");
-    out.reserve(max_bytes + 1);
+    var input = try ByteBuffer(alloc, len + 4);
+    try input.append_buffer(data, off, len);
+    try input.append_literal("\x00\x00\xff\xff");
+    try out.reserve(max_bytes + 1);
     var stream = ZStream();
     if (unsafe zlib_inflate_init(stream, -15, zlib_version(), Z_STREAM_SIZE) != Z_OK) {
-      return 1;
+      return std.AllocationResult.Ok(1);
     }
     stream.next_in = input.readable_ptr();
     stream.avail_in = _convert<u32>(input.readable_len());
@@ -166,13 +166,13 @@ public module sun_serve {
     var produced: i64 = _convert<i64>(stream.total_out);
     unsafe zlib_inflate_end(stream);
     if (produced > max_bytes) {
-      return 2;
+      return std.AllocationResult.Ok(2);
     }
     if (result != Z_OK or stream.avail_in != 0) {
-      return 1;
+      return std.AllocationResult.Ok(1);
     }
     out.commit(produced);
-    return 0;
+    return std.AllocationResult.Ok(0);
   }
 
   // Compute SHA-1 bytes for the WebSocket opening handshake.
@@ -209,8 +209,10 @@ public module sun_serve {
     }
 
     // Copy the message into an owned string.
-    public const method text(alloc: const ref HeapAllocator) String {
-      return this.data_.range_text(alloc, 0, this.data_.readable_len());
+    public const method text(alloc: const ref HeapAllocator) std.AllocationResult<String> {
+      return std.AllocationResult.Ok(
+        try this.data_.range_text(alloc, 0, this.data_.readable_len())
+      );
     }
   }
 
@@ -227,9 +229,9 @@ public module sun_serve {
     var alloc: HeapAllocator;
 
     // Start as a rejected handshake.
-    init(allocator: const ref HeapAllocator, compression: bool) {
+    init(allocator: const ref HeapAllocator, compression: bool) std.AllocationResult<void> {
       this.alloc = allocator.copy();
-      this.subprotocol = String(allocator, "");
+      this.subprotocol = try String(allocator, "");
       this.compression = compression;
     }
 
@@ -239,10 +241,12 @@ public module sun_serve {
     }
 
     // Accept and select one protocol offered by the client.
-    public method accept_subprotocol(protocol: static_ptr<u8>) void {
+    public method accept_subprotocol(protocol: static_ptr<u8>) std.AllocationResult<void> {
       this.accepted = true;
       this.subprotocol.clear();
-      this.subprotocol.append(protocol);
+      try this.subprotocol.append(protocol);
+
+      return std.AllocationResult.Ok;
     }
 
     // Reject with an HTTP status.
@@ -262,8 +266,8 @@ public module sun_serve {
     var queue: ByteBuffer;
 
     // Build an inactive mailbox.
-    init(alloc: const ref HeapAllocator) {
-      this.queue = ByteBuffer(alloc, 256);
+    init(alloc: const ref HeapAllocator) std.AllocationResult<void> {
+      this.queue = try ByteBuffer(alloc, 256);
     }
 
     // Begin a new session and invalidate handles from an earlier one.
@@ -285,13 +289,13 @@ public module sun_serve {
     }
 
     // Move queued frames into the worker write buffer.
-    method drain(generation: i64, out: ref ByteBuffer) bool {
+    method drain(generation: i64, out: ref ByteBuffer) std.AllocationResult<bool> {
       if (generation != this.generation) {
-        return false;
+        return std.AllocationResult.Ok(false);
       }
-      out.append_buffer(this.queue, 0, this.queue.readable_len());
+      try out.append_buffer(this.queue, 0, this.queue.readable_len());
       this.queue.clear();
-      return this.active;
+      return std.AllocationResult.Ok(this.active);
     }
 
     // Queue one unmasked server frame.
@@ -301,21 +305,21 @@ public module sun_serve {
       data: const ref ByteBuffer,
       off: i64,
       len: i64
-    ) WebSocketSendResult {
+    ) std.AllocationResult<WebSocketSendResult> {
       if (generation != this.generation) {
-        return WebSocketSendResult.Invalid;
+        return std.AllocationResult.Ok(WebSocketSendResult.Invalid);
       }
       if (not this.active) {
-        return WebSocketSendResult.Closed;
+        return std.AllocationResult.Ok(WebSocketSendResult.Closed);
       }
-      var wire = ByteBuffer(HeapAllocator(), len + 16);
+      var wire = try ByteBuffer(HeapAllocator(), len + 16);
       var compressed_message: bool = this.compression and websocket_is_data(opcode);
       if (compressed_message) {
-        if (not websocket_deflate(data, off, len, wire)) {
-          return WebSocketSendResult.Invalid;
+        if (not (try websocket_deflate(data, off, len, wire))) {
+          return std.AllocationResult.Ok(WebSocketSendResult.Invalid);
         }
       } else {
-        wire.append_buffer(data, off, len);
+        try wire.append_buffer(data, off, len);
       }
       var wire_len: i64 = wire.readable_len();
       var overhead: i64 = 2;
@@ -328,16 +332,16 @@ public module sun_serve {
       if (this.queue.readable_len() + overhead + wire_len > this.max_bytes) {
         this.active = false;
         this.queue.clear();
-        websocket_append_close(this.queue, WS_CLOSE_OVERLOADED);
+        try websocket_append_close(this.queue, WS_CLOSE_OVERLOADED);
         websocket_wake(this.wake_fd);
-        return WebSocketSendResult.Overloaded;
+        return std.AllocationResult.Ok(WebSocketSendResult.Overloaded);
       }
-      websocket_append_frame_flags(this.queue, opcode, compressed_message, wire, 0, wire_len);
+      try websocket_append_frame_flags(this.queue, opcode, compressed_message, wire, 0, wire_len);
       if (opcode == WebSocketOpcode.Close) {
         this.active = false;
       }
       websocket_wake(this.wake_fd);
-      return WebSocketSendResult.Queued;
+      return std.AllocationResult.Ok(WebSocketSendResult.Queued);
     }
   }
 
@@ -357,8 +361,8 @@ public module sun_serve {
     var closing: bool = false;
 
     // Create the mailbox shared with asynchronous handles.
-    init(alloc: const ref HeapAllocator) {
-      this.mailbox = Shared<WebSocketMailbox>(alloc, WebSocketMailbox(alloc));
+    init(alloc: const ref HeapAllocator) std.AllocationResult<void> {
+      this.mailbox = try Shared<WebSocketMailbox>(alloc, try WebSocketMailbox(alloc));
     }
 
     // Prepare for a new connection owned by the worker behind wake_fd.
@@ -380,9 +384,9 @@ public module sun_serve {
     }
 
     // Move queued asynchronous frames into out. Returns false once deactivated.
-    method drain_to(out: ref ByteBuffer) bool {
+    method drain_to(out: ref ByteBuffer) std.AllocationResult<bool> {
       var guard = this.mailbox.lock();
-      return guard.get().drain(this.generation, out);
+      return std.AllocationResult.Ok(try guard.get().drain(this.generation, out));
     }
 
     // Invalidate every handle of the current session.
@@ -392,8 +396,8 @@ public module sun_serve {
     }
 
     // A handle for the application to keep or clone.
-    method handle() WebSocketHandle {
-      return WebSocketHandle(this.mailbox.clone(), this.generation);
+    method handle() std.AllocationResult<WebSocketHandle> {
+      return std.AllocationResult.Ok(WebSocketHandle(this.mailbox.clone(), this.generation));
     }
   }
 
@@ -409,24 +413,28 @@ public module sun_serve {
     }
 
     // Create another handle for another thread or owner.
-    public const method clone() WebSocketHandle {
-      return WebSocketHandle(this.mailbox.clone(), this.generation);
+    public const method clone() std.AllocationResult<WebSocketHandle> {
+      return std.AllocationResult.Ok(WebSocketHandle(this.mailbox.clone(), this.generation));
     }
 
     // Queue a UTF-8 text message.
-    public const method send_text(text: const ref String) WebSocketSendResult {
-      var bytes = ByteBuffer(HeapAllocator(), text.length());
-      bytes.append_string(text);
+    public const method send_text(
+      text: const ref String
+    ) std.AllocationResult<WebSocketSendResult> {
+      var bytes = try ByteBuffer(HeapAllocator(), text.length());
+      try bytes.append_string(text);
       if (not websocket_valid_utf8(bytes, 0, bytes.readable_len())) {
-        return WebSocketSendResult.Invalid;
+        return std.AllocationResult.Ok(WebSocketSendResult.Invalid);
       }
       var guard = this.mailbox.lock();
-      return guard.get().enqueue(
-        this.generation,
-        WebSocketOpcode.Text,
-        bytes,
-        0,
-        bytes.readable_len()
+      return std.AllocationResult.Ok(
+        try guard.get().enqueue(
+          this.generation,
+          WebSocketOpcode.Text,
+          bytes,
+          0,
+          bytes.readable_len()
+        )
       );
     }
 
@@ -435,33 +443,35 @@ public module sun_serve {
       data: const ref ByteBuffer,
       off: i64,
       len: i64
-    ) WebSocketSendResult {
+    ) std.AllocationResult<WebSocketSendResult> {
       if (off < 0 or len < 0 or off > data.readable_len() or len > data.readable_len() - off) {
-        return WebSocketSendResult.Invalid;
+        return std.AllocationResult.Ok(WebSocketSendResult.Invalid);
       }
       var guard = this.mailbox.lock();
-      return guard.get().enqueue(this.generation, WebSocketOpcode.Binary, data, off, len);
+      return std.AllocationResult.Ok(try guard.get().enqueue(this.generation, WebSocketOpcode.Binary, data, off, len));
     }
 
     // Queue a ping control-frame buffer range.
-    public const method ping(data: const ref ByteBuffer, off: i64, len: i64) WebSocketSendResult {
+    public const method ping(data: const ref ByteBuffer, off: i64, len: i64) std.AllocationResult<WebSocketSendResult> {
       if (off < 0 or len < 0 or len > 125 or off > data.readable_len() or
         len > data.readable_len() - off) {
-        return WebSocketSendResult.Invalid;
+        return std.AllocationResult.Ok(WebSocketSendResult.Invalid);
       }
       var guard = this.mailbox.lock();
-      return guard.get().enqueue(this.generation, WebSocketOpcode.Ping, data, off, len);
+      return std.AllocationResult.Ok(try guard.get().enqueue(this.generation, WebSocketOpcode.Ping, data, off, len));
     }
 
     // Start a normal close exchange.
-    public const method close(code: i32) WebSocketSendResult {
+    public const method close(code: i32) std.AllocationResult<WebSocketSendResult> {
       if (not websocket_valid_close_code(code)) {
-        return WebSocketSendResult.Invalid;
+        return std.AllocationResult.Ok(WebSocketSendResult.Invalid);
       }
-      var bytes = ByteBuffer(HeapAllocator(), 2);
-      websocket_append_close_code(bytes, code);
+      var bytes = try ByteBuffer(HeapAllocator(), 2);
+      try websocket_append_close_code(bytes, code);
       var guard = this.mailbox.lock();
-      return guard.get().enqueue(this.generation, WebSocketOpcode.Close, bytes, 0, 2);
+      return std.AllocationResult.Ok(
+        try guard.get().enqueue(this.generation, WebSocketOpcode.Close, bytes, 0, 2)
+      );
     }
   }
 
@@ -540,14 +550,14 @@ public module sun_serve {
     alloc: const ref HeapAllocator,
     data: const ref ByteBuffer,
     frame: const ref WebSocketFrame
-  ) ByteBuffer {
+  ) std.AllocationResult<ByteBuffer> {
     var mask_pos: i64 = frame.header_len;
     var pos: i64 = mask_pos + 4;
-    var decoded = ByteBuffer(alloc, frame.length);
+    var decoded = try ByteBuffer(alloc, frame.length);
     for (var n: i64 = 0; n < frame.length; n = n + 1) {
-      decoded.append_byte(data.byte_at(pos + n) ^ data.byte_at(mask_pos + n % 4));
+      try decoded.append_byte(data.byte_at(pos + n) ^ data.byte_at(mask_pos + n % 4));
     }
-    return decoded;
+    return std.AllocationResult.Ok(decoded);
   }
 
   // Append one final unmasked server frame.
@@ -557,9 +567,11 @@ public module sun_serve {
     data: const ref ByteBuffer,
     off: i64,
     len: i64
-  ) void {
-    websocket_append_frame_flags(out, opcode, false, data, off, len);
-  }
+  ) std.AllocationResult<void> {
+    try websocket_append_frame_flags(out, opcode, false, data, off, len);
+  
+      return std.AllocationResult.Ok;
+}
 
   // Append one final server frame with an optional RSV1 compression flag.
   function websocket_append_frame_flags(
@@ -569,38 +581,44 @@ public module sun_serve {
     data: const ref ByteBuffer,
     off: i64,
     len: i64
-  ) void {
+  ) std.AllocationResult<void> {
     var first: u8 = WS_FIN | _convert<u8>(opcode);
     if (compressed) {
       first = first | WS_RSV1;
     }
-    out.append_byte(first);
+    try out.append_byte(first);
     if (len < 126) {
-      out.append_byte(_convert<u8>(len));
+      try out.append_byte(_convert<u8>(len));
     } else if (len <= 0xffff) {
-      out.append_byte(126);
-      out.append_byte(_convert<u8>((len >> 8) & 0xff));
-      out.append_byte(_convert<u8>(len & 0xff));
+      try out.append_byte(126);
+      try out.append_byte(_convert<u8>((len >> 8) & 0xff));
+      try out.append_byte(_convert<u8>(len & 0xff));
     } else {
-      out.append_byte(127);
+      try out.append_byte(127);
       for (var shift: i32 = 56; shift >= 0; shift = shift - 8) {
-        out.append_byte(_convert<u8>((len >> shift) & 0xff));
+        try out.append_byte(_convert<u8>((len >> shift) & 0xff));
       }
     }
-    out.append_buffer(data, off, len);
+    try out.append_buffer(data, off, len);
+
+    return std.AllocationResult.Ok;
   }
 
   // Append a close status code as its two big-endian payload bytes.
-  function websocket_append_close_code(out: ref ByteBuffer, code: i32) void {
-    out.append_byte(_convert<u8>((code >> 8) & 0xff));
-    out.append_byte(_convert<u8>(code & 0xff));
+  function websocket_append_close_code(out: ref ByteBuffer, code: i32) std.AllocationResult<void> {
+    try out.append_byte(_convert<u8>((code >> 8) & 0xff));
+    try out.append_byte(_convert<u8>(code & 0xff));
+
+    return std.AllocationResult.Ok;
   }
 
   // Append a complete close frame carrying a status code.
-  function websocket_append_close(out: ref ByteBuffer, code: i32) void {
-    var payload = ByteBuffer(HeapAllocator(), 2);
-    websocket_append_close_code(payload, code);
-    websocket_append_frame(out, WebSocketOpcode.Close, payload, 0, 2);
+  function websocket_append_close(out: ref ByteBuffer, code: i32) std.AllocationResult<void> {
+    var payload = try ByteBuffer(HeapAllocator(), 2);
+    try websocket_append_close_code(payload, code);
+    try websocket_append_frame(out, WebSocketOpcode.Close, payload, 0, 2);
+
+    return std.AllocationResult.Ok;
   }
 
   // The status code carried by a close payload, or 1000 when it has none.
@@ -686,19 +704,22 @@ public module sun_serve {
   }
 
   // Report whether an extension list contains a permessage-deflate offer.
-  function websocket_offers_deflate(alloc: const ref HeapAllocator, value: const ref String) bool {
-    var offers: Vec<String> = value.split(alloc, b',');
+  function websocket_offers_deflate(
+    alloc: const ref HeapAllocator,
+    value: const ref String
+  ) std.AllocationResult<bool> {
+    var offers: Vec<String> = try value.split(alloc, b',');
     for (var offer: ref String in offers) {
       // The extension name ends at the first parameter separator.
-      var parts: Vec<String> = offer.split(alloc, b';');
-      var name: String = parts[0].clone(alloc);
+      var parts: Vec<String> = try offer.split(alloc, b';');
+      var name: String = try parts[0].clone(alloc);
       name.trim();
       name.to_lower();
       if (name.equals_literal("permessage-deflate")) {
-        return true;
+        return std.AllocationResult.Ok(true);
       }
     }
-    return false;
+    return std.AllocationResult.Ok(false);
   }
 
   // Validate the canonical base64 shape of a 16-byte WebSocket nonce.
@@ -717,14 +738,17 @@ public module sun_serve {
   }
 
   // Compute the RFC 6455 Sec-WebSocket-Accept value.
-  function websocket_accept(alloc: const ref HeapAllocator, key: const ref String) String {
-    var source = String(alloc, "");
-    source.append(key);
-    source.append("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
-    var digest = ContiguousBuffer<u8>(alloc, 20);
+  function websocket_accept(
+    alloc: const ref HeapAllocator,
+    key: const ref String
+  ) std.AllocationResult<String> {
+    var source = try String(alloc, "");
+    try source.append(key);
+    try source.append("258EAFA5-E914-47DA-95CA-C5AB0DC85B11");
+    var digest = try ContiguousBuffer<u8>(alloc, 20);
     websocket_sha1(source, digest);
     var alphabet: static_ptr<u8> = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
-    var out = String(alloc, "");
+    var out = try String(alloc, "");
     for (var i: i64 = 0; i < 20; i = i + 3) {
       var left: i64 = 20 - i;
       var n: i32 = _convert<i32>(digest[i]) << 16;
@@ -734,19 +758,21 @@ public module sun_serve {
       if (left > 2) {
         n = n | _convert<i32>(digest[i + 2]);
       }
-      out.append_char(literal_byte(alphabet, _convert<i64>((n >> 18) & 63)));
-      out.append_char(literal_byte(alphabet, _convert<i64>((n >> 12) & 63)));
+      try out.append_char(literal_byte(alphabet, _convert<i64>((n >> 18) & 63)));
+
+      try out.append_char(literal_byte(alphabet, _convert<i64>((n >> 12) & 63)));
+
       if (left > 1) {
-        out.append_char(literal_byte(alphabet, _convert<i64>((n >> 6) & 63)));
+        try out.append_char(literal_byte(alphabet, _convert<i64>((n >> 6) & 63)));
       } else {
-        out.append_char(b'=');
+        try out.append_char(b'=');
       }
       if (left > 2) {
-        out.append_char(literal_byte(alphabet, _convert<i64>(n & 63)));
+        try out.append_char(literal_byte(alphabet, _convert<i64>(n & 63)));
       } else {
-        out.append_char(b'=');
+        try out.append_char(b'=');
       }
     }
-    return out;
+    return std.AllocationResult.Ok(out);
   }
 }

@@ -166,15 +166,15 @@ public module sun_serve {
     alloc: const ref HeapAllocator,
     fd: i32,
     mode_offset: i64
-  ) FileMetadata {
-    var stat = ContiguousBuffer<u8>(alloc, 256);
+  ) std.AllocationResult<FileMetadata> {
+    var stat = try ContiguousBuffer<u8>(alloc, 256);
     if (unsafe sys_fstat(fd, stat.raw_data()) != 0) {
-      return FileMetadata(false, 0, 0, 0);
+      return std.AllocationResult.Ok(FileMetadata(false, 0, 0, 0));
     }
     var mode: u32 = unsafe _load<u32>(_ptr_offset(stat.raw_data(), mode_offset), 0);
     var size: i64 = unsafe _load<i64>(_ptr_offset(stat.raw_data(), STAT_SIZE_OFFSET), 0);
     var mtime: i64 = unsafe _load<i64>(_ptr_offset(stat.raw_data(), STAT_MTIME_OFFSET), 0);
-    return FileMetadata(true, mode, size, mtime);
+    return std.AllocationResult.Ok(FileMetadata(true, mode, size, mtime));
   }
 
   // The calling thread's errno after a failed C call.
@@ -194,11 +194,15 @@ public module sun_serve {
   function set_nonblocking(fd: i32) ServerResult<void> {
     var flags: i32 = unsafe sys_fcntl(fd, F_GETFL);
     if (flags < 0) {
-      return ServerResult.Error(Error(last_errno(), "failed to read descriptor flags"));
+      return ServerResult.Error(
+        Error(last_errno(), "failed to read descriptor flags")
+      );
     }
     var result: i32 = unsafe sys_fcntl(fd, F_SETFL, flags | O_NONBLOCK);
     if (result < 0) {
-      return ServerResult.Error(Error(last_errno(), "failed to set descriptor flags"));
+      return ServerResult.Error(
+        Error(last_errno(), "failed to set descriptor flags")
+      );
     }
     return ServerResult.Ok;
   }

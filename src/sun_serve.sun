@@ -24,8 +24,7 @@ public module sun_serve {
     Ok(T),
     Error(Error),
     OutOfBounds(IndexOutOfBoundsError),
-    Tls(TlsError)
-  }
+    Tls(TlsError), Allocation(std.AllocationError), InvalidArgument(std.InvalidArgumentError), Overflow(std.OverflowError), NotFound(std.NotFoundError), Empty(std.EmptyError), Io(std.IOError), Conversion(std.ConversionError), DivisionByZero(std.DivisionByZeroError), Arithmetic(std.ArithmeticError), Json(std.json.JsonError), Xml(std.xml.XmlError), Decode(std.ProtoDecodeError) }
 }
 
 manifest {

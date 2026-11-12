@@ -123,18 +123,21 @@ public module sun_serve {
   const SSL_REASON_UNEXPECTED_EOF: u64 = 294;
 
   // The queued OpenSSL error as text, prefixed by context.
-  function take_openssl_error(alloc: const ref HeapAllocator, context: static_ptr<u8>) String {
-    var out = String(alloc, context);
+  function take_openssl_error(
+    alloc: const ref HeapAllocator,
+    context: static_ptr<u8>
+  ) std.AllocationResult<String> {
+    var out = try String(alloc, context);
     var code: u64 = unsafe ssl_err_get_error();
     if (code == 0) {
-      return out;
+      return std.AllocationResult.Ok(out);
     }
-    var buf = ContiguousBuffer<u8>(alloc, 256);
+    var buf = try ContiguousBuffer<u8>(alloc, 256);
     buf.fill(0);
     unsafe ssl_err_error_string_n(code, buf.raw_data(), buf.size());
-    out.append(": ");
-    var text: String = from_c_str(alloc, buf.raw_data());
-    out.append(text);
-    return out;
+    try out.append(": ");
+    var text: String = try from_c_str(alloc, buf.raw_data());
+    try out.append(text);
+    return std.AllocationResult.Ok(out);
   }
 }

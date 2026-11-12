@@ -22,29 +22,29 @@ public module sun_serve {
 
       init(allocator: ref HeapAllocator, tag: static_ptr<u8>) ServerResult<void> {
         this.alloc = allocator.copy();
-        var p = String(allocator, "/tmp/sun_serve_test_");
-        p.append_literal(tag);
-        p.append_char(b'_');
-        p.append(std.process.pid());
+        var p = try String(allocator, "/tmp/sun_serve_test_");
+        try p.append_literal(tag);
+        try p.append_char(b'_');
+        try p.append(std.process.pid());
         this.path = p;
         try make_dir(this.path, 493);
         return ServerResult.Ok;
       }
 
       // A path inside the directory.
-      public method file(name: static_ptr<u8>) String {
-        var p = this.path.clone(this.alloc);
-        p.append_char(b'/');
-        p.append_literal(name);
-        return p;
+      public method file(name: static_ptr<u8>) std.AllocationResult<String> {
+        var p = try this.path.clone(this.alloc);
+        try p.append_char(b'/');
+        try p.append_literal(name);
+        return std.AllocationResult.Ok(p);
       }
 
       /*
        * Write a file inside the directory.
        */
       public method write(name: static_ptr<u8>, contents: static_ptr<u8>) ServerResult<void> {
-        var p: String = this.file(name);
-        var text = String(this.alloc, contents);
+        var p: String = try this.file(name);
+        var text = try String(this.alloc, contents);
         try write_string(p, text);
         return ServerResult.Ok;
       }
@@ -57,15 +57,15 @@ public module sun_serve {
       method cleanup() ServerResult<void> {
         var entries = try read_dir(this.alloc, this.path);
         for (var i: i64 = 0; i < entries.size(); i = i + 1) {
-          var entry_path = this.path.clone(this.alloc);
-          entry_path.append_char(b'/');
-          entry_path.append(entries[i].name());
+          var entry_path = try this.path.clone(this.alloc);
+          try entry_path.append_char(b'/');
+          try entry_path.append(entries[i].name());
           if (entries[i].is_dir()) {
             var inner = try read_dir(this.alloc, entry_path);
             for (var j: i64 = 0; j < inner.size(); j = j + 1) {
-              var inner_path = entry_path.clone(this.alloc);
-              inner_path.append_char(b'/');
-              inner_path.append(inner[j].name());
+              var inner_path = try entry_path.clone(this.alloc);
+              try inner_path.append_char(b'/');
+              try inner_path.append(inner[j].name());
               try remove_file(inner_path);
             }
             try remove_dir(entry_path);
@@ -79,33 +79,36 @@ public module sun_serve {
     }
 
     // Normalize and return the text, or "NONE" when rejected.
-    function norm(text: static_ptr<u8>) String {
+    function norm(text: static_ptr<u8>) std.AllocationResult<String> {
       var alloc = make_heap_allocator();
-      var input = String(alloc, text);
-      var none = String(alloc, "NONE");
-      var out: String = match normalize_path(alloc, input) {
+      var input = try String(alloc, text);
+      var none = try String(alloc, "NONE");
+      var out: String = match try normalize_path(alloc, input) {
         Option.Some(p) => p,
         Option.None => none
       };
-      return out;
+      return std.AllocationResult.Ok(out);
     }
 
     test_function normalize_keeps_safe_paths() sun_serve.ServerTestResult {
-      try std.test.assert(norm("/").equals_literal("/"), "root");
-      try std.test.assert(norm("/a/b.html").equals_literal("/a/b.html"), "plain");
-      try std.test.assert(norm("/a//b/./c/").equals_literal("/a/b/c"), "empty and dot segments");
-      try std.test.assert(norm("/a/b/../c").equals_literal("/a/c"), "dotdot pops");
-      try std.test.assert(norm("/a/../").equals_literal("/"), "pop to root");
-      try std.test.assert(norm("/..a/b..").equals_literal("/..a/b.."), "dots inside names");
+      try std.test.assert((try norm("/")).equals_literal("/"), "root");
+      try std.test.assert((try norm("/a/b.html")).equals_literal("/a/b.html"), "plain");
+      try std.test.assert(
+        (try norm("/a//b/./c/")).equals_literal("/a/b/c"),
+        "empty and dot segments"
+      );
+      try std.test.assert((try norm("/a/b/../c")).equals_literal("/a/c"), "dotdot pops");
+      try std.test.assert((try norm("/a/../")).equals_literal("/"), "pop to root");
+      try std.test.assert((try norm("/..a/b..")).equals_literal("/..a/b.."), "dots inside names");
     }
 
     test_function normalize_rejects_escapes() sun_serve.ServerTestResult {
-      try std.test.assert(norm("/../etc/passwd").equals_literal("NONE"), "escape at root");
-      try std.test.assert(norm("/a/../../x").equals_literal("NONE"), "escape after pop");
+      try std.test.assert((try norm("/../etc/passwd")).equals_literal("NONE"), "escape at root");
+      try std.test.assert((try norm("/a/../../x")).equals_literal("NONE"), "escape after pop");
       var alloc = make_heap_allocator();
-      var ctl = String(alloc, "/a");
-      ctl.append_char(1);
-      var rejected: bool = match normalize_path(alloc, ctl) {
+      var ctl = try String(alloc, "/a");
+      try ctl.append_char(1);
+      var rejected: bool = match try normalize_path(alloc, ctl) {
         Option.Some(p) => false,
         Option.None => true
       };
@@ -126,26 +129,26 @@ public module sun_serve {
         try this.dir.write("index.html", "<h1>home</h1>");
         try this.dir.write("style.css", "body{}");
         try this.dir.write("data.bin", "binary");
-        var sub: String = this.dir.file("sub");
+        var sub: String = try this.dir.file("sub");
         try make_dir(sub, 493);
-        var sub_index = sub.clone(alloc);
-        sub_index.append("/index.html");
-        var sub_text = String(alloc, "sub index");
+        var sub_index = try sub.clone(alloc);
+        try sub_index.append("/index.html");
+        var sub_text = try String(alloc, "sub index");
         try write_string(sub_index, sub_text);
-        var big: String = this.dir.file("big.txt");
-        var big_text = String(alloc, "");
+        var big: String = try this.dir.file("big.txt");
+        var big_text = try String(alloc, "");
         for (var i: i64 = 0; i < 300000; i = i + 1) {
-          big_text.append_char(b'a' + _convert<u8>(i % 26));
+          try big_text.append_char(b'a' + _convert<u8>(i % 26));
         }
         try write_string(big, big_text);
 
-        var cfg = Config(alloc);
-        cfg.add_listen(ipv4_loopback(), 0);
+        var cfg = try Config(alloc);
+        try cfg.add_listen(std.net.ipv4_loopback(), 0);
         cfg.access_log = false;
         cfg.log_level = LogLevel.Error;
         cfg.timeouts.tick_ms = 50;
         cfg.timeouts.drain_ms = 500;
-        var opts = StaticOptions(alloc);
+        var opts = try StaticOptions(alloc);
         this.server = try Server<StaticFiles>(
           alloc,
           cfg,
@@ -166,16 +169,16 @@ public module sun_serve {
       try std.test.assert_eq(r.status, 200);
       try std.test.assert(r.body.equals_literal("body{}"), "css body");
       try std.test.assert(
-        r.has_header("content-type: text/css; charset=utf-8"),
+        try r.has_header("content-type: text/css; charset=utf-8"),
         "css type with charset"
       );
-      try std.test.assert(r.has_header("etag: \""), "etag present");
-      try std.test.assert(r.has_header("last-modified: "), "last-modified present");
+      try std.test.assert(try r.has_header("etag: \""), "etag present");
+      try std.test.assert(try r.has_header("last-modified: "), "last-modified present");
 
       try c.send("GET /data.bin HTTP/1.1\r\nHost: a\r\n\r\n");
       var r2: ClientResponse = try c.read_response();
       try std.test.assert(
-        r2.has_header("content-type: application/octet-stream"),
+        try r2.has_header("content-type: application/octet-stream"),
         "unknown extension"
       );
 
@@ -185,15 +188,16 @@ public module sun_serve {
         Option.None => -1
       };
       try std.test.assert(etag_start > 0, "etag header found");
-      var etag = String(alloc, "");
+      var etag = try String(alloc, "");
       var k: i64 = etag_start;
       while (k < r.head.length() and try r.head.at(k) != b'\r') {
-        etag.append_char(try r.head.at(k));
+        try etag.append_char(try r.head.at(k));
         k = k + 1;
       }
-      var cond = String(alloc, "GET /style.css HTTP/1.1\r\nHost: a\r\nIf-None-Match: ");
-      cond.append(etag);
-      cond.append("\r\n\r\n");
+      var cond = try String(alloc, "GET /style.css HTTP/1.1\r\nHost: a\r\nIf-None-Match: ");
+
+      try cond.append(etag);
+      try cond.append("\r\n\r\n");
       try c.send_string(cond);
       var r3: ClientResponse = try c.read_response();
       try std.test.assert_eq(r3.status, 304);
@@ -209,13 +213,13 @@ public module sun_serve {
       var r: ClientResponse = try c.read_response();
       try std.test.assert_eq(r.status, 200);
       try std.test.assert(r.body.equals_literal("<h1>home</h1>"), "root index");
-      try std.test.assert(r.has_header("content-type: text/html; charset=utf-8"), "html type");
+      try std.test.assert(try r.has_header("content-type: text/html; charset=utf-8"), "html type");
 
       try c.send("GET /sub?x=1 HTTP/1.1\r\nHost: a\r\n\r\n");
       var r2: ClientResponse = try c.read_response();
       try std.test.assert_eq(r2.status, 301);
       try std.test.assert(
-        r2.has_header("location: /sub/?x=1"),
+        try r2.has_header("location: /sub/?x=1"),
         "redirect adds slash and keeps query"
       );
 
@@ -239,7 +243,7 @@ public module sun_serve {
       try c.send("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 0\r\n\r\n");
       var r7: ClientResponse = try c.read_response();
       try std.test.assert_eq(r7.status, 405);
-      try std.test.assert(r7.has_header("allow: get, head"), "allow header");
+      try std.test.assert(try r7.has_header("allow: get, head"), "allow header");
       c.close();
     }
 
@@ -265,7 +269,7 @@ public module sun_serve {
       );
       var h: ClientResponse = try c.read_head_response();
       try std.test.assert_eq(h.status, 200);
-      try std.test.assert(h.has_header("content-length: 300000"), "head declares length");
+      try std.test.assert(try h.has_header("content-length: 300000"), "head declares length");
       var after: ClientResponse = try c.read_response();
       try std.test.assert(after.body.equals_literal("body{}"), "connection reusable after HEAD");
       c.close();

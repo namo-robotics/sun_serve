@@ -15,7 +15,7 @@ public module sun_serve {
     test_function probe_matches_machine() sun_serve.ServerTestResult {
       var alloc = make_heap_allocator();
       var layout: EpollLayout = try probe_epoll_layout(alloc);
-      var machine: String = machine_name(alloc);
+      var machine: String = try machine_name(alloc);
       if (machine.equals_literal("x86_64")) {
         try std.test.assert_eq(layout.stride, 12);
         try std.test.assert_eq(layout.data_offset, 4);

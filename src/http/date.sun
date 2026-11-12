@@ -14,11 +14,13 @@ public module sun_serve {
   using std.time;
 
   // Append two decimal digits with a leading zero.
-  function append_two_digits(out: ref String, value: i32) void {
+  function append_two_digits(out: ref String, value: i32) std.AllocationResult<void> {
     if (value < 10) {
-      out.append_char(b'0');
+      try out.append_char(b'0');
     }
-    out.append(value);
+    try out.append(value);
+
+    return std.AllocationResult.Ok;
   }
 
   // Day name for a weekday index where zero is Sunday.
@@ -53,22 +55,24 @@ public module sun_serve {
   }
 
   // Append a Unix time as e.g. "Sun, 06 Nov 1994 08:49:37 GMT".
-  public function append_http_date(out: ref String, unix_secs: i64) void {
+  public function append_http_date(out: ref String, unix_secs: i64) std.AllocationResult<void> {
     var dt: DateTime = convert_to_utc(unix_secs);
-    out.append(day_name(dt.weekday));
-    out.append(", ");
-    append_two_digits(out, dt.day);
-    out.append_char(b' ');
-    out.append(month_name(dt.month));
-    out.append_char(b' ');
-    out.append(dt.year);
-    out.append_char(b' ');
-    append_two_digits(out, dt.hour);
-    out.append_char(b':');
-    append_two_digits(out, dt.minute);
-    out.append_char(b':');
-    append_two_digits(out, dt.second);
-    out.append(" GMT");
+    try out.append(day_name(dt.weekday));
+    try out.append(", ");
+    try append_two_digits(out, dt.day);
+    try out.append_char(b' ');
+    try out.append(month_name(dt.month));
+    try out.append_char(b' ');
+    try out.append(dt.year);
+    try out.append_char(b' ');
+    try append_two_digits(out, dt.hour);
+    try out.append_char(b':');
+    try append_two_digits(out, dt.minute);
+    try out.append_char(b':');
+    try append_two_digits(out, dt.second);
+    try out.append(" GMT");
+
+    return std.AllocationResult.Ok;
   }
 
   // A formatted Date header value, rebuilt at most once per second.
@@ -77,20 +81,22 @@ public module sun_serve {
     var second: i64 = -1;
 
     // Start with the current time formatted.
-    init(alloc: const ref HeapAllocator) {
-      this.text = String(alloc, "");
-      this.refresh();
+    init(alloc: const ref HeapAllocator) std.AllocationResult<void> {
+      this.text = try String(alloc, "");
+      try this.refresh();
     }
 
     // Reformat when the clock has moved to a new second.
-    public method refresh() void {
+    public method refresh() std.AllocationResult<void> {
       var now: i64 = read_unix_time();
       if (now == this.second) {
-        return;
+        return std.AllocationResult.Ok;
       }
       this.second = now;
       this.text.clear();
-      append_http_date(this.text, now);
+      try append_http_date(this.text, now);
+
+      return std.AllocationResult.Ok;
     }
 
     // The current formatted value.

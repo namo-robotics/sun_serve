@@ -39,20 +39,23 @@ public module sun_serve {
   }
 
   // The signature of a plain-function handler.
-  public declare HandlerFn = function (const ref Request, ref Response) void;
+  public declare HandlerFn = function (const ref Request, ref Response) AllocationResult<void>;
 
   // Adapts a module-level function to the handler interface.
   public class FnHandler implements IHandler {
-    var fn: function (const ref Request, ref Response) void;
+    var fn: function (const ref Request, ref Response) AllocationResult<void>;
 
     // Wrap a function.
-    init(fn: function (const ref Request, ref Response) void) {
+    init(fn: function (const ref Request, ref Response) AllocationResult<void>) {
       this.fn = fn;
     }
 
     // Forward to the wrapped function.
     public method handle(req: const ref Request, resp: ref Response) void {
-      this.fn(req, resp);
+      match this.fn(req, resp) {
+        AllocationResult.Ok => {},
+        _ => { _panic("allocation failed in request handler"); }
+      };
     }
 
     // Reject WebSocket upgrades for function handlers.
@@ -77,10 +80,20 @@ public module sun_serve {
   // Answers every request as not found. Useful as a placeholder.
   public class NotFoundHandler implements IHandler {
     // Send a plain-text not-found response.
-    public method handle(req: const ref Request, resp: ref Response) void {
+    public method handle_result(req: const ref Request, resp: ref Response) std.AllocationResult<void> {
       resp.set_status(404);
-      resp.set_content_type("text/plain");
-      resp.set_body("Not Found\n");
+      try resp.set_content_type("text/plain");
+      try resp.set_body("Not Found\n");
+
+      return std.AllocationResult.Ok;
+    }
+
+    /** Runs the callback and terminates if its response storage cannot be allocated. */
+    public method handle(req: const ref Request, resp: ref Response) void {
+      match this.handle_result(req, resp) {
+        std.AllocationResult.Ok => {},
+        _ => { _panic("allocation failed in server callback"); }
+      };
     }
 
     // Reject WebSocket upgrades for the placeholder handler.
@@ -107,13 +120,13 @@ public module sun_serve {
    */
   public function fn_handlers(
     alloc: const ref HeapAllocator,
-    fn: function (const ref Request, ref Response) void,
+    fn: function (const ref Request, ref Response) AllocationResult<void>,
     count: i32
-  ) Vec<FnHandler> {
-    var out = Vec<FnHandler>(alloc, _convert<i64>(count));
+  ) std.AllocationResult<Vec<FnHandler>> {
+    var out = try Vec<FnHandler>(alloc, _convert<i64>(count));
     for (var i: i32 = 0; i < count; i = i + 1) {
-      out.push(FnHandler(fn));
+      try out.push(FnHandler(fn));
     }
-    return out;
+    return std.AllocationResult.Ok(out);
   }
 }

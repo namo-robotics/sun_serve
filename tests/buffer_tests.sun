@@ -14,19 +14,19 @@ public module sun_serve {
 
     test_function append_and_read_back() {
       var alloc = make_heap_allocator();
-      var b = ByteBuffer(alloc, 4);
-      b.append_literal("hello, ");
-      b.append_literal("world");
+      var b = try ByteBuffer(alloc, 4);
+      try b.append_literal("hello, ");
+      try b.append_literal("world");
       try std.test.assert_eq(b.readable_len(), 12);
       try std.test.assert(b.capacity() >= 12, "buffer grew");
-      var text: String = b.to_string(alloc);
+      var text: String = try b.to_string(alloc);
       try std.test.assert(text.equals_literal("hello, world"), "bytes preserved across growth");
     }
 
     test_function consume_and_compact() {
       var alloc = make_heap_allocator();
-      var b = ByteBuffer(alloc, 16);
-      b.append_literal("abcdef");
+      var b = try ByteBuffer(alloc, 16);
+      try b.append_literal("abcdef");
       b.consume(2);
       try std.test.assert_eq(b.readable_len(), 4);
       try std.test.assert_eq(b.byte_at(0), b'c');
@@ -40,38 +40,38 @@ public module sun_serve {
 
     test_function reserve_then_append() {
       var alloc = make_heap_allocator();
-      var b = ByteBuffer(alloc, 2);
-      b.reserve(3);
+      var b = try ByteBuffer(alloc, 2);
+      try b.reserve(3);
       try std.test.assert(b.writable_len() >= 3, "reserve makes room");
-      b.append_byte(b'x');
+      try b.append_byte(b'x');
       try std.test.assert_eq(b.readable_len(), 1);
       try std.test.assert_eq(b.byte_at(0), b'x');
     }
 
     test_function checked_ranges_reject_invalid_offsets() {
       var alloc = make_heap_allocator();
-      var source = ByteBuffer(alloc, 4);
-      source.append_literal("data");
+      var source = try ByteBuffer(alloc, 4);
+      try source.append_literal("data");
       try std.test.assert_eq(source.byte_at(-1), 0);
       try std.test.assert_eq(source.byte_at(4), 0);
-      var invalid = source.range_text(alloc, 3, 2);
+      var invalid = try source.range_text(alloc, 3, 2);
       try std.test.assert_eq(invalid.length(), 0);
-      var destination = ByteBuffer(alloc, 4);
-      destination.append_buffer(source, 3, 2);
+      var destination = try ByteBuffer(alloc, 4);
+      try destination.append_buffer(source, 3, 2);
       try std.test.assert_eq(destination.readable_len(), 0);
     }
 
     test_function number_formatting() {
       var alloc = make_heap_allocator();
-      var b = ByteBuffer(alloc, 8);
-      b.append_i64(0);
-      b.append_byte(b' ');
-      b.append_i64(-42);
-      b.append_byte(b' ');
-      b.append_u64(9223372036854775807);
-      b.append_byte(b' ');
-      b.append_hex_u64(48879);
-      var text: String = b.to_string(alloc);
+      var b = try ByteBuffer(alloc, 8);
+      try b.append_i64(0);
+      try b.append_byte(b' ');
+      try b.append_i64(-42);
+      try b.append_byte(b' ');
+      try b.append_u64(9223372036854775807);
+      try b.append_byte(b' ');
+      try b.append_hex_u64(48879);
+      var text: String = try b.to_string(alloc);
       try std.test.assert(
         text.equals_literal("0 -42 9223372036854775807 beef"),
         "decimal and hex formatting"
@@ -80,10 +80,10 @@ public module sun_serve {
 
     test_function shrink_when_empty() {
       var alloc = make_heap_allocator();
-      var b = ByteBuffer(alloc, 8);
-      b.reserve(4096);
+      var b = try ByteBuffer(alloc, 8);
+      try b.reserve(4096);
       try std.test.assert(b.capacity() >= 4096, "grew");
-      b.shrink_to(64);
+      try b.shrink_to(64);
       try std.test.assert_eq(b.capacity(), 64);
     }
   }

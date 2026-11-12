@@ -24,12 +24,14 @@ public module sun_serve {
     // Create an epoll instance able to report up to max_events per wait.
     init(alloc: const ref HeapAllocator, layout: EpollLayout, max_events: i64) ServerResult<void> {
       this.max_events = max_events;
-      this.events = ContiguousBuffer<u8>(alloc, max_events * layout.stride);
+      this.events = try ContiguousBuffer<u8>(alloc, max_events * layout.stride);
       this.layout = layout;
-      this.scratch = ContiguousBuffer<u8>(alloc, 16);
+      this.scratch = try ContiguousBuffer<u8>(alloc, 16);
       var created: i32 = unsafe sys_epoll_create1(EPOLL_CLOEXEC);
       if (created < 0) {
-        return ServerResult.Error(Error(last_errno(), "epoll_create1 failed"));
+        return ServerResult.Error(
+          Error(last_errno(), "epoll_create1 failed")
+        );
       }
       this.fd = created;
       return ServerResult.Ok;
@@ -54,7 +56,9 @@ public module sun_serve {
     public method add(fd: i32, interest: u32, token: u64) ServerResult<void> {
       this.fill(interest, token);
       if (unsafe sys_epoll_ctl(this.fd, EPOLL_CTL_ADD, fd, this.scratch.raw_data()) < 0) {
-        return ServerResult.Error(Error(last_errno(), "epoll_ctl add failed"));
+        return ServerResult.Error(
+          Error(last_errno(), "epoll_ctl add failed")
+        );
       }
       return ServerResult.Ok;
     }
@@ -65,7 +69,9 @@ public module sun_serve {
     public method modify(fd: i32, interest: u32, token: u64) ServerResult<void> {
       this.fill(interest, token);
       if (unsafe sys_epoll_ctl(this.fd, EPOLL_CTL_MOD, fd, this.scratch.raw_data()) < 0) {
-        return ServerResult.Error(Error(last_errno(), "epoll_ctl mod failed"));
+        return ServerResult.Error(
+          Error(last_errno(), "epoll_ctl mod failed")
+        );
       }
       return ServerResult.Ok;
     }

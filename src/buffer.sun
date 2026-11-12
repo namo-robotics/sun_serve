@@ -37,13 +37,13 @@ public module sun_serve {
     data: raw_ptr<u8>,
     off: i64,
     count: i64
-  ) String {
-    var out = String(alloc, "");
-    out.reserve(count);
+  ) std.AllocationResult<String> {
+    var out = try String(alloc, "");
+    try out.reserve(count);
     for (var i: i64 = 0; i < count; i = i + 1) {
-      out.append_char(unsafe _load<u8>(data, off + i));
+      try out.append_char(unsafe _load<u8>(data, off + i));
     }
-    return out;
+    return std.AllocationResult.Ok(out);
   }
 
   // Owns growable bytes and tracks how many have been consumed.
@@ -54,9 +54,9 @@ public module sun_serve {
     var pos: i64 = 0;  // bytes already consumed from the front
 
     // Build an empty buffer with room for capacity bytes.
-    init(allocator: const ref HeapAllocator, capacity: i64) {
+    init(allocator: const ref HeapAllocator, capacity: i64) std.AllocationResult<void> {
       this.alloc = allocator.copy();
-      this.data = ContiguousBuffer<u8>(allocator, capacity);
+      this.data = try ContiguousBuffer<u8>(allocator, capacity);
     }
 
     // Bytes available to read.
@@ -88,11 +88,13 @@ public module sun_serve {
       allocator: const ref HeapAllocator,
       off: i64,
       count: i64
-    ) String {
+    ) std.AllocationResult<String> {
       if (not this.range_ok(off, count)) {
-        return String(allocator, "");
+        return std.AllocationResult.Ok(try String(allocator, ""));
       }
-      return bytes_to_string(allocator, this.readable_ptr(), off, count);
+      return std.AllocationResult.Ok(
+        try bytes_to_string(allocator, this.readable_ptr(), off, count)
+      );
     }
 
     // Total bytes the block can hold.
@@ -119,10 +121,10 @@ public module sun_serve {
      * Make room for at least extra more bytes after the stored data, doubling
      * the block as needed. Stored bytes keep their offsets.
      */
-    public method reserve(extra: i64) void {
+    public method reserve(extra: i64) std.AllocationResult<void> {
       var needed: i64 = this.len + extra;
       if (needed <= this.data.size()) {
-        return;
+        return std.AllocationResult.Ok;
       }
       var new_size: i64 = this.data.size() * 2;
       if (new_size < 16) {
@@ -131,26 +133,28 @@ public module sun_serve {
       while (new_size < needed) {
         new_size = new_size * 2;
       }
-      var grown = ContiguousBuffer<u8>(this.alloc, new_size);
+      var grown = try ContiguousBuffer<u8>(this.alloc, new_size);
       if (this.len > 0) {
         unsafe _memcpy(grown.raw_data(), this.data.raw_data(), this.len);
       }
       this.data = grown;
+
+      return std.AllocationResult.Ok;
     }
 
     /**
      * Appends up to max bytes from a file, returning its read count or error.
      */
-    public method read_file(file: ref std.io.File, max: i64) i64 {
+    public method read_file(file: ref std.io.File, max: i64) std.AllocationResult<i64> {
       if (max <= 0) {
-        return 0;
+        return std.AllocationResult.Ok(0);
       }
-      this.reserve(max);
+      try this.reserve(max);
       var count = unsafe file.read_into(this.writable_ptr(), max);
       if (count > 0) {
         this.commit(count);
       }
-      return count;
+      return std.AllocationResult.Ok(count);
     }
 
     // Record that n bytes were written at writable_ptr().
@@ -193,74 +197,96 @@ public module sun_serve {
      * Drop the block down to cap bytes when it grew past that and now sits
      * empty, so an idle connection does not pin a large request's memory.
      */
-    public method shrink_to(cap: i64) void {
+    public method shrink_to(cap: i64) std.AllocationResult<void> {
       if (this.len == 0 and this.data.size() > cap) {
-        this.data = ContiguousBuffer<u8>(this.alloc, cap);
+        this.data = try ContiguousBuffer<u8>(this.alloc, cap);
         this.pos = 0;
       }
+
+      return std.AllocationResult.Ok;
     }
 
     // Append n raw bytes.
-    method append_bytes(src: raw_ptr<u8>, n: i64) void {
+    method append_bytes(src: raw_ptr<u8>, n: i64) std.AllocationResult<void> {
       if (n <= 0) {
-        return;
+        return std.AllocationResult.Ok;
       }
-      this.reserve(n);
+      try this.reserve(n);
       unsafe _memcpy(this.writable_ptr(), src, n);
       this.len = this.len + n;
+
+      return std.AllocationResult.Ok;
     }
 
     // Append a readable range from another buffer without exposing pointers.
-    public method append_buffer(src: const ref ByteBuffer, off: i64, count: i64) void {
+    public method append_buffer(
+      src: const ref ByteBuffer,
+      off: i64,
+      count: i64
+    ) std.AllocationResult<void> {
       if (src.range_ok(off, count)) {
-        this.append_bytes(unsafe _ptr_offset(src.readable_ptr(), off), count);
+        try this.append_bytes(unsafe _ptr_offset(src.readable_ptr(), off), count);
       }
+
+      return std.AllocationResult.Ok;
     }
 
     // Append a string literal.
-    public method append_literal(s: static_ptr<u8>) void {
-      this.append_bytes(s.raw(), s.length());
+    public method append_literal(s: static_ptr<u8>) std.AllocationResult<void> {
+      try this.append_bytes(s.raw(), s.length());
+
+      return std.AllocationResult.Ok;
     }
 
     // Append a String's bytes.
-    public method append_string(s: const ref String) void {
-      this.append_bytes(s.bytes(), s.length());
+    public method append_string(s: const ref String) std.AllocationResult<void> {
+      try this.append_bytes(s.bytes(), s.length());
+
+      return std.AllocationResult.Ok;
     }
 
     // Append one byte.
-    public method append_byte(b: u8) void {
-      this.reserve(1);
+    public method append_byte(b: u8) std.AllocationResult<void> {
+      try this.reserve(1);
       unsafe _store<u8>(this.data.raw_data(), this.len, b);
       this.len = this.len + 1;
+
+      return std.AllocationResult.Ok;
     }
 
     // Append a signed integer in decimal.
-    public method append_i64(value: i64) void {
+    public method append_i64(value: i64) std.AllocationResult<void> {
       if (value < 0) {
-        this.append_byte(b'-');
-        this.append_u64(_convert<u64>(0 - value));
-        return;
+        try this.append_byte(b'-');
+        try this.append_u64(_convert<u64>(0 - value));
+        return std.AllocationResult.Ok;
       }
-      this.append_u64(_convert<u64>(value));
+      try this.append_u64(_convert<u64>(value));
+
+      return std.AllocationResult.Ok;
     }
 
     // Append an unsigned integer in decimal.
-    public method append_u64(value: u64) void {
-      this.append_digits(value, false);
+    public method append_u64(value: u64) std.AllocationResult<void> {
+      try this.append_digits(value, false);
+
+      return std.AllocationResult.Ok;
     }
 
     // Append an unsigned integer in lowercase hex.
-    public method append_hex_u64(value: u64) void {
-      this.append_digits(value, true);
+    public method append_hex_u64(value: u64) std.AllocationResult<void> {
+      try this.append_digits(value, true);
+
+      return std.AllocationResult.Ok;
     }
 
     // Append decimal or hexadecimal digits, most significant digit first.
-    method append_digits(value: u64, hex: bool) void {
+    method append_digits(value: u64, hex: bool) std.AllocationResult<void> {
       if (value == 0) {
-        this.append_byte(b'0');
-        return;
+        try this.append_byte(b'0');
+        return std.AllocationResult.Ok;
       }
-      var digits = ContiguousBuffer<u8>(this.alloc, 24);
+      var digits = try ContiguousBuffer<u8>(this.alloc, 24);
       var n: i64 = 0;
       var v: u64 = value;
       while (v > 0) {
@@ -281,13 +307,15 @@ public module sun_serve {
       }
       while (n > 0) {
         n = n - 1;
-        this.append_byte(digits[n]);
+        try this.append_byte(digits[n]);
       }
+
+      return std.AllocationResult.Ok;
     }
 
     // Copy the unread bytes into a new String.
-    public const method to_string(allocator: const ref HeapAllocator) String {
-      return this.range_text(allocator, 0, this.readable_len());
+    public const method to_string(allocator: const ref HeapAllocator) std.AllocationResult<String> {
+      return std.AllocationResult.Ok(try this.range_text(allocator, 0, this.readable_len()));
     }
   }
 }

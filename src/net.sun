@@ -48,10 +48,16 @@ public module sun_serve {
      * Create, configure, bind, and start listening on addr:port. Port zero
      * lets the kernel choose; read the choice back with local_port().
      */
-    public method bind(addr: const ref Ipv4Addr, port: i32, backlog: i32) ServerResult<void> {
-      var sock: i32 = unsafe __socket(AF_INET, SOCK_STREAM, 0);
+    public method bind(
+      addr: const ref std.net.Ipv4Addr,
+      port: i32,
+      backlog: i32
+    ) ServerResult<void> {
+      var sock: i32 = unsafe __socket(std.net.AF_INET, std.net.SOCK_STREAM, 0);
       if (sock < 0) {
-        return ServerResult.Error(Error(last_errno(), "failed to create socket"));
+        return ServerResult.Error(
+          Error(last_errno(), "failed to create socket")
+        );
       }
       this.fd = sock;
       var one: i32 = 1;
@@ -83,7 +89,9 @@ public module sun_serve {
         _address_of<i32>(port)
       );
       if (rc < 0) {
-        return ServerResult.Error(Error(last_errno(), "failed to read socket address"));
+        return ServerResult.Error(
+          Error(last_errno(), "failed to read socket address")
+        );
       }
       return ServerResult.Ok(port);
     }
@@ -118,7 +126,7 @@ public module sun_serve {
     // Close the listening socket.
     public method close() void {
       if (this.fd > 0) {
-        unsafe __shutdown(this.fd, SHUT_RDWR);
+        unsafe __shutdown(this.fd, std.net.SHUT_RDWR);
         close_fd(this.fd);
         this.fd = 0;
       }

@@ -13,32 +13,32 @@ public module sun_serve {
     using std;
 
     // Parse a literal as a request head.
-    function parse(req: ref Request, text: static_ptr<u8>) ParseStatus {
+    function parse(req: ref Request, text: static_ptr<u8>) std.AllocationResult<ParseStatus> {
       var alloc = make_heap_allocator();
-      var input = ByteBuffer(alloc, text.length());
-      input.append_literal(text);
+      var input = try ByteBuffer(alloc, text.length());
+      try input.append_literal(text);
       var limits = Limits();
-      return req.parse_head(input, input.readable_len(), limits);
+      return std.AllocationResult.Ok(try req.parse_head(input, input.readable_len(), limits));
     }
 
     // Parse and return the failure status, or zero when the parse did not fail.
-    function parse_status(text: static_ptr<u8>) i32 {
+    function parse_status(text: static_ptr<u8>) std.AllocationResult<i32> {
       var alloc = make_heap_allocator();
-      var req = Request(alloc);
-      var st: ParseStatus = parse(req, text);
+      var req = try Request(alloc);
+      var st: ParseStatus = try parse(req, text);
       if (st == ParseStatus.Failed) {
-        return req.error_status();
+        return std.AllocationResult.Ok(req.error_status());
       }
       if (st == ParseStatus.Incomplete) {
-        return -1;
+        return std.AllocationResult.Ok(-1);
       }
-      return 0;
+      return std.AllocationResult.Ok(0);
     }
 
     test_function parses_request_line_and_headers() {
       var alloc = make_heap_allocator();
-      var req = Request(alloc);
-      var st: ParseStatus = parse(
+      var req = try Request(alloc);
+      var st: ParseStatus = try parse(
         req,
         "GET /a/b%20c?x=1&y=two HTTP/1.1\r\nHost: example.com\r\nX-Thing:  spaced  \r\n\r\nrest"
       );
@@ -46,17 +46,17 @@ public module sun_serve {
       try std.test.assert(req.method_is("GET"), "method");
       try std.test.assert(req.path().equals_literal("/a/b c"), "decoded path");
       try std.test.assert(req.has_query(), "query present");
-      var q: String = req.query(alloc);
+      var q: String = try req.query(alloc);
       try std.test.assert(q.equals_literal("x=1&y=two"), "raw query");
-      var missing_y = String(alloc, "missing");
-      var y: String = match req.query_param("y", alloc) {
+      var missing_y = try String(alloc, "missing");
+      var y: String = match try req.query_param("y", alloc) {
         Option.Some(v) => v,
         Option.None => missing_y
       };
       try std.test.assert(y.equals_literal("two"), "query param");
       try std.test.assert_eq(req.header_count(), 2);
-      var missing_thing = String(alloc, "missing");
-      var thing: String = match req.header("x-thing", alloc) {
+      var missing_thing = try String(alloc, "missing");
+      var thing: String = match try req.header("x-thing", alloc) {
         Option.Some(v) => v,
         Option.None => missing_thing
       };
@@ -69,51 +69,51 @@ public module sun_serve {
     }
 
     test_function incomplete_until_blank_line() {
-      try std.test.assert_eq(parse_status("GET / HTTP/1.1\r\nHost: a\r\n"), -1);
-      try std.test.assert_eq(parse_status("GET / HTTP/1."), -1);
-      try std.test.assert_eq(parse_status(""), -1);
+      try std.test.assert_eq(try parse_status("GET / HTTP/1.1\r\nHost: a\r\n"), -1);
+      try std.test.assert_eq(try parse_status("GET / HTTP/1."), -1);
+      try std.test.assert_eq(try parse_status(""), -1);
     }
 
     test_function rejects_malformed_requests() {
-      try std.test.assert_eq(parse_status("GET / HTTP/1.1\r\nHost a\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("GET / HTTP/1.1\r\nHost : a\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("GET /\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("GET / HTTP/1.1\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("GET / HTTP/2.0\r\nHost: a\r\n\r\n"), 505);
-      try std.test.assert_eq(parse_status("GET / HTTP/1.1\r\nHost: a\r\n folded\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("GET /%zz HTTP/1.1\r\nHost: a\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("GET /%00 HTTP/1.1\r\nHost: a\r\n\r\n"), 400);
-      try std.test.assert_eq(parse_status("GET nopath HTTP/1.1\r\nHost: a\r\n\r\n"), 400);
+      try std.test.assert_eq(try parse_status("GET / HTTP/1.1\r\nHost a\r\n\r\n"), 400);
+      try std.test.assert_eq(try parse_status("GET / HTTP/1.1\r\nHost : a\r\n\r\n"), 400);
+      try std.test.assert_eq(try parse_status("GET /\r\n\r\n"), 400);
+      try std.test.assert_eq(try parse_status("GET / HTTP/1.1\r\n\r\n"), 400);
+      try std.test.assert_eq(try parse_status("GET / HTTP/2.0\r\nHost: a\r\n\r\n"), 505);
+      try std.test.assert_eq(try parse_status("GET / HTTP/1.1\r\nHost: a\r\n folded\r\n\r\n"), 400);
+      try std.test.assert_eq(try parse_status("GET /%zz HTTP/1.1\r\nHost: a\r\n\r\n"), 400);
+      try std.test.assert_eq(try parse_status("GET /%00 HTTP/1.1\r\nHost: a\r\n\r\n"), 400);
+      try std.test.assert_eq(try parse_status("GET nopath HTTP/1.1\r\nHost: a\r\n\r\n"), 400);
       try std.test.assert_eq(
-        parse_status(
+        try parse_status(
           "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nContent-Length: 6\r\n\r\n"
         ),
         400
       );
       try std.test.assert_eq(
-        parse_status(
+        try parse_status(
           "POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 5\r\nTransfer-Encoding: chunked\r\n\r\n"
         ),
         400
       );
       try std.test.assert_eq(
-        parse_status("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip\r\n\r\n"),
+        try parse_status("POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: gzip\r\n\r\n"),
         501
       );
       try std.test.assert_eq(
-        parse_status("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 99999999999\r\n\r\n"),
+        try parse_status("POST / HTTP/1.1\r\nHost: a\r\nContent-Length: 99999999999\r\n\r\n"),
         413
       );
       try std.test.assert_eq(
-        parse_status("GET / HTTP/1.1\r\nHost: a\r\nExpect: nope\r\n\r\n"),
+        try parse_status("GET / HTTP/1.1\r\nHost: a\r\nExpect: nope\r\n\r\n"),
         417
       );
     }
 
     test_function accepts_duplicate_equal_content_length_and_1_0() {
       var alloc = make_heap_allocator();
-      var req = Request(alloc);
-      var st: ParseStatus = parse(
+      var req = try Request(alloc);
+      var st: ParseStatus = try parse(
         req,
         "POST /x HTTP/1.0\r\nContent-Length: 5\r\nContent-Length: 5\r\nConnection: Keep-Alive\r\n\r\n"
       );
@@ -121,10 +121,10 @@ public module sun_serve {
       try std.test.assert_eq(req.content_length(), 5);
       try std.test.assert_eq(req.version_minor(), 0);
       try std.test.assert(req.keep_alive(), "1.0 with keep-alive token");
-      var st2: ParseStatus = parse(req, "GET / HTTP/1.0\r\n\r\n");
+      var st2: ParseStatus = try parse(req, "GET / HTTP/1.0\r\n\r\n");
       try std.test.assert(st2 == ParseStatus.Complete, "1.0 needs no host");
       try std.test.assert(not req.keep_alive(), "1.0 closes by default");
-      var st3: ParseStatus = parse(
+      var st3: ParseStatus = try parse(
         req,
         "GET / HTTP/1.1\r\nHost: a\r\nConnection: x, close\r\n\r\n"
       );
@@ -134,30 +134,30 @@ public module sun_serve {
 
     test_function absolute_form_and_asterisk() {
       var alloc = make_heap_allocator();
-      var req = Request(alloc);
-      var st: ParseStatus = parse(
+      var req = try Request(alloc);
+      var st: ParseStatus = try parse(
         req,
         "GET http://example.com/p?q=1 HTTP/1.1\r\nHost: example.com\r\n\r\n"
       );
       try std.test.assert(st == ParseStatus.Complete, "complete");
       try std.test.assert(req.path().equals_literal("/p"), "authority stripped");
-      var q: String = req.query(alloc);
+      var q: String = try req.query(alloc);
       try std.test.assert(q.equals_literal("q=1"), "query kept");
-      var st2: ParseStatus = parse(
+      var st2: ParseStatus = try parse(
         req,
         "GET HTTP://example.com HTTP/1.1\r\nHost: example.com\r\n\r\n"
       );
       try std.test.assert(st2 == ParseStatus.Complete, "complete");
       try std.test.assert(req.path().equals_literal("/"), "empty path becomes slash");
-      var st3: ParseStatus = parse(req, "OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n");
+      var st3: ParseStatus = try parse(req, "OPTIONS * HTTP/1.1\r\nHost: a\r\n\r\n");
       try std.test.assert(st3 == ParseStatus.Complete, "complete");
       try std.test.assert(req.path().equals_literal("*"), "asterisk form");
     }
 
     test_function chunked_and_expect_flags() {
       var alloc = make_heap_allocator();
-      var req = Request(alloc);
-      var st: ParseStatus = parse(
+      var req = try Request(alloc);
+      var st: ParseStatus = try parse(
         req,
         "POST / HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: Chunked\r\nExpect: 100-Continue\r\n\r\n"
       );
@@ -168,27 +168,28 @@ public module sun_serve {
 
     test_function header_limits() {
       var alloc = make_heap_allocator();
-      var req = Request(alloc);
+      var req = try Request(alloc);
       var limits = Limits();
       limits.max_header_bytes = 64;
-      var big = String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nX: ");
+      var big = try String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nX: ");
       for (var i: i64 = 0; i < 100; i = i + 1) {
-        big.append_char(b'a');
+        try big.append_char(b'a');
       }
-      var big_input = ByteBuffer(alloc, big.length());
-      big_input.append_string(big);
+      var big_input = try ByteBuffer(alloc, big.length());
+      try big_input.append_string(big);
       try std.test.assert(
-        req.parse_head(big_input, big_input.readable_len(), limits) == ParseStatus.Failed,
+        try req.parse_head(big_input, big_input.readable_len(), limits) == ParseStatus.Failed,
         "failed"
       );
       try std.test.assert_eq(req.error_status(), 431);
       limits.max_header_bytes = 16384;
       limits.max_headers = 2;
-      var many = String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nA: 1\r\nB: 2\r\n\r\n");
-      var many_input = ByteBuffer(alloc, many.length());
-      many_input.append_string(many);
+      var many = try String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nA: 1\r\nB: 2\r\n\r\n");
+
+      var many_input = try ByteBuffer(alloc, many.length());
+      try many_input.append_string(many);
       try std.test.assert(
-        req.parse_head(many_input, many_input.readable_len(), limits) == ParseStatus.Failed,
+        try req.parse_head(many_input, many_input.readable_len(), limits) == ParseStatus.Failed,
         "failed"
       );
       try std.test.assert_eq(req.error_status(), 431);
@@ -196,14 +197,14 @@ public module sun_serve {
 
     test_function response_serialization() {
       var alloc = make_heap_allocator();
-      var resp = Response(alloc);
-      resp.set_content_type("text/plain");
-      resp.set_body("hello");
-      resp.add_header("X-A", "1");
-      var out = ByteBuffer(alloc, 64);
-      var date = String(alloc, "Thu, 01 Jan 1970 00:00:00 GMT");
-      resp.serialize_head(out, date, true, true);
-      var text: String = out.to_string(alloc);
+      var resp = try Response(alloc);
+      try resp.set_content_type("text/plain");
+      try resp.set_body("hello");
+      try resp.add_header("X-A", "1");
+      var out = try ByteBuffer(alloc, 64);
+      var date = try String(alloc, "Thu, 01 Jan 1970 00:00:00 GMT");
+      try resp.serialize_head(out, date, true, true);
+      var text: String = try out.to_string(alloc);
       try std.test.assert(
         text.equals_literal(
           "HTTP/1.1 200 OK\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nServer: sun_serve\r\nContent-Type: text/plain\r\nX-A: 1\r\nContent-Length: 5\r\nConnection: keep-alive\r\n\r\n"
@@ -214,8 +215,8 @@ public module sun_serve {
       resp.reset();
       resp.set_status(304);
       out.clear();
-      resp.serialize_head(out, date, false, false);
-      var t2: String = out.to_string(alloc);
+      try resp.serialize_head(out, date, false, false);
+      var t2: String = try out.to_string(alloc);
       try std.test.assert(
         t2.equals_literal(
           "HTTP/1.1 304 Not Modified\r\nDate: Thu, 01 Jan 1970 00:00:00 GMT\r\nConnection: close\r\n\r\n"
@@ -224,15 +225,15 @@ public module sun_serve {
       );
 
       resp.reset();
-      resp.write_chunk_literal("abc");
-      resp.write_chunk_literal("defgh");
-      resp.end_chunks();
+      try resp.write_chunk_literal("abc");
+      try resp.write_chunk_literal("defgh");
+      try resp.end_chunks();
       out.clear();
-      resp.serialize_head(out, date, true, false);
-      var t3: String = out.to_string(alloc);
+      try resp.serialize_head(out, date, true, false);
+      var t3: String = try out.to_string(alloc);
       try std.test.assert(t3.contains("Transfer-Encoding: chunked\r\n"), "chunked header");
       try std.test.assert(not t3.contains("Content-Length"), "no length when chunked");
-      var body: String = resp.body_buffer().to_string(alloc);
+      var body: String = try resp.body_buffer().to_string(alloc);
       try std.test.assert(
         body.equals_literal("3\r\nabc\r\n5\r\ndefgh\r\n0\r\n\r\n"),
         "chunk framing"
@@ -241,26 +242,26 @@ public module sun_serve {
 
     test_function http_date_format() {
       var alloc = make_heap_allocator();
-      var s = String(alloc, "");
-      append_http_date(s, 0);
+      var s = try String(alloc, "");
+      try append_http_date(s, 0);
       try std.test.assert(s.equals_literal("Thu, 01 Jan 1970 00:00:00 GMT"), "epoch");
       s.clear();
-      append_http_date(s, 784111777);
+      try append_http_date(s, 784111777);
       try std.test.assert(s.equals_literal("Sun, 06 Nov 1994 08:49:37 GMT"), "rfc example");
-      var cache = DateCache(alloc);
+      var cache = try DateCache(alloc);
       try std.test.assert(cache.value().length() == 29, "cached date has fixed width");
     }
 
     test_function mime_types() {
       var alloc = make_heap_allocator();
-      var a = String(alloc, "/site/index.HTML");
-      try std.test.assert(mime_for_path(a).length() == 9, "text/html");
-      var b = String(alloc, "/x/archive.tar.gz");
-      var gz: static_ptr<u8> = mime_for_path(b);
-      var gzs = String(alloc, gz);
+      var a = try String(alloc, "/site/index.HTML");
+      try std.test.assert((try mime_for_path(a)).length() == 9, "text/html");
+      var b = try String(alloc, "/x/archive.tar.gz");
+      var gz: static_ptr<u8> = try mime_for_path(b);
+      var gzs = try String(alloc, gz);
       try std.test.assert(gzs.equals_literal("application/gzip"), "last extension wins");
-      var c = String(alloc, "/dir.with.dot/noext");
-      var cs = String(alloc, mime_for_path(c));
+      var c = try String(alloc, "/dir.with.dot/noext");
+      var cs = try String(alloc, try mime_for_path(c));
       try std.test.assert(cs.equals_literal("application/octet-stream"), "no extension");
       try std.test.assert(mime_is_text("text/css"), "text type");
       try std.test.assert(not mime_is_text("image/png"), "binary type");
@@ -268,9 +269,9 @@ public module sun_serve {
 
     test_function reason_phrases() {
       var alloc = make_heap_allocator();
-      var s = String(alloc, reason_phrase(404));
+      var s = try String(alloc, reason_phrase(404));
       try std.test.assert(s.equals_literal("Not Found"), "404");
-      var t = String(alloc, reason_phrase(299));
+      var t = try String(alloc, reason_phrase(299));
       try std.test.assert(t.equals_literal("Success"), "class fallback");
       try std.test.assert(status_has_no_body(204), "204");
       try std.test.assert(not status_has_no_body(200), "200");

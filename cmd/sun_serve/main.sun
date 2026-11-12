@@ -38,20 +38,22 @@ module sun_serve_cli {
     var alloc: HeapAllocator;
 
     // Defaults before any flag is read.
-    init(allocator: const ref HeapAllocator) {
+    init(allocator: const ref HeapAllocator) AllocationResult<void> {
       this.alloc = allocator.copy();
-      this.config = Config(allocator);
-      this.static_opts = StaticOptions(allocator);
-      this.root = String(allocator, ".");
-      this.error = String(allocator, "");
+      this.config = try Config(allocator);
+      this.static_opts = try StaticOptions(allocator);
+      this.root = try String(allocator, ".");
+      this.error = try String(allocator, "");
     }
 
     // Record a usage error mentioning the flag.
-    method fail(flag: const ref String, why: static_ptr<u8>) void {
+    method fail(flag: const ref String, why: static_ptr<u8>) AllocationResult<void> {
       this.error.clear();
-      this.error.append(flag);
-      this.error.append(": ");
-      this.error.append(why);
+      try this.error.append(flag);
+      try this.error.append(": ");
+      try this.error.append(why);
+
+      return AllocationResult.Ok;
     }
   }
 
@@ -61,9 +63,9 @@ module sun_serve_cli {
   }
 
   // Parse a byte count with an optional k or m suffix.
-  function parse_size(text: const ref String) Option<i64> {
+  function parse_size(text: const ref String) AllocationResult<Option<i64>> {
     var alloc = make_heap_allocator();
-    var digits: String = text.clone(alloc);
+    var digits: String = try text.clone(alloc);
     var multiplier: i64 = 1;
     if (digits.ends_with("k") or digits.ends_with("K")) {
       multiplier = 1024;
@@ -73,12 +75,14 @@ module sun_serve_cli {
       digits.truncate(digits.length() - 1);
     }
     if (digits.is_empty() or digits.starts_with("-") or digits.starts_with("+")) {
-      return Option.None;
+      return AllocationResult.Ok(Option.None);
     }
-    return match digits.parse_i64() {
-      Option.Some(v) => Option.Some(v * multiplier),
-      Option.None => Option.None
-    };
+    return AllocationResult.Ok(
+      match digits.parse_i64() {
+        Option.Some(v) => Option.Some(v * multiplier),
+        Option.None => Option.None
+      }
+    );
   }
 
   // Parse a port number in the valid range.
@@ -90,38 +94,38 @@ module sun_serve_cli {
   }
 
   // Split HOST:PORT into an address and port. Returns false when malformed.
-  function parse_endpoint(text: const ref String, addr: ref Ipv4Addr, port: ref i32) bool {
+  function parse_endpoint(text: const ref String, addr: ref std.net.Ipv4Addr, port: ref i32) std.AllocationResult<bool> {
     var alloc = make_heap_allocator();
-    var parts: Vec<String> = text.split(alloc, b':');
+    var parts: Vec<String> = try text.split(alloc, b':');
     if (parts.size() != 2) {
-      return false;
+      return std.AllocationResult.Ok(false);
     }
     port = match parse_port(parts[1]) {
       Option.Some(p) => p,
       Option.None => -1
     };
     if (port < 0) {
-      return false;
+      return std.AllocationResult.Ok(false);
     }
     var host: ref String = parts[0];
     if (host.is_empty() or host.equals_literal("*")) {
-      addr = ipv4_any();
-      return true;
+      addr = std.net.ipv4_any();
+      return std.AllocationResult.Ok(true);
     }
     if (host.equals_literal("localhost")) {
-      addr = ipv4_loopback();
-      return true;
+      addr = std.net.ipv4_loopback();
+      return std.AllocationResult.Ok(true);
     }
-    match parse_ipv4(host) {
+    match std.net.parse_ipv4(host) {
       SystemResult.Ok(value) => {
         addr = value;
-        return true;
+        return std.AllocationResult.Ok(true);
       },
       (e: const ref IError) => {
-        return false;
+        return std.AllocationResult.Ok(false);
       }
     };
-    return true;
+    return std.AllocationResult.Ok(true);
   }
 
   // Report whether a flag is one that takes a value.
@@ -136,36 +140,39 @@ module sun_serve_cli {
   }
 
   // Interpret the command line. args includes the program name first.
-  public function parse_cli(alloc: const ref HeapAllocator, args: ref Vec<String>) Cli {
-    var cli = Cli(alloc);
-    var cert = String(alloc, "");
-    var key = String(alloc, "");
+  public function parse_cli(
+    alloc: const ref HeapAllocator,
+    args: ref Vec<String>
+  ) AllocationResult<Cli> {
+    var cli = try Cli(alloc);
+    var cert = try String(alloc, "");
+    var key = try String(alloc, "");
     var i: i64 = 1;
     while (i < args.size()) {
-      var arg: String = args[i].clone(alloc);
+      var arg: String = try args[i].clone(alloc);
       i = i + 1;
       // Split --flag=value at the first equals sign.
-      var flag: String = arg.clone(alloc);
-      var value = String(alloc, "");
+      var flag: String = try arg.clone(alloc);
+      var value = try String(alloc, "");
       var has_value: bool = false;
       if (arg.starts_with("--") and arg.contains_char(b'=')) {
-        var pieces: Vec<String> = arg.split(alloc, b'=');
-        flag = pieces[0].clone(alloc);
+        var pieces: Vec<String> = try arg.split(alloc, b'=');
+        flag = try pieces[0].clone(alloc);
         for (var k: i64 = 1; k < pieces.size(); k = k + 1) {
           if (k > 1) {
-            value.append_char(b'=');
+            try value.append_char(b'=');
           }
-          value.append(pieces[k]);
+          try value.append(pieces[k]);
         }
         has_value = true;
       }
       if (flag.equals_literal("--help") or flag.equals_literal("-h")) {
         cli.show_help = true;
-        return cli;
+        return AllocationResult.Ok(cli);
       }
       if (flag.equals_literal("--version")) {
         cli.show_version = true;
-        return cli;
+        return AllocationResult.Ok(cli);
       }
       if (flag.equals_literal("--no-access-log")) {
         cli.config.access_log = false;
@@ -180,47 +187,47 @@ module sun_serve_cli {
         continue;
       }
       if (not takes_value(flag)) {
-        cli.fail(flag, "unknown option");
-        return cli;
+        try cli.fail(flag, "unknown option");
+        return AllocationResult.Ok(cli);
       }
       if (not has_value) {
         if (i >= args.size()) {
-          cli.fail(flag, "needs a value");
-          return cli;
+          try cli.fail(flag, "needs a value");
+          return AllocationResult.Ok(cli);
         }
         value.clear();
-        value.append(args[i]);
+        try value.append(args[i]);
         i = i + 1;
       }
       if (flag.equals_literal("--listen") or flag.equals_literal("--tls-listen")) {
-        var addr: Ipv4Addr = ipv4_any();
+        var addr: std.net.Ipv4Addr = std.net.ipv4_any();
         var port: i32 = 0;
-        if (not parse_endpoint(value, addr, port)) {
-          cli.fail(flag, "expects HOST:PORT");
-          return cli;
+        if (not try parse_endpoint(value, addr, port)) {
+          try cli.fail(flag, "expects HOST:PORT");
+          return AllocationResult.Ok(cli);
         }
         if (flag.equals_literal("--listen")) {
-          cli.config.add_listen(addr, port);
+          try cli.config.add_listen(addr, port);
         } else {
-          cli.config.add_tls_listen(addr, port);
+          try cli.config.add_tls_listen(addr, port);
         }
       } else if (flag.equals_literal("--cert")) {
         cert.clear();
-        cert.append(value);
+        try cert.append(value);
       } else if (flag.equals_literal("--key")) {
         key.clear();
-        key.append(value);
+        try key.append(value);
       } else if (flag.equals_literal("--root")) {
         cli.root.clear();
-        cli.root.append(value);
+        try cli.root.append(value);
       } else if (flag.equals_literal("--workers")) {
         var n: i64 = match value.parse_i64() {
           Option.Some(v) => v,
           Option.None => -1
         };
         if (n < 1 or n > 4096) {
-          cli.fail(flag, "expects a number of threads");
-          return cli;
+          try cli.fail(flag, "expects a number of threads");
+          return AllocationResult.Ok(cli);
         }
         cli.workers = _convert<i32>(n);
       } else if (flag.equals_literal("--log-level")) {
@@ -229,28 +236,28 @@ module sun_serve_cli {
             cli.config.log_level = level;
           },
           Option.None => {
-            cli.fail(flag, "expects error, warn, info, or debug");
-            return cli;
+            try cli.fail(flag, "expects error, warn, info, or debug");
+            return AllocationResult.Ok(cli);
           }
         };
       } else if (flag.equals_literal("--max-body")) {
-        var size: i64 = match parse_size(value) {
+        var size: i64 = match try parse_size(value) {
           Option.Some(v) => v,
           Option.None => -1
         };
         if (size < 0) {
-          cli.fail(flag, "expects a byte count");
-          return cli;
+          try cli.fail(flag, "expects a byte count");
+          return AllocationResult.Ok(cli);
         }
         cli.config.limits.max_body_bytes = size;
       } else if (flag.equals_literal("--max-header")) {
-        var size: i64 = match parse_size(value) {
+        var size: i64 = match try parse_size(value) {
           Option.Some(v) => v,
           Option.None => -1
         };
         if (size < 1024) {
-          cli.fail(flag, "expects a byte count of at least 1k");
-          return cli;
+          try cli.fail(flag, "expects a byte count of at least 1k");
+          return AllocationResult.Ok(cli);
         }
         cli.config.limits.max_header_bytes = size;
       } else if (flag.equals_literal("--keep-alive-timeout")) {
@@ -259,43 +266,43 @@ module sun_serve_cli {
           Option.None => -1
         };
         if (secs < 0) {
-          cli.fail(flag, "expects seconds");
-          return cli;
+          try cli.fail(flag, "expects seconds");
+          return AllocationResult.Ok(cli);
         }
         cli.config.timeouts.keep_alive_ms = secs * 1000;
       } else if (flag.equals_literal("--index")) {
         cli.static_opts.index_name.clear();
-        cli.static_opts.index_name.append(value);
+        try cli.static_opts.index_name.append(value);
       } else if (flag.equals_literal("--cache-control")) {
         cli.static_opts.cache_control.clear();
-        cli.static_opts.cache_control.append(value);
+        try cli.static_opts.cache_control.append(value);
       } else if (flag.equals_literal("--backlog")) {
         var n: i64 = match value.parse_i64() {
           Option.Some(v) => v,
           Option.None => -1
         };
         if (n < 1) {
-          cli.fail(flag, "expects a positive number");
-          return cli;
+          try cli.fail(flag, "expects a positive number");
+          return AllocationResult.Ok(cli);
         }
         cli.config.backlog = _convert<i32>(n);
       }
     }
     if (cli.config.has_tls_listener()) {
       if (cert.length() == 0 or key.length() == 0) {
-        var which = String(alloc, "--tls-listen");
-        cli.fail(which, "needs --cert and --key");
-        return cli;
+        var which = try String(alloc, "--tls-listen");
+        try cli.fail(which, "needs --cert and --key");
+        return AllocationResult.Ok(cli);
       }
-      cli.config.set_tls(cert, key);
+      try cli.config.set_tls(cert, key);
     }
     if (cli.config.listen.size() == 0) {
-      cli.config.add_listen(ipv4_any(), 8080);
+      try cli.config.add_listen(std.net.ipv4_any(), 8080);
     }
     if (cli.workers == 0) {
       cli.workers = online_cpus();
     }
-    return cli;
+    return AllocationResult.Ok(cli);
   }
 
   // Print one "listening on" line per listener.
@@ -304,46 +311,53 @@ module sun_serve_cli {
     server: const ref Server<StaticFiles>,
     cfg: const ref Config,
     workers: i32
-  ) void {
+  ) AllocationResult<void> {
     for (var i: i64 = 0; i < cfg.listen.size(); i = i + 1) {
       var spec: const ref ListenSpec = cfg.listen[i];
       var scheme: static_ptr<u8> = spec.tls ? "https" : "http";
-      var host: String = spec.addr.to_string(alloc);
-      var line: String = `listening on ${scheme}://${host}:${server.port(i)}`;
+      var host: String = try spec.addr.to_string(alloc);
+      var line: String = try `listening on ${scheme}://${host}:${server.port(i)}`;
+
       if (i == 0) {
-        line.append(` with ${workers} workers`);
+        try line.append(try ` with ${workers} workers`);
       }
-      eprintln(line);
+      std.io.eprintln(line);
     }
+
+    return AllocationResult.Ok;
   }
 
   // Run the command; returns the process exit status.
-  public function run(argc: i32, argv: raw_ptr<raw_ptr<i8>>) i32 {
+  public function run(argc: i32, argv: raw_ptr<raw_ptr<i8>>) AllocationResult<i32> {
     var alloc = make_heap_allocator();
-    var env = std.env.Env(alloc);
-    var args: Vec<String> = env.args(argc, argv);
-    var cli: Cli = parse_cli(alloc, args);
+    var env = try std.env.Env(alloc);
+    var args: Vec<String> = try env.args(argc, argv);
+    var cli: Cli = try parse_cli(alloc, args);
     if (cli.show_help) {
-      print(usage());
-      return 0;
+      std.io.print(usage());
+      return AllocationResult.Ok(0);
     }
     if (cli.show_version) {
-      print("sun_serve ");
-      println(sun_serve.version());
-      return 0;
+      std.io.print("sun_serve ");
+      std.io.println(sun_serve.version());
+      return AllocationResult.Ok(0);
     }
     if (not cli.error.is_empty()) {
-      eprintln(`sun_serve: ${cli.error}`);
-      eprint(usage());
-      return 2;
+      std.io.eprintln(try `sun_serve: ${cli.error}`);
+      std.io.eprint(usage());
+      return AllocationResult.Ok(2);
     }
-    return match serve(alloc, cli) {
-      ServerResult.Ok(status) => status,
-      (e: const ref IError) => {
-        eprintln(`sun_serve: ${e.message()}`);
-        return 3;
+    return AllocationResult.Ok(
+      match serve(alloc, cli) {
+        ServerResult.Ok(status) => status,
+        (e: const ref IError) => {
+          std.io.eprintln(
+            try `sun_serve: ${try e.message()}`
+          );
+          return AllocationResult.Ok(3);
+        }
       }
-    };
+    );
   }
 
   /* Start the configured server and wait for shutdown. */
@@ -355,14 +369,18 @@ module sun_serve_cli {
       cli.static_opts,
       cli.workers
     );
-    var server = try Server<StaticFiles>(alloc, cli.config.clone(), handlers);
+    var server = try Server<StaticFiles>(
+      alloc,
+      try cli.config.clone(),
+      handlers
+    );
     try server.start();
-    announce(alloc, server, cli.config, cli.workers);
+    try announce(alloc, server, cli.config, cli.workers);
     var tick = std.time.create_duration_millis(cli.config.timeouts.tick_ms);
     while (not shutdown_requested()) {
       std.time.sleep(tick);
     }
-    eprintln("shutting down");
+    std.io.eprintln("shutting down");
     server.stop();
     if (server.join() != 0) {
       return ServerResult.Ok(1);
@@ -371,7 +389,8 @@ module sun_serve_cli {
   }
 }
 
-function main(argc: i32, argv: raw_ptr<raw_ptr<i8>>) i32 {
+/** Runs the CLI and reports unrecoverable failures through the process entrypoint. */
+function main(argc: i32, argv: raw_ptr<raw_ptr<i8>>) std.AllocationResult<i32> {
   return sun_serve_cli.run(argc, argv);
 }
 

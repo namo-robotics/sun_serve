@@ -15,53 +15,56 @@ public module sun_serve {
     using sun_serve.tests;
 
     // The handler every test server runs.
-    function test_handler(req: const ref Request, resp: ref Response) void {
+    function test_handler(req: const ref Request, resp: ref Response) std.AllocationResult<void> {
       var alloc = make_heap_allocator();
       if (req.path_is("/")) {
-        resp.set_content_type("text/plain");
-        resp.set_body("hello");
+        try resp.set_content_type("text/plain");
+        try resp.set_body("hello");
       } else if (req.path_is("/echo")) {
-        resp.set_content_type("application/octet-stream");
-        resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
+        try resp.set_content_type("application/octet-stream");
+        try resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
       } else if (req.path_is("/big")) {
-        resp.set_content_type("text/plain");
-        var line = String(
+        try resp.set_content_type("text/plain");
+        var line = try String(
           alloc,
           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n"
         );
+
         for (var i: i64 = 0; i < 16384; i = i + 1) {
           resp.append_body_string(line);
         }
       } else if (req.path_is("/chunks")) {
-        resp.set_content_type("text/plain");
-        resp.write_chunk_literal("first ");
-        resp.write_chunk_literal("second");
-        resp.end_chunks();
+        try resp.set_content_type("text/plain");
+        try resp.write_chunk_literal("first ");
+        try resp.write_chunk_literal("second");
+        try resp.end_chunks();
       } else if (req.path_is("/query")) {
-        resp.set_content_type("text/plain");
-        var none_name = String(alloc, "none");
-        var v: String = match req.query_param("name", alloc) {
+        try resp.set_content_type("text/plain");
+        var none_name = try String(alloc, "none");
+        var v: String = match try req.query_param("name", alloc) {
           Option.Some(s) => s,
           Option.None => none_name
         };
-        resp.set_body_string(v);
+        try resp.set_body_string(v);
       } else if (req.path_is("/close")) {
-        resp.set_body("bye");
+        try resp.set_body("bye");
         resp.close_connection();
       } else if (req.path_is("/headers")) {
-        resp.set_content_type("text/plain");
-        var none_ua = String(alloc, "none");
-        var ua: String = match req.header("user-agent", alloc) {
+        try resp.set_content_type("text/plain");
+        var none_ua = try String(alloc, "none");
+        var ua: String = match try req.header("user-agent", alloc) {
           Option.Some(s) => s,
           Option.None => none_ua
         };
-        resp.set_body_string(ua);
-        resp.add_header("X-Custom", "yes");
+        try resp.set_body_string(ua);
+        try resp.add_header("X-Custom", "yes");
       } else {
         resp.set_status(404);
-        resp.set_content_type("text/plain");
-        resp.set_body("nope");
+        try resp.set_content_type("text/plain");
+        try resp.set_body("nope");
       }
+
+      return std.AllocationResult.Ok;
     }
 
     // A running server on a kernel-picked loopback port.
@@ -72,14 +75,18 @@ public module sun_serve {
       public var port: i32;
 
       init(alloc: ref HeapAllocator, workers: i32, keep_alive_ms: i64) ServerResult<void> {
-        var cfg = Config(alloc);
-        cfg.add_listen(ipv4_loopback(), 0);
+        var cfg = try Config(alloc);
+        try cfg.add_listen(std.net.ipv4_loopback(), 0);
         cfg.timeouts.keep_alive_ms = keep_alive_ms;
         cfg.timeouts.drain_ms = 500;
         cfg.timeouts.tick_ms = 50;
         cfg.access_log = false;
         cfg.log_level = LogLevel.Error;
-        this.server = try Server<FnHandler>(alloc, cfg, fn_handlers(alloc, test_handler, workers));
+        this.server = try Server<FnHandler>(
+          alloc,
+          cfg,
+          try fn_handlers(alloc, test_handler, workers)
+        );
         try this.server.start();
         this.port = this.server.port(0);
         return ServerResult.Ok;
@@ -93,22 +100,24 @@ public module sun_serve {
       kind: H2FrameKind,
       flags: u8,
       stream: u32
-    ) void {
-      var header = ByteBuffer(HeapAllocator(), H2_FRAME_HEADER_LEN);
-      h2_frame(header, len, kind, flags, stream);
-      out.append(header.to_string(HeapAllocator()));
+    ) std.AllocationResult<void> {
+      var header = try ByteBuffer(HeapAllocator(), H2_FRAME_HEADER_LEN);
+      try h2_frame(header, len, kind, flags, stream);
+      try out.append(try header.to_string(HeapAllocator()));
+
+      return std.AllocationResult.Ok;
     }
 
     test_function http2_prior_knowledge_and_continuation() sun_serve.ServerTestResult {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc, 1, 5000);
       var c = try RawClient(alloc, ts.port);
-      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-      append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
-      append_h2_test_frame(wire, 3, H2FrameKind.Headers, H2_END_STREAM, 1);
-      wire.append("\x82\x86\x84");  // indexed :method GET, :scheme http, :path /
-      append_h2_test_frame(wire, 3, H2FrameKind.Continuation, H2_END_HEADERS, 1);
-      wire.append("\x01\x01a");  // literal :authority "a"
+      var wire = try String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      try append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
+      try append_h2_test_frame(wire, 3, H2FrameKind.Headers, H2_END_STREAM, 1);
+      try wire.append("\x82\x86\x84");  // indexed :method GET, :scheme http, :path /
+      try append_h2_test_frame(wire, 3, H2FrameKind.Continuation, H2_END_HEADERS, 1);
+      try wire.append("\x01\x01a");  // literal :authority "a"
       try c.send_string(wire);
       var reply: String = try c.read_until("hello");
       try std.test.assert(reply.contains("hello"), "HTTP/2 response body");
@@ -119,13 +128,13 @@ public module sun_serve {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc, 1, 5000);
       var c = try RawClient(alloc, ts.port);
-      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-      append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
+      var wire = try String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      try append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
       /* Unknown frames include both an empty frame and one with a payload. */
-      wire.append("\x00\x00\x00\xff\x00\x00\x00\x00\x00");
-      wire.append("\x00\x00\x03\xfe\x00\x00\x00\x00\x00abc");
-      append_h2_test_frame(wire, 6, H2FrameKind.Headers, H2_END_STREAM | H2_END_HEADERS, 1);
-      wire.append("\x82\x86\x84\x01\x01a");
+      try wire.append("\x00\x00\x00\xff\x00\x00\x00\x00\x00");
+      try wire.append("\x00\x00\x03\xfe\x00\x00\x00\x00\x00abc");
+      try append_h2_test_frame(wire, 6, H2FrameKind.Headers, H2_END_STREAM | H2_END_HEADERS, 1);
+      try wire.append("\x82\x86\x84\x01\x01a");
       try c.send_string(wire);
       var reply: String = try c.read_until("hello");
       try std.test.assert(reply.contains("hello"), "request after unknown frames is served");
@@ -136,22 +145,22 @@ public module sun_serve {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc, 1, 5000);
       var c = try RawClient(alloc, ts.port);
-      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-      append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
+      var wire = try String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      try append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
       for (var stream: u32 = 1; stream <= 3; stream = stream + 2) {
-        append_h2_test_frame(wire, 12, H2FrameKind.Headers, H2_END_HEADERS, stream);
-        wire.append("\x83\x86");  // indexed :method POST, :scheme http
-        wire.append("\x04\x05/echo");  // literal :path "/echo"
-        wire.append("\x01\x01a");  // literal :authority "a"
+        try append_h2_test_frame(wire, 12, H2FrameKind.Headers, H2_END_HEADERS, stream);
+        try wire.append("\x83\x86");  // indexed :method POST, :scheme http
+        try wire.append("\x04\x05/echo");  // literal :path "/echo"
+        try wire.append("\x01\x01a");  // literal :authority "a"
       }
-      append_h2_test_frame(wire, 2, H2FrameKind.Data, 0, 1);
-      wire.append("ab");
-      append_h2_test_frame(wire, 2, H2FrameKind.Data, 0, 3);
-      wire.append("xy");
-      append_h2_test_frame(wire, 2, H2FrameKind.Data, H2_END_STREAM, 1);
-      wire.append("cd");
-      append_h2_test_frame(wire, 1, H2FrameKind.Data, H2_END_STREAM, 3);
-      wire.append("z");
+      try append_h2_test_frame(wire, 2, H2FrameKind.Data, 0, 1);
+      try wire.append("ab");
+      try append_h2_test_frame(wire, 2, H2FrameKind.Data, 0, 3);
+      try wire.append("xy");
+      try append_h2_test_frame(wire, 2, H2FrameKind.Data, H2_END_STREAM, 1);
+      try wire.append("cd");
+      try append_h2_test_frame(wire, 1, H2FrameKind.Data, H2_END_STREAM, 3);
+      try wire.append("z");
       try c.send_string(wire);
       var reply: String = try c.read_until("xyz");
       try std.test.assert(reply.contains("abcd"), "first interleaved response");
@@ -167,10 +176,10 @@ public module sun_serve {
       var r: ClientResponse = try c.read_response();
       try std.test.assert_eq(r.status, 200);
       try std.test.assert(r.body.equals_literal("hello"), "body");
-      try std.test.assert(r.has_header("content-length: 5"), "length header");
-      try std.test.assert(r.has_header("content-type: text/plain"), "type header");
-      try std.test.assert(r.has_header("server: sun_serve"), "server header");
-      try std.test.assert(r.has_header("connection: keep-alive"), "keep-alive announced");
+      try std.test.assert(try r.has_header("content-length: 5"), "length header");
+      try std.test.assert(try r.has_header("content-type: text/plain"), "type header");
+      try std.test.assert(try r.has_header("server: sun_serve"), "server header");
+      try std.test.assert(try r.has_header("connection: keep-alive"), "keep-alive announced");
       c.close();
     }
 
@@ -208,14 +217,15 @@ public module sun_serve {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc, 2, 5000);
       var c = try RawClient(alloc, ts.port);
-      var body = String(alloc, "");
+      var body = try String(alloc, "");
       for (var i: i64 = 0; i < 524288; i = i + 1) {
-        body.append_char(b'a' + _convert<u8>(i % 26));
+        try body.append_char(b'a' + _convert<u8>(i % 26));
       }
-      var req = String(alloc, "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: ");
-      req.append(body.length());
-      req.append("\r\n\r\n");
-      req.append(body);
+      var req = try String(alloc, "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: ");
+
+      try req.append(body.length());
+      try req.append("\r\n\r\n");
+      try req.append(body);
       try c.send_string(req);
       var r: ClientResponse = try c.read_response();
       try std.test.assert_eq(r.status, 200);
@@ -248,7 +258,7 @@ public module sun_serve {
       try c.send("GET /chunks HTTP/1.1\r\nHost: a\r\n\r\n");
       var r: ClientResponse = try c.read_response();
       try std.test.assert_eq(r.status, 200);
-      try std.test.assert(r.has_header("transfer-encoding: chunked"), "chunked header");
+      try std.test.assert(try r.has_header("transfer-encoding: chunked"), "chunked header");
       try std.test.assert(r.body.equals_literal("first second"), "chunks joined");
       c.close();
     }
@@ -272,7 +282,7 @@ public module sun_serve {
       try c1.send("GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 999999999\r\n\r\n");
       var r1: ClientResponse = try c1.read_response();
       try std.test.assert_eq(r1.status, 413);
-      try std.test.assert(r1.has_header("connection: close"), "413 closes");
+      try std.test.assert(try r1.has_header("connection: close"), "413 closes");
       try std.test.assert(c1.peer_closed(), "socket closed after 413");
 
       var c2 = try RawClient(alloc, ts.port);
@@ -281,11 +291,12 @@ public module sun_serve {
       try std.test.assert_eq(r2.status, 400);
 
       var c3 = try RawClient(alloc, ts.port);
-      var big = String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nX-Big: ");
+      var big = try String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nX-Big: ");
+
       for (var i: i64 = 0; i < 20000; i = i + 1) {
-        big.append_char(b'z');
+        try big.append_char(b'z');
       }
-      big.append("\r\n\r\n");
+      try big.append("\r\n\r\n");
       try c3.send_string(big);
       var r3: ClientResponse = try c3.read_response();
       try std.test.assert_eq(r3.status, 431);
@@ -303,7 +314,7 @@ public module sun_serve {
       try c.send("HEAD / HTTP/1.1\r\nHost: a\r\n\r\nGET / HTTP/1.1\r\nHost: a\r\n\r\n");
       var r: ClientResponse = try c.read_head_response();
       try std.test.assert_eq(r.status, 200);
-      try std.test.assert(r.has_header("content-length: 5"), "declares length");
+      try std.test.assert(try r.has_header("content-length: 5"), "declares length");
       var g: ClientResponse = try c.read_response();
       try std.test.assert(g.body.equals_literal("hello"), "GET after HEAD is framed correctly");
       c.close();
@@ -316,7 +327,7 @@ public module sun_serve {
       try c.send("GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
       var r: ClientResponse = try c.read_response();
       try std.test.assert_eq(r.status, 200);
-      try std.test.assert(r.has_header("connection: close"), "close echoed");
+      try std.test.assert(try r.has_header("connection: close"), "close echoed");
       try std.test.assert(c.peer_closed(), "server closed");
 
       var c2 = try RawClient(alloc, ts.port);
@@ -354,7 +365,7 @@ public module sun_serve {
       try c.send("GET /headers HTTP/1.1\r\nHost: a\r\nUser-Agent: sun-test/1\r\n\r\n");
       var r: ClientResponse = try c.read_response();
       try std.test.assert(r.body.equals_literal("sun-test/1"), "header value");
-      try std.test.assert(r.has_header("x-custom: yes"), "custom response header");
+      try std.test.assert(try r.has_header("x-custom: yes"), "custom response header");
       c.close();
     }
 

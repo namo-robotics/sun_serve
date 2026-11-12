@@ -37,9 +37,9 @@ public module sun_serve {
     init(allocator: const ref HeapAllocator, config: Config, handlers: Vec<H>) ServerResult<void> {
       this.alloc = allocator.copy();
       this.handlers = handlers;
-      this.threads = Vec<Thread<i32>>(allocator, 8);
-      this.stop_cell = this.alloc.create_unique<i32>(0);
-      this.ports = Vec<i32>(allocator, 4);
+      this.threads = try Vec<Thread<i32>>(allocator, 8);
+      this.stop_cell = try this.alloc.create_unique<i32>(0);
+      this.ports = try Vec<i32>(allocator, 4);
       if (this.handlers.size() == 0) {
         return ServerResult.Error(Error(-1, "a server needs at least one handler"));
       }
@@ -74,10 +74,10 @@ public module sun_serve {
       var specs: i64 = this.config.listen.size();
       this.ports.clear();
       for (var spec: ref ListenSpec in this.config.listen) {
-        this.ports.push(spec.port);
+        try this.ports.push(spec.port);
       }
       // Bind every socket first so a failure leaves nothing running.
-      var all = Vec<ListenerSocket>(this.alloc, workers * specs);
+      var all = try Vec<ListenerSocket>(this.alloc, workers * specs);
       for (var w: i64 = 0; w < workers; w = w + 1) {
         for (var s: i64 = 0; s < specs; s = s + 1) {
           var spec: ref ListenSpec = this.config.listen[s];
@@ -86,28 +86,28 @@ public module sun_serve {
           if (this.ports[s] == 0) {
             try this.ports.set(s, try l.local_port());
           }
-          all.push(l);
+          try all.push(l);
         }
       }
       this.started = true;
       // Hand out the handlers and listeners in order, first worker first.
       for (var id: i32 = 0; id < _convert<i32>(workers); id = id + 1) {
         var handler: H = try this.handlers.remove(0);
-        var mine = Vec<ListenerSocket>(this.alloc, specs);
+        var mine = try Vec<ListenerSocket>(this.alloc, specs);
         for (var s: i64 = 0; s < specs; s = s + 1) {
-          mine.push(try all.remove(0));
+          try mine.push(try all.remove(0));
         }
         var acceptor: TlsAcceptor = this.tls.acceptor();
         var args = WorkerArgs<H>(
           id,
-          this.config.clone(),
+          try this.config.clone(),
           handler,
           mine,
           StopToken(this.stop_cell),
           acceptor
         );
-        this.threads.push(
-          spawn((args: WorkerArgs<H>) => i32 { return run_worker<H>(args); }, args)
+        try this.threads.push(
+          try spawn((args: WorkerArgs<H>) => i32 { return run_worker<H>(args); }, args)
         );
       }
       return ServerResult.Ok;

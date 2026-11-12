@@ -40,12 +40,12 @@ module hello_handler {
 
       init(alloc: ref HeapAllocator) ServerResult<void> {
         var cfg = Config(alloc);
-        cfg.add_listen(ipv4_loopback(), 0);
+        try cfg.add_listen(std.net.ipv4_loopback(), 0);
         cfg.timeouts.drain_ms = 500;
         cfg.timeouts.tick_ms = 50;
         cfg.access_log = false;
         cfg.log_level = LogLevel.Error;
-        this.server = try Server<HelloHandler>(alloc, cfg, hello_handlers(alloc, 1));
+        this.server = try Server<HelloHandler>(alloc, cfg, try hello_handlers(alloc, 1));
         try this.server.start();
         this.port = this.server.port(0);
         return ServerResult.Ok;
@@ -60,18 +60,18 @@ module hello_handler {
         alloc: ref HeapAllocator,
         request: static_ptr<u8>
       ) ServerResult<String> {
-        var stream = TcpStream();
+        var stream = std.net.TcpStream();
         try stream.connect_local(this.port);
         set_socket_receive_timeout(stream.get_fd(), 10);
         try stream.send_str(request);
-        var reply = String(alloc, "");
-        var chunk = ContiguousBuffer<u8>(alloc, 4096);
+        var reply = try String(alloc, "");
+        var chunk = try ContiguousBuffer<u8>(alloc, 4096);
         while (true) {
           var n: i64 = try stream.recv(chunk);
           if (n <= 0) {
             break;
           }
-          reply.append(try String(alloc, chunk, n));
+          try reply.append(try String(alloc, chunk, n));
         }
         stream.close();
         return ServerResult.Ok(reply);
@@ -85,16 +85,18 @@ module hello_handler {
       kind: H2FrameKind,
       flags: u8,
       stream: u32
-    ) void {
-      out.append_char(_convert<u8>((len >> 16) & 0xff));
-      out.append_char(_convert<u8>((len >> 8) & 0xff));
-      out.append_char(_convert<u8>(len & 0xff));
-      out.append_char(_convert<u8>(kind));
-      out.append_char(flags);
-      out.append_char(_convert<u8>((stream >> 24) & 0x7f));
-      out.append_char(_convert<u8>((stream >> 16) & 0xff));
-      out.append_char(_convert<u8>((stream >> 8) & 0xff));
-      out.append_char(_convert<u8>(stream & 0xff));
+    ) std.AllocationResult<void> {
+      try out.append_char(_convert<u8>((len >> 16) & 0xff));
+      try out.append_char(_convert<u8>((len >> 8) & 0xff));
+      try out.append_char(_convert<u8>(len & 0xff));
+      try out.append_char(_convert<u8>(kind));
+      try out.append_char(flags);
+      try out.append_char(_convert<u8>((stream >> 24) & 0x7f));
+      try out.append_char(_convert<u8>((stream >> 16) & 0xff));
+      try out.append_char(_convert<u8>((stream >> 8) & 0xff));
+      try out.append_char(_convert<u8>(stream & 0xff));
+
+      return std.AllocationResult.Ok;
     }
 
     // HTTP/2 frame flags used by the fixtures.
@@ -117,12 +119,12 @@ module hello_handler {
       text: static_ptr<u8>,
       compressed: bool
     ) std.test.AssertionResult<ContiguousBuffer<u8>> {
-      var source = ByteBuffer(alloc, text.length());
+      var source = try ByteBuffer(alloc, text.length());
       source.append_literal(text);
-      var payload = ByteBuffer(alloc, text.length());
+      var payload = try ByteBuffer(alloc, text.length());
       if (compressed) {
         try std.test.assert(
-          websocket_deflate(source, 0, source.readable_len(), payload),
+          try websocket_deflate(source, 0, source.readable_len(), payload),
           "compress test frame"
         );
       } else {
@@ -133,21 +135,21 @@ module hello_handler {
         payload_len <= WS_SHORT_PAYLOAD_MAX,
         "test frame uses short payload encoding"
       );
-      var wire = ByteBuffer(alloc, WS_HEADER_BYTES + WS_MASK_BYTES + payload_len);
+      var wire = try ByteBuffer(alloc, WS_HEADER_BYTES + WS_MASK_BYTES + payload_len);
       var first: u8 = WS_FIN_FLAG | WS_TEXT_OPCODE;
       if (compressed) {
         first = first | WS_COMPRESSED_FLAG;
       }
-      wire.append_byte(first);
-      wire.append_byte(WS_MASK_FLAG | _convert<u8>(payload_len));
+      try wire.append_byte(first);
+      try wire.append_byte(WS_MASK_FLAG | _convert<u8>(payload_len));
       for (var i: i64 = 0; i < WS_MASK_BYTES; i = i + 1) {
-        wire.append_byte(_convert<u8>(TEST_MASK_FIRST_BYTE + i));
+        try wire.append_byte(_convert<u8>(TEST_MASK_FIRST_BYTE + i));
       }
       for (var i: i64 = 0; i < payload_len; i = i + 1) {
         var mask: u8 = _convert<u8>(TEST_MASK_FIRST_BYTE + (i % WS_MASK_BYTES));
-        wire.append_byte(payload.byte_at(i) ^ mask);
+        try wire.append_byte(payload.byte_at(i) ^ mask);
       }
-      var frame = ContiguousBuffer<u8>(alloc, wire.readable_len());
+      var frame = try ContiguousBuffer<u8>(alloc, wire.readable_len());
       for (var i: i64 = 0; i < wire.readable_len(); i = i + 1) {
         frame[i] = wire.byte_at(i);
       }
@@ -156,8 +158,10 @@ module hello_handler {
 
     // The body is everything after the blank line that ends the head.
     function body_of(alloc: ref HeapAllocator, reply: const ref String) ServerResult<String> {
-      var start: i64 = find_header_end(reply) + 4;
-      return ServerResult.Ok(try reply.substr(alloc, start, reply.length() - start));
+      var start: i64 = std.http.find_header_end(reply) + 4;
+      return ServerResult.Ok(
+        try reply.substr(alloc, start, reply.length() - start)
+      );
     }
 
     test_function greets_by_name() hello_handler.tests.ServerTestResult {
@@ -226,21 +230,21 @@ module hello_handler {
     test_function websocket_upgrade_and_echo() hello_handler.tests.ServerTestResult {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc);
-      var stream = TcpStream();
+      var stream = std.net.TcpStream();
       try stream.connect_local(ts.port);
       set_socket_receive_timeout(stream.get_fd(), 2);
       try stream.send_str(
         "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
       );
-      var reply = ContiguousBuffer<u8>(alloc, 4096);
+      var reply = try ContiguousBuffer<u8>(alloc, 4096);
       var got: i64 = try stream.recv(reply);
       var head = try String(alloc, reply, got);
       try std.test.assert(head.contains("101 Switching Protocols"), "upgrade accepted");
       try std.test.assert(head.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "accept key");
-      var message = String(alloc, "hello");
+      var message = try String(alloc, "hello");
       var frame = try masked_text_frame(alloc, "hello", false);
       try stream.send_bytes(frame.raw_data(), frame.size());
-      var echoed = ContiguousBuffer<u8>(alloc, 16);
+      var echoed = try ContiguousBuffer<u8>(alloc, 16);
       var echoed_len: i64 = try stream.recv(echoed);
       try std.test.assert_eq(echoed_len, WS_HEADER_BYTES + message.length());
       try std.test.assert_eq(echoed[0], WS_FIN_FLAG | WS_TEXT_OPCODE);
@@ -257,35 +261,35 @@ module hello_handler {
     test_function http2_websocket_and_http_share_connection() hello_handler.tests.ServerTestResult {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc);
-      var stream = TcpStream();
+      var stream = std.net.TcpStream();
       try stream.connect_local(ts.port);
       set_socket_receive_timeout(stream.get_fd(), 2);
-      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      var wire = try String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
       // SETTINGS: enable the extended CONNECT protocol.
-      append_h2_frame(wire, 6, H2FrameKind.Settings, 0, 0);
-      wire.append("\x00\x08\x00\x00\x00\x01");
+      try append_h2_frame(wire, 6, H2FrameKind.Settings, 0, 0);
+      try wire.append("\x00\x08\x00\x00\x00\x01");
       // HEADERS on stream 1: CONNECT /ws with :protocol websocket.
-      append_h2_frame(wire, 39, H2FrameKind.Headers, H2_END_HEADERS, 1);
-      wire.append("\x02\x07CONNECT");  // literal :method
-      wire.append("\x00\x09:protocol\x09websocket");  // literal name and value
-      wire.append("\x86");  // indexed :scheme http
-      wire.append("\x04\x03/ws");  // literal :path
-      wire.append("\x01\x01a");  // literal :authority
+      try append_h2_frame(wire, 39, H2FrameKind.Headers, H2_END_HEADERS, 1);
+      try wire.append("\x02\x07CONNECT");  // literal :method
+      try wire.append("\x00\x09:protocol\x09websocket");  // literal name and value
+      try wire.append("\x86");  // indexed :scheme http
+      try wire.append("\x04\x03/ws");  // literal :path
+      try wire.append("\x01\x01a");  // literal :authority
       // DATA on stream 1: a masked WebSocket text frame saying "hello".
-      append_h2_frame(wire, 11, H2FrameKind.Data, 0, 1);
-      wire.append("\x81\x85\x01\x02\x03\x04igohn");
+      try append_h2_frame(wire, 11, H2FrameKind.Data, 0, 1);
+      try wire.append("\x81\x85\x01\x02\x03\x04igohn");
       // HEADERS on stream 3: GET /hi over the same connection.
-      append_h2_frame(wire, 7, H2FrameKind.Headers, H2_END_HEADERS | H2_END_STREAM, 3);
-      wire.append("\x82\x86\x04\x03/hi");
+      try append_h2_frame(wire, 7, H2FrameKind.Headers, H2_END_HEADERS | H2_END_STREAM, 3);
+      try wire.append("\x82\x86\x04\x03/hi");
       try stream.send_string(wire);
-      var received = String(alloc, "");
-      var chunk = ContiguousBuffer<u8>(alloc, 4096);
+      var received = try String(alloc, "");
+      var chunk = try ContiguousBuffer<u8>(alloc, 4096);
       while (not received.contains("hello, world") or not received.contains("hello")) {
         var got: i64 = try stream.recv(chunk);
         if (got <= 0) {
           break;
         }
-        received.append(try String(alloc, chunk, got));
+        try received.append(try String(alloc, chunk, got));
       }
       try std.test.assert(received.contains("hello"), "WebSocket stream echoed");
       try std.test.assert(received.contains("hello, world"), "HTTP stream completed");
@@ -295,13 +299,13 @@ module hello_handler {
     test_function websocket_permessage_deflate_echo() hello_handler.tests.ServerTestResult {
       var alloc = make_heap_allocator();
       var ts = try TestServer(alloc);
-      var stream = TcpStream();
+      var stream = std.net.TcpStream();
       try stream.connect_local(ts.port);
       set_socket_receive_timeout(stream.get_fd(), 2);
       try stream.send_str(
         "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n"
       );
-      var reply = ContiguousBuffer<u8>(alloc, 4096);
+      var reply = try ContiguousBuffer<u8>(alloc, 4096);
       var got: i64 = try stream.recv(reply);
       var head = try String(alloc, reply, got);
       try std.test.assert(
@@ -310,21 +314,21 @@ module hello_handler {
         ),
         "compression negotiated"
       );
-      var message = String(alloc, "hello");
+      var message = try String(alloc, "hello");
       var frame = try masked_text_frame(alloc, "hello", true);
       try stream.send_bytes(frame.raw_data(), frame.size());
-      var echoed = ContiguousBuffer<u8>(alloc, 32);
+      var echoed = try ContiguousBuffer<u8>(alloc, 32);
       var echoed_len: i64 = try stream.recv(echoed);
       try std.test.assert_eq(echoed[0], WS_FIN_FLAG | WS_COMPRESSED_FLAG | WS_TEXT_OPCODE);
       var compressed_len: i64 = _convert<i64>(echoed[1]);
       try std.test.assert_eq(echoed_len, WS_HEADER_BYTES + compressed_len);
-      var compressed = ByteBuffer(alloc, compressed_len);
+      var compressed = try ByteBuffer(alloc, compressed_len);
       for (var i: i64 = WS_HEADER_BYTES; i < echoed_len; i = i + 1) {
-        compressed.append_byte(echoed[i]);
+        try compressed.append_byte(echoed[i]);
       }
-      var decoded = ByteBuffer(alloc, message.length());
+      var decoded = try ByteBuffer(alloc, message.length());
       try std.test.assert_eq(
-        websocket_inflate(
+        try websocket_inflate(
           alloc,
           compressed,
           0,
@@ -334,7 +338,7 @@ module hello_handler {
         ),
         0
       );
-      var text: String = decoded.range_text(alloc, 0, decoded.readable_len());
+      var text: String = try decoded.range_text(alloc, 0, decoded.readable_len());
       try std.test.assert(text.equals(message), "compressed message echoed");
       stream.close();
     }

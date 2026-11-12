@@ -23,17 +23,17 @@ public module sun_serve {
     using sun_serve.tests;
 
     // Whether the openssl tool is on the path.
-    function have_openssl(alloc: ref HeapAllocator) bool {
-      var cmd = Command(alloc, "openssl");
-      cmd.add_arg("version");
+    function have_openssl(alloc: ref HeapAllocator) std.AllocationResult<bool> {
+      var cmd = try Command(alloc, "openssl");
+      try cmd.add_arg("version");
       cmd.set_stdout(Stdio.Null);
       cmd.set_stderr(Stdio.Null);
       match cmd.status() {
         SystemResult.Ok(value) => {
-          return value == 0;
+          return std.AllocationResult.Ok(value == 0);
         },
         (e: const ref IError) => {
-          return false;
+          return std.AllocationResult.Ok(false);
         }
       };
     }
@@ -47,33 +47,33 @@ public module sun_serve {
       var dir: String;
 
       init(alloc: ref HeapAllocator, tag: static_ptr<u8>) ServerResult<void> {
-        this.dir = String(alloc, "/tmp/sun_serve_tls_");
-        this.dir.append_literal(tag);
-        this.dir.append_char(b'_');
-        this.dir.append(pid());
+        this.dir = try String(alloc, "/tmp/sun_serve_tls_");
+        try this.dir.append_literal(tag);
+        try this.dir.append_char(b'_');
+        try this.dir.append(pid());
         try std.io.make_dir(this.dir, 448);
-        this.cert_path = this.dir.clone(alloc);
-        this.cert_path.append("/cert.pem");
-        this.key_path = this.dir.clone(alloc);
-        this.key_path.append("/key.pem");
-        var mint = Command(alloc, "openssl");
-        mint.add_arg("req");
-        mint.add_arg("-x509");
-        mint.add_arg("-newkey");
-        mint.add_arg("ec");
-        mint.add_arg("-pkeyopt");
-        mint.add_arg("ec_paramgen_curve:prime256v1");
-        mint.add_arg("-nodes");
-        mint.add_arg("-days");
-        mint.add_arg("1");
-        mint.add_arg("-subj");
-        mint.add_arg("/CN=localhost");
-        mint.add_arg("-addext");
-        mint.add_arg("subjectAltName=DNS:localhost");
-        mint.add_arg("-keyout");
-        mint.add_arg(this.key_path);
-        mint.add_arg("-out");
-        mint.add_arg(this.cert_path);
+        this.cert_path = try this.dir.clone(alloc);
+        try this.cert_path.append("/cert.pem");
+        this.key_path = try this.dir.clone(alloc);
+        try this.key_path.append("/key.pem");
+        var mint = try Command(alloc, "openssl");
+        try mint.add_arg("req");
+        try mint.add_arg("-x509");
+        try mint.add_arg("-newkey");
+        try mint.add_arg("ec");
+        try mint.add_arg("-pkeyopt");
+        try mint.add_arg("ec_paramgen_curve:prime256v1");
+        try mint.add_arg("-nodes");
+        try mint.add_arg("-days");
+        try mint.add_arg("1");
+        try mint.add_arg("-subj");
+        try mint.add_arg("/CN=localhost");
+        try mint.add_arg("-addext");
+        try mint.add_arg("subjectAltName=DNS:localhost");
+        try mint.add_arg("-keyout");
+        try mint.add_arg(this.key_path);
+        try mint.add_arg("-out");
+        try mint.add_arg(this.cert_path);
         mint.set_stdout(Stdio.Null);
         mint.set_stderr(Stdio.Null);
         if (try mint.status() != 0) {
@@ -90,13 +90,15 @@ public module sun_serve {
     }
 
     // The handler behind every TLS test server.
-    function tls_handler(req: const ref Request, resp: ref Response) void {
-      resp.set_content_type("text/plain");
+    function tls_handler(req: const ref Request, resp: ref Response) std.AllocationResult<void> {
+      try resp.set_content_type("text/plain");
       if (req.path_is("/echo")) {
-        resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
+        try resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
       } else {
-        resp.set_body("secure hello");
+        try resp.set_body("secure hello");
       }
+
+      return std.AllocationResult.Ok;
     }
 
     /*
@@ -115,16 +117,16 @@ public module sun_serve {
 
       init(alloc: ref HeapAllocator, tag: static_ptr<u8>) ServerResult<void> {
         this.cert = try TestCert(alloc, tag);
-        var cfg = Config(alloc);
-        cfg.add_tls_listen(ipv4_loopback(), 0);
-        cfg.add_listen(ipv4_loopback(), 0);
-        cfg.set_tls(this.cert.cert_path, this.cert.key_path);
+        var cfg = try Config(alloc);
+        try cfg.add_tls_listen(std.net.ipv4_loopback(), 0);
+        try cfg.add_listen(std.net.ipv4_loopback(), 0);
+        try cfg.set_tls(this.cert.cert_path, this.cert.key_path);
         cfg.access_log = false;
         cfg.log_level = LogLevel.Error;
         cfg.timeouts.tick_ms = 50;
         cfg.timeouts.drain_ms = 500;
         cfg.timeouts.keep_alive_ms = 400;
-        this.server = try Server<FnHandler>(alloc, cfg, fn_handlers(alloc, tls_handler, 2));
+        this.server = try Server<FnHandler>(alloc, cfg, try fn_handlers(alloc, tls_handler, 2));
         try this.server.start();
         this.tls_port = this.server.port(0);
         this.plain_port = this.server.port(1);
@@ -142,54 +144,59 @@ public module sun_serve {
         trust: bool,
         alpn: static_ptr<u8>
       ) ServerResult<String> {
-        var cli = Command(alloc, "openssl");
-        cli.add_arg("s_client");
-        cli.add_arg("-connect");
-        var hp = String(alloc, "127.0.0.1:");
-        hp.append(this.tls_port);
-        cli.add_arg(hp);
-        cli.add_arg("-servername");
-        cli.add_arg("localhost");
-        cli.add_arg("-ign_eof");
+        var cli = try Command(alloc, "openssl");
+        try cli.add_arg("s_client");
+        try cli.add_arg("-connect");
+        var hp = try String(alloc, "127.0.0.1:");
+        try hp.append(this.tls_port);
+        try cli.add_arg(hp);
+        try cli.add_arg("-servername");
+        try cli.add_arg("localhost");
+        try cli.add_arg("-ign_eof");
         if (trust) {
-          cli.add_arg("-CAfile");
-          cli.add_arg(this.cert.cert_path);
+          try cli.add_arg("-CAfile");
+          try cli.add_arg(this.cert.cert_path);
         } else {
-          cli.add_arg("-verify_return_error");
+          try cli.add_arg("-verify_return_error");
         }
         if (alpn.length() > 0) {
-          cli.add_arg("-alpn");
-          cli.add_arg(alpn);
+          try cli.add_arg("-alpn");
+          try cli.add_arg(alpn);
         }
         cli.set_stdin(Stdio.Piped);
         cli.set_stdout(Stdio.Piped);
         cli.set_stderr(Stdio.Null);
         var child: Child = try cli.start();
-        var text: String = request.clone(alloc);
-        child.write_stdin(text);
+        var text: String = try request.clone(alloc);
+        try child.write_stdin(text);
         child.close_stdin();
         var out: Output = try child.collect(alloc);
-        var got: String = out.stdout().clone(alloc);
+        var got: String = try out.stdout().clone(alloc);
         return ServerResult.Ok(got);
       }
     }
 
     test_function https_get_and_post() sun_serve.ServerTestResult {
       var alloc = make_heap_allocator();
-      if (not have_openssl(alloc)) {
-        println("SKIP: openssl tool not available");
-        return;
+      if (not (try have_openssl(alloc))) {
+        std.io.println("SKIP: openssl tool not available");
+        return sun_serve.ServerTestResult.Ok;
       }
       var ts = try TlsServer(alloc, "get");
-      var get = String(alloc, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var get = try String(
+        alloc,
+        "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
+
       var out: String = try ts.s_client(alloc, get, true, "");
       try std.test.assert(out.contains("Verify return code: 0 (ok)"), "certificate accepted");
       try std.test.assert(out.contains("HTTP/1.1 200 OK"), "status over TLS");
       try std.test.assert(out.contains("secure hello"), "body over TLS");
-      var post = String(
+      var post = try String(
         alloc,
         "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 16\r\nConnection: close\r\n\r\npayload over tls"
       );
+
       var echoed: String = try ts.s_client(alloc, post, true, "");
       try std.test.assert(echoed.contains("Content-Length: 16"), "echo length");
       try std.test.assert(echoed.contains("\r\n\r\npayload over tls"), "echoed body");
@@ -203,20 +210,23 @@ public module sun_serve {
 
     test_function tls_keep_alive_serves_several_requests() sun_serve.ServerTestResult {
       var alloc = make_heap_allocator();
-      if (not have_openssl(alloc)) {
-        println("SKIP: openssl tool not available");
-        return;
+      if (not (try have_openssl(alloc))) {
+        std.io.println("SKIP: openssl tool not available");
+        return sun_serve.ServerTestResult.Ok;
       }
       var ts = try TlsServer(alloc, "keepalive");
-      var reqs = String(
+      var reqs = try String(
         alloc,
         "GET / HTTP/1.1\r\nHost: localhost\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\n\r\nGET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
       );
+
       var out: String = try ts.s_client(alloc, reqs, true, "");
       var count: i64 = 0;
       var from: i64 = 0;
       while (true) {
-        var sub: String = try out.substr(alloc, from, out.length() - from);
+        var sub: String = try 
+          out.substr(alloc, from, out.length() - from)
+        ;
         var idx: i64 = match sub.find("secure hello") {
           Option.Some(i) => i,
           Option.None => -1
@@ -236,12 +246,16 @@ public module sun_serve {
 
     test_function untrusted_certificate_is_rejected_by_client() sun_serve.ServerTestResult {
       var alloc = make_heap_allocator();
-      if (not have_openssl(alloc)) {
-        println("SKIP: openssl tool not available");
-        return;
+      if (not (try have_openssl(alloc))) {
+        std.io.println("SKIP: openssl tool not available");
+        return sun_serve.ServerTestResult.Ok;
       }
       var ts = try TlsServer(alloc, "untrusted");
-      var get = String(alloc, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var get = try String(
+        alloc,
+        "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
+
       var out: String = try ts.s_client(alloc, get, false, "");
       try std.test.assert(not out.contains("secure hello"), "no response without trust");
       // The server survives the failed handshake.
@@ -251,27 +265,35 @@ public module sun_serve {
 
     test_function plaintext_on_tls_port_is_dropped() sun_serve.ServerTestResult {
       var alloc = make_heap_allocator();
-      if (not have_openssl(alloc)) {
-        println("SKIP: openssl tool not available");
-        return;
+      if (not (try have_openssl(alloc))) {
+        std.io.println("SKIP: openssl tool not available");
+        return sun_serve.ServerTestResult.Ok;
       }
       var ts = try TlsServer(alloc, "plaintext");
       var c = try RawClient(alloc, ts.tls_port);
       try c.send("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
       try std.test.assert(c.peer_closed(), "connection closed without a response");
-      var get = String(alloc, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var get = try String(
+        alloc,
+        "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
+
       var out: String = try ts.s_client(alloc, get, true, "");
       try std.test.assert(out.contains("secure hello"), "TLS still served afterwards");
     }
 
     test_function alpn_prefers_http_2() sun_serve.ServerTestResult {
       var alloc = make_heap_allocator();
-      if (not have_openssl(alloc)) {
-        println("SKIP: openssl tool not available");
-        return;
+      if (not (try have_openssl(alloc))) {
+        std.io.println("SKIP: openssl tool not available");
+        return sun_serve.ServerTestResult.Ok;
       }
       var ts = try TlsServer(alloc, "alpn");
-      var get = String(alloc, "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var get = try String(
+        alloc,
+        "GET / HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
+      );
+
       var out: String = try ts.s_client(alloc, get, true, "h2,http/1.1");
       try std.test.assert(out.contains("ALPN protocol: h2"), "HTTP/2 negotiated");
     }

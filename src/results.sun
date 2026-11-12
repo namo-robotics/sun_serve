@@ -1,0 +1,14 @@
+/** Preserves checked access errors while propagating allocation and other failures. */
+public module sun_serve_results {
+
+  /** Separates a checked bounds failure from errors that the caller must propagate. */
+  public function access<T>(result: std.Result<T>) std.Result<std.AccessResult<T>> {
+    match result {
+      (error: ref std.IndexOutOfBoundsError) => {
+        return std.Result.Ok(std.AccessResult.OutOfBounds(std.IndexOutOfBoundsError(error.index())));
+      },
+      _ => {}
+    };
+    return std.Result.Ok(std.AccessResult.Ok(try result));
+  }
+}

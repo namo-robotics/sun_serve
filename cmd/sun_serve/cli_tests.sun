@@ -20,28 +20,29 @@ module sun_serve_cli {
       b: static_ptr<u8>,
       c: static_ptr<u8>,
       d: static_ptr<u8>
-    ) Vec<String> {
-      var v = Vec<String>(alloc, 8);
-      v.push(String(alloc, "sun_serve"));
+    ) std.AllocationResult<Vec<String>> {
+      var v = try Vec<String>(alloc, 8);
+      try v.push(try String(alloc, "sun_serve"));
+
       if (a.length() > 0) {
-        v.push(String(alloc, a));
+        try v.push(try String(alloc, a));
       }
       if (b.length() > 0) {
-        v.push(String(alloc, b));
+        try v.push(try String(alloc, b));
       }
       if (c.length() > 0) {
-        v.push(String(alloc, c));
+        try v.push(try String(alloc, c));
       }
       if (d.length() > 0) {
-        v.push(String(alloc, d));
+        try v.push(try String(alloc, d));
       }
-      return v;
+      return std.AllocationResult.Ok(v);
     }
 
     test_function defaults_when_no_flags() {
       var alloc = make_heap_allocator();
-      var args = argv(alloc, "", "", "", "");
-      var cli: Cli = parse_cli(alloc, args);
+      var args = try argv(alloc, "", "", "", "");
+      var cli: Cli = try parse_cli(alloc, args);
       try std.test.assert_eq(cli.error.length(), 0);
       try std.test.assert_eq(cli.config.listen.size(), 1);
       try std.test.assert_eq(cli.config.listen[0].port, 8080);
@@ -53,8 +54,8 @@ module sun_serve_cli {
 
     test_function listen_and_values_in_both_forms() {
       var alloc = make_heap_allocator();
-      var args = argv(alloc, "--listen=localhost:9000", "--workers", "3", "--no-access-log");
-      var cli: Cli = parse_cli(alloc, args);
+      var args = try argv(alloc, "--listen=localhost:9000", "--workers", "3", "--no-access-log");
+      var cli: Cli = try parse_cli(alloc, args);
       try std.test.assert_eq(cli.error.length(), 0);
       try std.test.assert_eq(cli.config.listen[0].port, 9000);
       try std.test.assert_eq(cli.config.listen[0].addr.octet(0), 127);
@@ -64,24 +65,24 @@ module sun_serve_cli {
 
     test_function http2_can_be_disabled() {
       var alloc = make_heap_allocator();
-      var args = argv(alloc, "--no-http2", "", "", "");
-      var cli: Cli = parse_cli(alloc, args);
+      var args = try argv(alloc, "--no-http2", "", "", "");
+      var cli: Cli = try parse_cli(alloc, args);
       try std.test.assert_eq(cli.error.length(), 0);
       try std.test.assert(not cli.config.http2, "HTTP/2 disabled");
     }
 
     test_function websocket_compression_can_be_disabled() {
       var alloc = make_heap_allocator();
-      var args = argv(alloc, "--no-websocket-compression", "", "", "");
-      var cli: Cli = parse_cli(alloc, args);
+      var args = try argv(alloc, "--no-websocket-compression", "", "", "");
+      var cli: Cli = try parse_cli(alloc, args);
       try std.test.assert_eq(cli.error.length(), 0);
       try std.test.assert(not cli.config.websocket_compression, "WebSocket compression disabled");
     }
 
     test_function sizes_and_timeouts() {
       var alloc = make_heap_allocator();
-      var args = argv(alloc, "--max-body=2m", "--max-header", "32k", "--keep-alive-timeout=7");
-      var cli: Cli = parse_cli(alloc, args);
+      var args = try argv(alloc, "--max-body=2m", "--max-header", "32k", "--keep-alive-timeout=7");
+      var cli: Cli = try parse_cli(alloc, args);
       try std.test.assert_eq(cli.error.length(), 0);
       try std.test.assert_eq(cli.config.limits.max_body_bytes, 2097152);
       try std.test.assert_eq(cli.config.limits.max_header_bytes, 32768);
@@ -90,11 +91,11 @@ module sun_serve_cli {
 
     test_function tls_requires_cert_and_key() {
       var alloc = make_heap_allocator();
-      var args = argv(alloc, "--tls-listen", "*:8443", "", "");
-      var cli: Cli = parse_cli(alloc, args);
+      var args = try argv(alloc, "--tls-listen", "*:8443", "", "");
+      var cli: Cli = try parse_cli(alloc, args);
       try std.test.assert(cli.error.contains("--cert"), "error mentions the missing flags");
-      var ok = argv(alloc, "--tls-listen=*:8443", "--cert=c.pem", "--key=k.pem", "");
-      var cli2: Cli = parse_cli(alloc, ok);
+      var ok = try argv(alloc, "--tls-listen=*:8443", "--cert=c.pem", "--key=k.pem", "");
+      var cli2: Cli = try parse_cli(alloc, ok);
       try std.test.assert_eq(cli2.error.length(), 0);
       try std.test.assert(cli2.config.has_tls, "tls configured");
       try std.test.assert(cli2.config.tls.cert_path.equals_literal("c.pem"), "cert path");
@@ -103,16 +104,19 @@ module sun_serve_cli {
 
     test_function rejects_bad_input() {
       var alloc = make_heap_allocator();
-      var a = argv(alloc, "--listen", "nonsense", "", "");
-      try std.test.assert(parse_cli(alloc, a).error.contains("HOST:PORT"), "bad endpoint");
-      var b = argv(alloc, "--bogus", "", "", "");
-      try std.test.assert(parse_cli(alloc, b).error.contains("unknown"), "unknown flag");
-      var c = argv(alloc, "--workers", "", "", "");
-      try std.test.assert(parse_cli(alloc, c).error.contains("needs a value"), "missing value");
-      var d = argv(alloc, "--log-level=loud", "", "", "");
-      try std.test.assert(parse_cli(alloc, d).error.contains("expects"), "bad level");
-      var e = argv(alloc, "--help", "", "", "");
-      try std.test.assert(parse_cli(alloc, e).show_help, "help flag");
+      var a = try argv(alloc, "--listen", "nonsense", "", "");
+      try std.test.assert((try parse_cli(alloc, a)).error.contains("HOST:PORT"), "bad endpoint");
+      var b = try argv(alloc, "--bogus", "", "", "");
+      try std.test.assert((try parse_cli(alloc, b)).error.contains("unknown"), "unknown flag");
+      var c = try argv(alloc, "--workers", "", "", "");
+      try std.test.assert(
+        (try parse_cli(alloc, c)).error.contains("needs a value"),
+        "missing value"
+      );
+      var d = try argv(alloc, "--log-level=loud", "", "", "");
+      try std.test.assert((try parse_cli(alloc, d)).error.contains("expects"), "bad level");
+      var e = try argv(alloc, "--help", "", "", "");
+      try std.test.assert((try parse_cli(alloc, e)).show_help, "help flag");
     }
   }
 }

@@ -36,12 +36,12 @@ public module sun_serve {
     var alloc: HeapAllocator;
 
     // Build an empty successful response.
-    init(allocator: const ref HeapAllocator) {
+    init(allocator: const ref HeapAllocator) std.AllocationResult<void> {
       this.alloc = allocator.copy();
-      this.header_lines = ByteBuffer(allocator, 256);
-      this.body = ByteBuffer(allocator, 1024);
-      this.chunk_payload = ByteBuffer(allocator, 1024);
-      this.content_type_ = String(allocator, "");
+      this.header_lines = try ByteBuffer(allocator, 256);
+      this.body = try ByteBuffer(allocator, 1024);
+      this.chunk_payload = try ByteBuffer(allocator, 1024);
+      this.content_type_ = try String(allocator, "");
     }
 
     // Return to the initial successful state for the next request.
@@ -71,75 +71,97 @@ public module sun_serve {
      * Add a header line. Headers are sent in the order they were added, and
      * adding the same name twice sends it twice.
      */
-    public method add_header(name: static_ptr<u8>, value: static_ptr<u8>) void {
-      this.header_lines.append_literal(name);
-      this.header_lines.append_literal(": ");
-      this.header_lines.append_literal(value);
-      this.header_lines.append_literal("\r\n");
-    }
+    public method add_header(name: static_ptr<u8>, value: static_ptr<u8>) std.AllocationResult<void> {
+      try this.header_lines.append_literal(name);
+      try this.header_lines.append_literal(": ");
+      try this.header_lines.append_literal(value);
+      try this.header_lines.append_literal("\r\n");
+    
+      return std.AllocationResult.Ok;
+}
 
     // Add a header whose value was built at runtime.
-    public method add_header_string(name: static_ptr<u8>, value: const ref String) void {
-      this.header_lines.append_literal(name);
-      this.header_lines.append_literal(": ");
-      this.header_lines.append_string(value);
-      this.header_lines.append_literal("\r\n");
-    }
+    public method add_header_string(name: static_ptr<u8>, value: const ref String) std.AllocationResult<void> {
+      try this.header_lines.append_literal(name);
+      try this.header_lines.append_literal(": ");
+      try this.header_lines.append_string(value);
+      try this.header_lines.append_literal("\r\n");
+    
+      return std.AllocationResult.Ok;
+}
 
     // Add a header with a numeric value.
-    public method add_header_i64(name: static_ptr<u8>, value: i64) void {
-      this.header_lines.append_literal(name);
-      this.header_lines.append_literal(": ");
-      this.header_lines.append_i64(value);
-      this.header_lines.append_literal("\r\n");
+    public method add_header_i64(name: static_ptr<u8>, value: i64) std.AllocationResult<void> {
+      try this.header_lines.append_literal(name);
+      try this.header_lines.append_literal(": ");
+      try this.header_lines.append_i64(value);
+      try this.header_lines.append_literal("\r\n");
+
+      return std.AllocationResult.Ok;
     }
 
     // Set the Content-Type header.
-    public method set_content_type(value: static_ptr<u8>) void {
+    public method set_content_type(value: static_ptr<u8>) std.AllocationResult<void> {
       this.content_type_.clear();
-      this.content_type_.append(value);
+      try this.content_type_.append(value);
       this.has_content_type = true;
+
+      return std.AllocationResult.Ok;
     }
 
     // Set the Content-Type header from a runtime value.
-    public method set_content_type_string(value: const ref String) void {
+    public method set_content_type_string(value: const ref String) std.AllocationResult<void> {
       this.content_type_.clear();
-      this.content_type_.append(value);
+      try this.content_type_.append(value);
       this.has_content_type = true;
+
+      return std.AllocationResult.Ok;
     }
 
     // Replace the body with a literal.
-    public method set_body(text: static_ptr<u8>) void {
+    public method set_body(text: static_ptr<u8>) std.AllocationResult<void> {
       this.body.clear();
-      this.body.append_literal(text);
-    }
+      try this.body.append_literal(text);
+    
+      return std.AllocationResult.Ok;
+}
 
     // Replace the body with a String's contents.
-    public method set_body_string(text: const ref String) void {
+    public method set_body_string(text: const ref String) std.AllocationResult<void> {
       this.body.clear();
-      this.body.append_string(text);
-    }
+      try this.body.append_string(text);
+    
+      return std.AllocationResult.Ok;
+}
 
     // Replace the body with a readable buffer range.
-    public method set_body_buffer(data: const ref ByteBuffer, off: i64, len: i64) void {
+    public method set_body_buffer(data: const ref ByteBuffer, off: i64, len: i64) std.AllocationResult<void> {
       this.body.clear();
-      this.body.append_buffer(data, off, len);
-    }
+      try this.body.append_buffer(data, off, len);
+    
+      return std.AllocationResult.Ok;
+}
 
     // Append a literal to the body.
-    public method append_body(text: static_ptr<u8>) void {
-      this.body.append_literal(text);
-    }
+    public method append_body(text: static_ptr<u8>) std.AllocationResult<void> {
+      try this.body.append_literal(text);
+    
+      return std.AllocationResult.Ok;
+}
 
     // Append a String to the body.
-    public method append_body_string(text: const ref String) void {
-      this.body.append_string(text);
-    }
+    public method append_body_string(text: const ref String) std.AllocationResult<void> {
+      try this.body.append_string(text);
+    
+      return std.AllocationResult.Ok;
+}
 
     // Append a readable buffer range to the body.
-    public method append_body_buffer(data: const ref ByteBuffer, off: i64, len: i64) void {
-      this.body.append_buffer(data, off, len);
-    }
+    public method append_body_buffer(data: const ref ByteBuffer, off: i64, len: i64) std.AllocationResult<void> {
+      try this.body.append_buffer(data, off, len);
+    
+      return std.AllocationResult.Ok;
+}
 
     // Current body length in bytes, not counting a streamed file.
     public const method body_len() i64 {
@@ -160,54 +182,66 @@ public module sun_serve {
     }
 
     // Write one buffer range as a chunk of a body with unknown total length.
-    public method write_chunk_buffer(data: const ref ByteBuffer, off: i64, len: i64) void {
+    public method write_chunk_buffer(data: const ref ByteBuffer, off: i64, len: i64) std.AllocationResult<void> {
       if (len <= 0) {
-        return;
+        return std.AllocationResult.Ok;
       }
       this.chunked = true;
-      this.chunk_payload.append_buffer(data, off, len);
-      this.body.append_hex_u64(_convert<u64>(len));
-      this.body.append_literal("\r\n");
-      this.body.append_buffer(data, off, len);
-      this.body.append_literal("\r\n");
-    }
+      try this.chunk_payload.append_buffer(data, off, len);
+      try this.body.append_hex_u64(_convert<u64>(len));
+      try this.body.append_literal("\r\n");
+      try this.body.append_buffer(data, off, len);
+      try this.body.append_literal("\r\n");
+    
+      return std.AllocationResult.Ok;
+}
 
     // Write a literal as one chunk.
-    public method write_chunk_literal(text: static_ptr<u8>) void {
-      var data = ByteBuffer(this.alloc, text.length());
-      data.append_literal(text);
-      this.write_chunk_buffer(data, 0, data.readable_len());
+    public method write_chunk_literal(text: static_ptr<u8>) std.AllocationResult<void> {
+      var data = try ByteBuffer(this.alloc, text.length());
+      try data.append_literal(text);
+      try this.write_chunk_buffer(data, 0, data.readable_len());
+
+      return std.AllocationResult.Ok;
     }
 
     // Write a String as one chunk.
-    public method write_chunk_string(text: const ref String) void {
-      var data = ByteBuffer(this.alloc, text.length());
-      data.append_string(text);
-      this.write_chunk_buffer(data, 0, data.readable_len());
+    public method write_chunk_string(text: const ref String) std.AllocationResult<void> {
+      var data = try ByteBuffer(this.alloc, text.length());
+      try data.append_string(text);
+      try this.write_chunk_buffer(data, 0, data.readable_len());
+
+      return std.AllocationResult.Ok;
     }
 
     // Finish a chunked body.
-    public method end_chunks() void {
+    public method end_chunks() std.AllocationResult<void> {
       this.chunked = true;
       if (not this.chunks_ended) {
-        this.body.append_literal("0\r\n\r\n");
+        try this.body.append_literal("0\r\n\r\n");
         this.chunks_ended = true;
       }
-    }
+    
+      return std.AllocationResult.Ok;
+}
 
     // Answer with a redirect to a location.
-    public method redirect(location: static_ptr<u8>, code: i32) void {
+    public method redirect(location: static_ptr<u8>, code: i32) std.AllocationResult<void> {
       this.status = code;
-      this.add_header("Location", location);
+      try this.add_header("Location", location);
       this.body.clear();
-    }
+    
+      return std.AllocationResult.Ok;
+}
 
     // Answer with a redirect to a runtime location.
-    public method redirect_string(location: const ref String, code: i32) void {
+    public method redirect_string(location: const ref String, code: i32) std.AllocationResult<void> {
       this.status = code;
-      this.add_header_string("Location", location);
+      try this.add_header_string("Location", location);
       this.body.clear();
-    }
+    
+      return std.AllocationResult.Ok;
+}
 
     // Ask the connection to close after this response.
     public method close_connection() void {
@@ -244,27 +278,27 @@ public module sun_serve {
      * Returns how many bytes were read; zero means the file is finished or
      * unreadable, and the file is closed either way.
      */
-    public method read_file_chunk(out: ref ByteBuffer, max: i64) i64 {
+    public method read_file_chunk(out: ref ByteBuffer, max: i64) std.AllocationResult<i64> {
       if (not this.has_file or this.file_remaining <= 0) {
-        return 0;
+        return std.AllocationResult.Ok(0);
       }
       var want: i64 = max;
       if (want > this.file_remaining) {
         want = this.file_remaining;
       }
-      var n: i64 = out.read_file(this.file, want);
+      var n: i64 = try out.read_file(this.file, want);
       if (n <= 0) {
         this.file.close();
         this.has_file = false;
         this.file_remaining = 0;
-        return 0;
+        return std.AllocationResult.Ok(0);
       }
       this.file_remaining = this.file_remaining - n;
       if (this.file_remaining == 0) {
         this.file.close();
         this.has_file = false;
       }
-      return n;
+      return std.AllocationResult.Ok(n);
     }
 
     // Total body length to declare in Content-Length.
@@ -289,38 +323,40 @@ public module sun_serve {
       date: const ref String,
       keep_alive: bool,
       server_header: bool
-    ) void {
+    ) std.AllocationResult<void> {
       if (this.chunked and not this.chunks_ended) {
-        this.end_chunks();
+        try this.end_chunks();
       }
-      append_status_line(out, this.status);
-      out.append_literal("Date: ");
-      out.append_string(date);
-      out.append_literal("\r\n");
+      try append_status_line(out, this.status);
+      try out.append_literal("Date: ");
+      try out.append_string(date);
+      try out.append_literal("\r\n");
       if (server_header) {
-        out.append_literal("Server: sun_serve\r\n");
+        try out.append_literal("Server: sun_serve\r\n");
       }
       if (this.has_content_type) {
-        out.append_literal("Content-Type: ");
-        out.append_string(this.content_type_);
-        out.append_literal("\r\n");
+        try out.append_literal("Content-Type: ");
+        try out.append_string(this.content_type_);
+        try out.append_literal("\r\n");
       }
-      out.append_buffer(this.header_lines, 0, this.header_lines.readable_len());
+      try out.append_buffer(this.header_lines, 0, this.header_lines.readable_len());
       if (not status_has_no_body(this.status)) {
         if (this.chunked) {
-          out.append_literal("Transfer-Encoding: chunked\r\n");
+          try out.append_literal("Transfer-Encoding: chunked\r\n");
         } else {
-          out.append_literal("Content-Length: ");
-          out.append_i64(this.declared_length());
-          out.append_literal("\r\n");
+          try out.append_literal("Content-Length: ");
+          try out.append_i64(this.declared_length());
+          try out.append_literal("\r\n");
         }
       }
       if (keep_alive) {
-        out.append_literal("Connection: keep-alive\r\n");
+        try out.append_literal("Connection: keep-alive\r\n");
       } else {
-        out.append_literal("Connection: close\r\n");
+        try out.append_literal("Connection: close\r\n");
       }
-      out.append_literal("\r\n");
+      try out.append_literal("\r\n");
+
+      return std.AllocationResult.Ok;
     }
 
     // Serialize this response as HTTP/2 HEADERS and DATA frames.
@@ -330,42 +366,50 @@ public module sun_serve {
       stream: u32,
       server_header: bool,
       send_body: bool
-    ) void {
+    ) std.AllocationResult<void> {
       if (this.chunked and not this.chunks_ended) {
-        this.end_chunks();
+        try this.end_chunks();
       }
-      var block = ByteBuffer(this.alloc, 256);
-      hpack_status(block, this.status, this.alloc);
-      hpack_header(block, String(this.alloc, "date"), date);
+      var block = try ByteBuffer(this.alloc, 256);
+      try hpack_status(block, this.status, this.alloc);
+      try hpack_header(block, try String(this.alloc, "date"), date);
       if (server_header) {
-        hpack_header_literal(block, "server", "sun_serve");
+        try hpack_header_literal(block, "server", "sun_serve");
       }
       if (this.has_content_type) {
-        hpack_header(block, String(this.alloc, "content-type"), this.content_type_);
+        try hpack_header(
+          block,
+          try String(this.alloc, "content-type"),
+          this.content_type_
+        );
       }
-      this.hpack_extra_headers(block);
+      try this.hpack_extra_headers(block);
       if (not status_has_no_body(this.status)) {
-        var length = String(this.alloc, "");
-        length.append(this.h2_declared_length());
-        hpack_header(block, String(this.alloc, "content-length"), length);
+        var length = try String(this.alloc, "");
+        try length.append(this.h2_declared_length());
+        try hpack_header(
+          block,
+          try String(this.alloc, "content-length"),
+          length
+        );
       }
       var flags: u8 = H2_END_HEADERS;
       if (not send_body or status_has_no_body(this.status) or this.h2_declared_length() == 0) {
         flags = flags | H2_END_STREAM;
       }
-      h2_frame(out, block.readable_len(), H2FrameKind.Headers, flags, stream);
-      out.append_buffer(block, 0, block.readable_len());
+      try h2_frame(out, block.readable_len(), H2FrameKind.Headers, flags, stream);
+      try out.append_buffer(block, 0, block.readable_len());
       if ((flags & H2_END_STREAM) != 0) {
-        return;
+        return std.AllocationResult.Ok;
       }
-      var payload = ByteBuffer(this.alloc, this.h2_declared_length());
+      var payload = try ByteBuffer(this.alloc, this.h2_declared_length());
       if (this.chunked) {
-        payload.append_buffer(this.chunk_payload, 0, this.chunk_payload.readable_len());
+        try payload.append_buffer(this.chunk_payload, 0, this.chunk_payload.readable_len());
       } else {
-        payload.append_buffer(this.body, 0, this.body.readable_len());
+        try payload.append_buffer(this.body, 0, this.body.readable_len());
       }
       while (this.has_file_body()) {
-        if (this.read_file_chunk(payload, H2_FILE_CHUNK) == 0) {
+        if (try this.read_file_chunk(payload, H2_FILE_CHUNK) == 0) {
           break;
         }
       }
@@ -378,18 +422,20 @@ public module sun_serve {
         if (take == payload.readable_len()) {
           data_flags = H2_END_STREAM;
         }
-        h2_frame(out, take, H2FrameKind.Data, data_flags, stream);
-        out.append_buffer(payload, 0, take);
+        try h2_frame(out, take, H2FrameKind.Data, data_flags, stream);
+        try out.append_buffer(payload, 0, take);
         payload.consume(take);
       }
+
+      return std.AllocationResult.Ok;
     }
 
     /*
      * Encode the handler's extra header lines, each "Name: value\r\n", as
      * lowercase HPACK literals.
      */
-    method hpack_extra_headers(block: ref ByteBuffer) void {
-      var lines: Vec<String> = this.header_lines.to_string(this.alloc).split(this.alloc, "\r\n");
+    method hpack_extra_headers(block: ref ByteBuffer) std.AllocationResult<void> {
+      var lines: Vec<String> = try (try this.header_lines.to_string(this.alloc)).split(this.alloc, "\r\n");
       for (var line: ref String in lines) {
         var colon: i64 = match line.find_char(b':') {
           Option.Some(i) => i,
@@ -398,17 +444,19 @@ public module sun_serve {
         if (colon < 0) {
           continue;
         }
-        var name = String(this.alloc, "");
+        var name = try String(this.alloc, "");
         for (var i: i64 = 0; i < colon; i = i + 1) {
-          name.append_char(lower_ascii(string_byte(line, i)));
+          try name.append_char(lower_ascii(string_byte(line, i)));
         }
-        var value = String(this.alloc, "");
+        var value = try String(this.alloc, "");
         for (var i: i64 = colon + 1; i < line.length(); i = i + 1) {
-          value.append_char(string_byte(line, i));
+          try value.append_char(string_byte(line, i));
         }
         value.trim_start();
-        hpack_header(block, name, value);
+        try hpack_header(block, name, value);
       }
+
+      return std.AllocationResult.Ok;
     }
   }
 }

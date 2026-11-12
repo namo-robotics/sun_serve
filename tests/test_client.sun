@@ -37,18 +37,18 @@ public module sun_serve {
       // The decoded response body.
       public var body: String;
 
-      init(alloc: const ref HeapAllocator) {
-        this.head = String(alloc, "");
-        this.body = String(alloc, "");
+      init(alloc: const ref HeapAllocator) std.AllocationResult<void> {
+        this.head = try String(alloc, "");
+        this.body = try String(alloc, "");
       }
 
       // Report whether the header block has a line equal to the literal.
-      public method has_header(line: static_ptr<u8>) bool {
-        var lower: String = this.head.clone(HeapAllocator());
+      public method has_header(line: static_ptr<u8>) std.AllocationResult<bool> {
+        var lower: String = try this.head.clone(HeapAllocator());
         lower.to_lower();
-        var want = String(line);
+        var want = try String(line);
         want.to_lower();
-        return lower.contains(want);
+        return std.AllocationResult.Ok(lower.contains(want));
       }
     }
 
@@ -65,12 +65,15 @@ public module sun_serve {
       if (idx < 0) {
         return ServerResult.Ok(-1);
       }
-      var rest: String = try lower.substr(
-        alloc,
-        idx + name.length(),
-        lower.length() - idx - name.length()
-      );
-      var value: String = rest.split(alloc, "\r\n")[0].clone(alloc);
+      var rest: String = try 
+        lower.substr(
+          alloc,
+          idx + name.length(),
+          lower.length() - idx - name.length()
+        )
+      ;
+      var lines = try rest.split(alloc, "\r\n");
+      var value = try lines[0].clone(alloc);
       value.trim();
       return ServerResult.Ok(
         match value.parse_i64() {
@@ -82,14 +85,14 @@ public module sun_serve {
 
     // Provides the blocking socket operations used by integration tests.
     public class RawClient {
-      var stream: TcpStream = TcpStream();
+      var stream: std.net.TcpStream = std.net.TcpStream();
       var pending: String;  // bytes read but not yet consumed
       var alloc: HeapAllocator;
 
       // Connect to loopback on port with a receive timeout.
       init(allocator: const ref HeapAllocator, port: i32) ServerResult<void> {
         this.alloc = allocator.copy();
-        this.pending = String(allocator, "");
+        this.pending = try String(allocator, "");
         try this.stream.connect_local(port);
         set_socket_receive_timeout(this.stream.get_fd(), 10);
         return ServerResult.Ok;
@@ -113,26 +116,26 @@ public module sun_serve {
 
       // Read more bytes into pending. Returns false at end of stream.
       method fill() ServerResult<bool> {
-        var chunk = ContiguousBuffer<u8>(this.alloc, 65536);
+        var chunk = try ContiguousBuffer<u8>(this.alloc, 65536);
         var n: i64 = 0;
         match this.stream.recv(chunk) {
           SystemResult.Ok(value) => {
             n = value;
           },
           (e: const ref IError) => {
-            var msg = String(this.alloc, "recv failed with errno ");
-            msg.append(e.code());
-            msg.append(" after ");
-            msg.append(this.pending.length());
-            msg.append(" bytes");
-            return ServerResult.Error(Error(e.code(), msg));
+            var msg = try String(this.alloc, "recv failed with errno ");
+            try msg.append(e.code());
+            try msg.append(" after ");
+            try msg.append(this.pending.length());
+            try msg.append(" bytes");
+            return ServerResult.Error(try Error(e.code(), msg));
           }
         };
         if (n <= 0) {
           return ServerResult.Ok(false);
         }
         for (var i: i64 = 0; i < n; i = i + 1) {
-          this.pending.append_char(chunk[i]);
+          try this.pending.append_char(chunk[i]);
         }
         return ServerResult.Ok(true);
       }
@@ -146,7 +149,7 @@ public module sun_serve {
             break;
           }
         }
-        return ServerResult.Ok(this.pending.clone(this.alloc));
+        return ServerResult.Ok(try this.pending.clone(this.alloc));
       }
 
       /*
@@ -175,7 +178,7 @@ public module sun_serve {
             return ServerResult.Ok(resp);
           }
         }
-        return ServerResult.Ok(ClientResponse(this.alloc));
+        return ServerResult.Ok(try ClientResponse(this.alloc));
       }
 
       /*
@@ -195,7 +198,7 @@ public module sun_serve {
       method read_framed(head_only: bool) ServerResult<ClientResponse> {
         var header_end: i64 = -1;
         while (true) {
-          header_end = std.find_header_end(this.pending);
+          header_end = std.http.find_header_end(this.pending);
           if (header_end >= 0) {
             break;
           }
@@ -203,11 +206,13 @@ public module sun_serve {
             return ServerResult.Error(Error(-1, "connection closed before response head"));
           }
         }
-        var resp = ClientResponse(this.alloc);
+        var resp = try ClientResponse(this.alloc);
         // The status line is "HTTP/1.1 <code> <reason>"; the head follows it.
-        var head: String = try this.pending.substr(this.alloc, 0, header_end);
-        var lines: Vec<String> = head.split(this.alloc, "\r\n");
-        var status_line: Vec<String> = lines[0].split_whitespace(this.alloc);
+        var head: String = try 
+          this.pending.substr(this.alloc, 0, header_end)
+        ;
+        var lines: Vec<String> = try head.split(this.alloc, "\r\n");
+        var status_line: Vec<String> = try lines[0].split_whitespace(this.alloc);
         if (status_line.size() >= 2) {
           resp.status = match status_line[1].parse_i64() {
             Option.Some(v) => _convert<i32>(v),
@@ -215,11 +220,11 @@ public module sun_serve {
           };
         }
         for (var i: i64 = 1; i < lines.size(); i = i + 1) {
-          resp.head.append(lines[i]);
-          resp.head.append("\r\n");
+          try resp.head.append(lines[i]);
+          try resp.head.append("\r\n");
         }
         var body_start: i64 = header_end + 4;
-        var lower: String = resp.head.clone(this.alloc);
+        var lower: String = try resp.head.clone(this.alloc);
         lower.to_lower();
         var consumed: i64 = body_start;
         if (lower.contains("transfer-encoding: chunked")) {
@@ -237,14 +242,18 @@ public module sun_serve {
               return ServerResult.Error(Error(-1, "connection closed before body ended"));
             }
           }
-          resp.body = try this.pending.substr(this.alloc, body_start, length);
+          resp.body = try 
+            this.pending.substr(this.alloc, body_start, length)
+          ;
           consumed = body_start + length;
         }
-        this.pending = try this.pending.substr(
-          this.alloc,
-          consumed,
-          this.pending.length() - consumed
-        );
+        this.pending = try 
+          this.pending.substr(
+            this.alloc,
+            consumed,
+            this.pending.length() - consumed
+          )
+        ;
         return ServerResult.Ok(resp);
       }
 
@@ -295,7 +304,10 @@ public module sun_serve {
               return ServerResult.Error(Error(-1, "connection closed inside chunk"));
             }
           }
-          out.append(try this.pending.substr(this.alloc, i, size));
+          try out.append(
+            try this.pending.substr(this.alloc, i, size)
+          );
+
           i = i + size + 2;
         }
         return ServerResult.Ok(i);

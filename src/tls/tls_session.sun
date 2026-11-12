@@ -115,7 +115,7 @@ public module sun_serve {
     }
 
     // The negotiated ALPN protocol name, empty when none was chosen.
-    method alpn(alloc: const ref HeapAllocator) String {
+    method alpn(alloc: const ref HeapAllocator) std.AllocationResult<String> {
       var data: raw_ptr<u8> = null;
       var len: u32 = 0;
       unsafe ssl_get0_alpn_selected(
@@ -124,14 +124,14 @@ public module sun_serve {
         _address_of<u32>(len)
       );
       if (data == null) {
-        return String(alloc, "");
+        return std.AllocationResult.Ok(try String(alloc, ""));
       }
-      return bytes_to_string(alloc, data, 0, _convert<i64>(len));
+      return std.AllocationResult.Ok(try bytes_to_string(alloc, data, 0, _convert<i64>(len)));
     }
 
     // The protocol version text, e.g. "TLSv1.3".
-    method version(alloc: const ref HeapAllocator) String {
-      return from_c_str(alloc, unsafe ssl_get_version(this.ssl));
+    method version(alloc: const ref HeapAllocator) std.AllocationResult<String> {
+      return std.AllocationResult.Ok(try from_c_str(alloc, unsafe ssl_get_version(this.ssl)));
     }
 
     // Send close_notify without waiting for the peer's, then free.
