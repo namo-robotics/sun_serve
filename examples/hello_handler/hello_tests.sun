@@ -20,13 +20,6 @@ module hello_handler {
     using sun_serve;
 
     /* Reports assertion failures and errors from test fixtures. */
-    enum ServerTestResult {
-      Ok,
-      Assertion(std.test.AssertionError),
-      Error(std.Error),
-      OutOfBounds(std.IndexOutOfBoundsError),
-      Tls(sun_serve.TlsError)
-    }
 
     /*
      * A HelloHandler server on loopback with one worker, so /stats counts
@@ -38,17 +31,17 @@ module hello_handler {
       // The loopback port assigned to the server.
       public var port: i32;
 
-      init(alloc: ref HeapAllocator) ServerResult<void> {
+      init(alloc: ref HeapAllocator) throws {
         var cfg = Config(alloc);
-        try cfg.add_listen(std.net.ipv4_loopback(), 0);
+        cfg.add_listen(std.net.ipv4_loopback(), 0);
         cfg.timeouts.drain_ms = 500;
         cfg.timeouts.tick_ms = 50;
         cfg.access_log = false;
         cfg.log_level = LogLevel.Error;
-        this.server = try Server<HelloHandler>(alloc, cfg, try hello_handlers(alloc, 1));
-        try this.server.start();
+        this.server = Server<HelloHandler>(alloc, cfg, hello_handlers(alloc, 1));
+        this.server.start();
         this.port = this.server.port(0);
-        return ServerResult.Ok;
+        return;
       }
 
       /*
@@ -56,25 +49,22 @@ module hello_handler {
        * A receive timeout turns a server that never answers into a failure
        * instead of a hang.
        */
-      public method exchange(
-        alloc: ref HeapAllocator,
-        request: static_ptr<u8>
-      ) ServerResult<String> {
+      public method exchange(alloc: ref HeapAllocator, request: static_ptr<u8>) String throws {
         var stream = std.net.TcpStream();
-        try stream.connect_local(this.port);
+        stream.connect_local(this.port);
         set_socket_receive_timeout(stream.get_fd(), 10);
-        try stream.send_str(request);
-        var reply = try String(alloc, "");
-        var chunk = try ContiguousBuffer<u8>(alloc, 4096);
+        stream.send_str(request);
+        var reply = String(alloc, "");
+        var chunk = ContiguousBuffer<u8>(alloc, 4096);
         while (true) {
-          var n: i64 = try stream.recv(chunk);
+          var n: i64 = stream.recv(chunk);
           if (n <= 0) {
             break;
           }
-          try reply.append(try String(alloc, chunk, n));
+          reply.append(String(alloc, chunk, n));
         }
         stream.close();
-        return ServerResult.Ok(reply);
+        return reply;
       }
     }
 
@@ -85,18 +75,18 @@ module hello_handler {
       kind: H2FrameKind,
       flags: u8,
       stream: u32
-    ) std.AllocationResult<void> {
-      try out.append_char(_convert<u8>((len >> 16) & 0xff));
-      try out.append_char(_convert<u8>((len >> 8) & 0xff));
-      try out.append_char(_convert<u8>(len & 0xff));
-      try out.append_char(_convert<u8>(kind));
-      try out.append_char(flags);
-      try out.append_char(_convert<u8>((stream >> 24) & 0x7f));
-      try out.append_char(_convert<u8>((stream >> 16) & 0xff));
-      try out.append_char(_convert<u8>((stream >> 8) & 0xff));
-      try out.append_char(_convert<u8>(stream & 0xff));
+    ) void throws {
+      out.append_char(_convert<u8>((len >> 16) & 0xff));
+      out.append_char(_convert<u8>((len >> 8) & 0xff));
+      out.append_char(_convert<u8>(len & 0xff));
+      out.append_char(_convert<u8>(kind));
+      out.append_char(flags);
+      out.append_char(_convert<u8>((stream >> 24) & 0x7f));
+      out.append_char(_convert<u8>((stream >> 16) & 0xff));
+      out.append_char(_convert<u8>((stream >> 8) & 0xff));
+      out.append_char(_convert<u8>(stream & 0xff));
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // HTTP/2 frame flags used by the fixtures.
@@ -118,217 +108,215 @@ module hello_handler {
       alloc: const ref HeapAllocator,
       text: static_ptr<u8>,
       compressed: bool
-    ) std.test.AssertionResult<ContiguousBuffer<u8>> {
-      var source = try ByteBuffer(alloc, text.length());
+    ) ContiguousBuffer<u8> throws {
+      var source = ByteBuffer(alloc, text.length());
       source.append_literal(text);
-      var payload = try ByteBuffer(alloc, text.length());
+      var payload = ByteBuffer(alloc, text.length());
       if (compressed) {
-        try std.test.assert(
-          try websocket_deflate(source, 0, source.readable_len(), payload),
+        std.test.assert(
+          websocket_deflate(source, 0, source.readable_len(), payload),
           "compress test frame"
         );
       } else {
         payload.append_buffer(source, 0, source.readable_len());
       }
       var payload_len: i64 = payload.readable_len();
-      try std.test.assert(
+      std.test.assert(
         payload_len <= WS_SHORT_PAYLOAD_MAX,
         "test frame uses short payload encoding"
       );
-      var wire = try ByteBuffer(alloc, WS_HEADER_BYTES + WS_MASK_BYTES + payload_len);
+      var wire = ByteBuffer(alloc, WS_HEADER_BYTES + WS_MASK_BYTES + payload_len);
       var first: u8 = WS_FIN_FLAG | WS_TEXT_OPCODE;
       if (compressed) {
         first = first | WS_COMPRESSED_FLAG;
       }
-      try wire.append_byte(first);
-      try wire.append_byte(WS_MASK_FLAG | _convert<u8>(payload_len));
+      wire.append_byte(first);
+      wire.append_byte(WS_MASK_FLAG | _convert<u8>(payload_len));
       for (var i: i64 = 0; i < WS_MASK_BYTES; i = i + 1) {
-        try wire.append_byte(_convert<u8>(TEST_MASK_FIRST_BYTE + i));
+        wire.append_byte(_convert<u8>(TEST_MASK_FIRST_BYTE + i));
       }
       for (var i: i64 = 0; i < payload_len; i = i + 1) {
         var mask: u8 = _convert<u8>(TEST_MASK_FIRST_BYTE + (i % WS_MASK_BYTES));
-        try wire.append_byte(payload.byte_at(i) ^ mask);
+        wire.append_byte(payload.byte_at(i) ^ mask);
       }
-      var frame = try ContiguousBuffer<u8>(alloc, wire.readable_len());
+      var frame = ContiguousBuffer<u8>(alloc, wire.readable_len());
       for (var i: i64 = 0; i < wire.readable_len(); i = i + 1) {
         frame[i] = wire.byte_at(i);
       }
-      return std.test.AssertionResult.Ok(frame);
+      return frame;
     }
 
     // The body is everything after the blank line that ends the head.
-    function body_of(alloc: ref HeapAllocator, reply: const ref String) ServerResult<String> {
+    function body_of(alloc: ref HeapAllocator, reply: const ref String) String throws {
       var start: i64 = std.http.find_header_end(reply) + 4;
-      return ServerResult.Ok(
-        try reply.substr(alloc, start, reply.length() - start)
-      );
+      return reply.substr(alloc, start, reply.length() - start);
     }
 
-    test_function greets_by_name() hello_handler.tests.ServerTestResult {
+    test_function greets_by_name() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(
         alloc,
         "GET /hi?name=sun HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
       );
-      try std.test.assert(reply.starts_with("HTTP/1.1 200 "), "status");
-      try std.test.assert(reply.contains("Content-Type: text/plain"), "content type");
-      var body: String = try body_of(alloc, reply);
-      try std.test.assert(body.equals_literal("hello, sun\n"), "greeting");
+      std.test.assert(reply.starts_with("HTTP/1.1 200 "), "status");
+      std.test.assert(reply.contains("Content-Type: text/plain"), "content type");
+      var body: String = body_of(alloc, reply);
+      std.test.assert(body.equals_literal("hello, sun\n"), "greeting");
     }
 
-    test_function greets_the_world_without_a_name() hello_handler.tests.ServerTestResult {
+    test_function greets_the_world_without_a_name() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(
         alloc,
         "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
       );
-      var body: String = try body_of(alloc, reply);
-      try std.test.assert(body.equals_literal("hello, world\n"), "default greeting");
+      var body: String = body_of(alloc, reply);
+      std.test.assert(body.equals_literal("hello, world\n"), "default greeting");
     }
 
-    test_function echoes_a_posted_body() hello_handler.tests.ServerTestResult {
+    test_function echoes_a_posted_body() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(
         alloc,
         "POST /echo HTTP/1.1\r\nHost: localhost\r\nContent-Length: 4\r\nConnection: close\r\n\r\nping"
       );
-      try std.test.assert(reply.starts_with("HTTP/1.1 200 "), "status");
-      var body: String = try body_of(alloc, reply);
-      try std.test.assert(body.equals_literal("ping"), "echoed body");
+      std.test.assert(reply.starts_with("HTTP/1.1 200 "), "status");
+      var body: String = body_of(alloc, reply);
+      std.test.assert(body.equals_literal("ping"), "echoed body");
     }
 
-    test_function echo_rejects_other_methods() hello_handler.tests.ServerTestResult {
+    test_function echo_rejects_other_methods() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(
         alloc,
         "GET /echo HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
       );
-      try std.test.assert(reply.starts_with("HTTP/1.1 405 "), "method not allowed");
-      try std.test.assert(reply.contains("Allow: POST"), "allow header");
+      std.test.assert(reply.starts_with("HTTP/1.1 405 "), "method not allowed");
+      std.test.assert(reply.contains("Allow: POST"), "allow header");
     }
 
-    test_function counts_requests_per_worker() hello_handler.tests.ServerTestResult {
+    test_function counts_requests_per_worker() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc);
-      try ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-      try ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
-      var reply: String = try ts.exchange(
+      var ts = TestServer(alloc);
+      ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      ts.exchange(alloc, "GET /hi HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n");
+      var reply: String = ts.exchange(
         alloc,
         "GET /stats HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
       );
-      var body: String = try body_of(alloc, reply);
-      try std.test.assert(
+      var body: String = body_of(alloc, reply);
+      std.test.assert(
         body.equals_literal("requests handled by this worker: 3\n"),
         "third request"
       );
     }
 
-    test_function websocket_upgrade_and_echo() hello_handler.tests.ServerTestResult {
+    test_function websocket_upgrade_and_echo() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc);
+      var ts = TestServer(alloc);
       var stream = std.net.TcpStream();
-      try stream.connect_local(ts.port);
+      stream.connect_local(ts.port);
       set_socket_receive_timeout(stream.get_fd(), 2);
-      try stream.send_str(
+      stream.send_str(
         "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\n\r\n"
       );
-      var reply = try ContiguousBuffer<u8>(alloc, 4096);
-      var got: i64 = try stream.recv(reply);
-      var head = try String(alloc, reply, got);
-      try std.test.assert(head.contains("101 Switching Protocols"), "upgrade accepted");
-      try std.test.assert(head.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "accept key");
-      var message = try String(alloc, "hello");
-      var frame = try masked_text_frame(alloc, "hello", false);
-      try stream.send_bytes(frame.raw_data(), frame.size());
-      var echoed = try ContiguousBuffer<u8>(alloc, 16);
-      var echoed_len: i64 = try stream.recv(echoed);
-      try std.test.assert_eq(echoed_len, WS_HEADER_BYTES + message.length());
-      try std.test.assert_eq(echoed[0], WS_FIN_FLAG | WS_TEXT_OPCODE);
-      try std.test.assert_eq(echoed[1], _convert<u8>(message.length()));
-      var text: String = try (try String(alloc, echoed, echoed_len)).substr(
+      var reply = ContiguousBuffer<u8>(alloc, 4096);
+      var got: i64 = stream.recv(reply);
+      var head = String(alloc, reply, got);
+      std.test.assert(head.contains("101 Switching Protocols"), "upgrade accepted");
+      std.test.assert(head.contains("s3pPLMBiTxaQ9kYGzzhZRbK+xOo="), "accept key");
+      var message = String(alloc, "hello");
+      var frame = masked_text_frame(alloc, "hello", false);
+      stream.send_bytes(frame.raw_data(), frame.size());
+      var echoed = ContiguousBuffer<u8>(alloc, 16);
+      var echoed_len: i64 = stream.recv(echoed);
+      std.test.assert_eq(echoed_len, WS_HEADER_BYTES + message.length());
+      std.test.assert_eq(echoed[0], WS_FIN_FLAG | WS_TEXT_OPCODE);
+      std.test.assert_eq(echoed[1], _convert<u8>(message.length()));
+      var text: String = (String(alloc, echoed, echoed_len)).substr(
         alloc,
         WS_HEADER_BYTES,
         message.length()
       );
-      try std.test.assert(text.equals(message), "message echoed");
+      std.test.assert(text.equals(message), "message echoed");
       stream.close();
     }
 
-    test_function http2_websocket_and_http_share_connection() hello_handler.tests.ServerTestResult {
+    test_function http2_websocket_and_http_share_connection() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc);
+      var ts = TestServer(alloc);
       var stream = std.net.TcpStream();
-      try stream.connect_local(ts.port);
+      stream.connect_local(ts.port);
       set_socket_receive_timeout(stream.get_fd(), 2);
-      var wire = try String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
       // SETTINGS: enable the extended CONNECT protocol.
-      try append_h2_frame(wire, 6, H2FrameKind.Settings, 0, 0);
-      try wire.append("\x00\x08\x00\x00\x00\x01");
+      append_h2_frame(wire, 6, H2FrameKind.Settings, 0, 0);
+      wire.append("\x00\x08\x00\x00\x00\x01");
       // HEADERS on stream 1: CONNECT /ws with :protocol websocket.
-      try append_h2_frame(wire, 39, H2FrameKind.Headers, H2_END_HEADERS, 1);
-      try wire.append("\x02\x07CONNECT");  // literal :method
-      try wire.append("\x00\x09:protocol\x09websocket");  // literal name and value
-      try wire.append("\x86");  // indexed :scheme http
-      try wire.append("\x04\x03/ws");  // literal :path
-      try wire.append("\x01\x01a");  // literal :authority
+      append_h2_frame(wire, 39, H2FrameKind.Headers, H2_END_HEADERS, 1);
+      wire.append("\x02\x07CONNECT");  // literal :method
+      wire.append("\x00\x09:protocol\x09websocket");  // literal name and value
+      wire.append("\x86");  // indexed :scheme http
+      wire.append("\x04\x03/ws");  // literal :path
+      wire.append("\x01\x01a");  // literal :authority
       // DATA on stream 1: a masked WebSocket text frame saying "hello".
-      try append_h2_frame(wire, 11, H2FrameKind.Data, 0, 1);
-      try wire.append("\x81\x85\x01\x02\x03\x04igohn");
+      append_h2_frame(wire, 11, H2FrameKind.Data, 0, 1);
+      wire.append("\x81\x85\x01\x02\x03\x04igohn");
       // HEADERS on stream 3: GET /hi over the same connection.
-      try append_h2_frame(wire, 7, H2FrameKind.Headers, H2_END_HEADERS | H2_END_STREAM, 3);
-      try wire.append("\x82\x86\x04\x03/hi");
-      try stream.send_string(wire);
-      var received = try String(alloc, "");
-      var chunk = try ContiguousBuffer<u8>(alloc, 4096);
+      append_h2_frame(wire, 7, H2FrameKind.Headers, H2_END_HEADERS | H2_END_STREAM, 3);
+      wire.append("\x82\x86\x04\x03/hi");
+      stream.send_string(wire);
+      var received = String(alloc, "");
+      var chunk = ContiguousBuffer<u8>(alloc, 4096);
       while (not received.contains("hello, world") or not received.contains("hello")) {
-        var got: i64 = try stream.recv(chunk);
+        var got: i64 = stream.recv(chunk);
         if (got <= 0) {
           break;
         }
-        try received.append(try String(alloc, chunk, got));
+        received.append(String(alloc, chunk, got));
       }
-      try std.test.assert(received.contains("hello"), "WebSocket stream echoed");
-      try std.test.assert(received.contains("hello, world"), "HTTP stream completed");
+      std.test.assert(received.contains("hello"), "WebSocket stream echoed");
+      std.test.assert(received.contains("hello, world"), "HTTP stream completed");
       stream.close();
     }
 
-    test_function websocket_permessage_deflate_echo() hello_handler.tests.ServerTestResult {
+    test_function websocket_permessage_deflate_echo() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc);
+      var ts = TestServer(alloc);
       var stream = std.net.TcpStream();
-      try stream.connect_local(ts.port);
+      stream.connect_local(ts.port);
       set_socket_receive_timeout(stream.get_fd(), 2);
-      try stream.send_str(
+      stream.send_str(
         "GET /ws HTTP/1.1\r\nHost: localhost\r\nUpgrade: websocket\r\nConnection: Upgrade\r\nSec-WebSocket-Key: dGhlIHNhbXBsZSBub25jZQ==\r\nSec-WebSocket-Version: 13\r\nSec-WebSocket-Extensions: permessage-deflate\r\n\r\n"
       );
-      var reply = try ContiguousBuffer<u8>(alloc, 4096);
-      var got: i64 = try stream.recv(reply);
-      var head = try String(alloc, reply, got);
-      try std.test.assert(
+      var reply = ContiguousBuffer<u8>(alloc, 4096);
+      var got: i64 = stream.recv(reply);
+      var head = String(alloc, reply, got);
+      std.test.assert(
         head.contains(
           "permessage-deflate; server_no_context_takeover; client_no_context_takeover"
         ),
         "compression negotiated"
       );
-      var message = try String(alloc, "hello");
-      var frame = try masked_text_frame(alloc, "hello", true);
-      try stream.send_bytes(frame.raw_data(), frame.size());
-      var echoed = try ContiguousBuffer<u8>(alloc, 32);
-      var echoed_len: i64 = try stream.recv(echoed);
-      try std.test.assert_eq(echoed[0], WS_FIN_FLAG | WS_COMPRESSED_FLAG | WS_TEXT_OPCODE);
+      var message = String(alloc, "hello");
+      var frame = masked_text_frame(alloc, "hello", true);
+      stream.send_bytes(frame.raw_data(), frame.size());
+      var echoed = ContiguousBuffer<u8>(alloc, 32);
+      var echoed_len: i64 = stream.recv(echoed);
+      std.test.assert_eq(echoed[0], WS_FIN_FLAG | WS_COMPRESSED_FLAG | WS_TEXT_OPCODE);
       var compressed_len: i64 = _convert<i64>(echoed[1]);
-      try std.test.assert_eq(echoed_len, WS_HEADER_BYTES + compressed_len);
-      var compressed = try ByteBuffer(alloc, compressed_len);
+      std.test.assert_eq(echoed_len, WS_HEADER_BYTES + compressed_len);
+      var compressed = ByteBuffer(alloc, compressed_len);
       for (var i: i64 = WS_HEADER_BYTES; i < echoed_len; i = i + 1) {
-        try compressed.append_byte(echoed[i]);
+        compressed.append_byte(echoed[i]);
       }
-      var decoded = try ByteBuffer(alloc, message.length());
-      try std.test.assert_eq(
-        try websocket_inflate(
+      var decoded = ByteBuffer(alloc, message.length());
+      std.test.assert_eq(
+        websocket_inflate(
           alloc,
           compressed,
           0,
@@ -338,19 +326,19 @@ module hello_handler {
         ),
         0
       );
-      var text: String = try decoded.range_text(alloc, 0, decoded.readable_len());
-      try std.test.assert(text.equals(message), "compressed message echoed");
+      var text: String = decoded.range_text(alloc, 0, decoded.readable_len());
+      std.test.assert(text.equals(message), "compressed message echoed");
       stream.close();
     }
 
-    test_function unknown_paths_are_404() hello_handler.tests.ServerTestResult {
+    test_function unknown_paths_are_404() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc);
-      var reply: String = try ts.exchange(
+      var ts = TestServer(alloc);
+      var reply: String = ts.exchange(
         alloc,
         "GET /missing HTTP/1.1\r\nHost: localhost\r\nConnection: close\r\n\r\n"
       );
-      try std.test.assert(reply.starts_with("HTTP/1.1 404 "), "not found");
+      std.test.assert(reply.starts_with("HTTP/1.1 404 "), "not found");
     }
   }
 }

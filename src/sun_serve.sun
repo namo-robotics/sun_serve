@@ -13,19 +13,7 @@
 /*
  * Defines the public server library module.
  */
-public module sun_serve {
-
-  using std;
-
-  /*
-   * Reports server setup, operating-system, and checked-access failures.
-   */
-  public enum ServerResult<T> {
-    Ok(T),
-    Error(Error),
-    OutOfBounds(IndexOutOfBoundsError),
-    Tls(TlsError), Allocation(std.AllocationError), InvalidArgument(std.InvalidArgumentError), Overflow(std.OverflowError), NotFound(std.NotFoundError), Empty(std.EmptyError), Io(std.IOError), Conversion(std.ConversionError), DivisionByZero(std.DivisionByZeroError), Arithmetic(std.ArithmeticError), Json(std.json.JsonError), Xml(std.xml.XmlError), Decode(std.ProtoDecodeError) }
-}
+public module sun_serve {}
 
 manifest {
   source_files: [

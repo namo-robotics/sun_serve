@@ -111,28 +111,20 @@ synchronization:
 using std;
 using sun_serve;
 
-function hello(req: const ref Request, resp: ref Response) void {
+/** Writes a plain-text response. */
+function hello(req: const ref Request, resp: ref Response) void throws {
   resp.set_content_type("text/plain");
   resp.set_body("hello\n");
 }
 
-function serve() ServerResult<i32> {
+/** Starts the server and propagates setup failures to the process boundary. */
+function main() i32 throws {
   var alloc = make_heap_allocator();
   var cfg = Config(alloc);
-  cfg.add_listen(ipv4_any(), 8080);
-  try install_signal_handlers();
-  var server = try Server<FnHandler>(alloc, cfg, fn_handlers(alloc, hello, online_cpus()));
+  cfg.add_listen(std.net.ipv4_any(), 8080);
+  install_signal_handlers();
+  var server = Server<FnHandler>(alloc, cfg, fn_handlers(alloc, hello, online_cpus()));
   return server.run();
-}
-
-function main() i32 {
-  return match serve() {
-    ServerResult.Ok(status) => status,
-    (error: const ref IError) => {
-      eprintln(error.message());
-      return 1;
-    }
-  };
 }
 ```
 
@@ -142,9 +134,10 @@ is what [`StaticFiles`](src/static_files.sun) does; a handler can also hold a
 Construct `Server<MyHandler>` with a `Vec<MyHandler>`, one concrete handler
 per worker. The server owns these handlers; callbacks borrow them through
 `ref IHandler`. `fn_handlers` returns `Vec<FnHandler>` and `static_handlers`
-returns `ServerResult<Vec<StaticFiles>>`. Fallible server operations return
-`ServerResult<T>`; use prefix `try` to propagate failures or `match` to handle
-the owned `Error`, `IndexOutOfBoundsError`, and `TlsError` payloads.
+returns `Vec<StaticFiles>`. Fallible operations declare `throws`; use a `try`
+block with concrete catches to handle `Error`, `IndexOutOfBoundsError`, or
+`TlsError`. TLS diagnostics use bounded inline storage. Rebuild Moon dependencies
+with the same exception-capable compiler before using them.
 [examples/hello_handler](examples/hello_handler) is a complete program built
 this way: a handler class with per-worker state, query parameters, request
 bodies, and end-to-end tests that CI runs. The devcontainer uses host

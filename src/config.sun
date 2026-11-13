@@ -29,8 +29,8 @@ public module sun_serve {
     }
 
     // An independent copy.
-    public const method clone() std.AllocationResult<ListenSpec> {
-      return std.AllocationResult.Ok(ListenSpec(this.addr.clone(), this.port, this.tls));
+    public const method clone() ListenSpec throws {
+      return ListenSpec(this.addr.clone(), this.port, this.tls);
     }
   }
 
@@ -46,20 +46,20 @@ public module sun_serve {
       alloc: const ref HeapAllocator,
       cert_path: const ref String,
       key_path: const ref String
-    ) std.AllocationResult<void> {
-      this.cert_path = try cert_path.clone(alloc);
-      this.key_path = try key_path.clone(alloc);
+    ) throws {
+      this.cert_path = cert_path.clone(alloc);
+      this.key_path = key_path.clone(alloc);
     }
 
     // No files yet; Config starts with this.
-    init(alloc: const ref HeapAllocator) std.AllocationResult<void> {
-      this.cert_path = try String(alloc, "");
-      this.key_path = try String(alloc, "");
+    init(alloc: const ref HeapAllocator) throws {
+      this.cert_path = String(alloc, "");
+      this.key_path = String(alloc, "");
     }
 
     // An independent copy.
-    public const method clone(alloc: const ref HeapAllocator) std.AllocationResult<TlsSpec> {
-      return std.AllocationResult.Ok(try TlsSpec(alloc, this.cert_path, this.key_path));
+    public const method clone(alloc: const ref HeapAllocator) TlsSpec throws {
+      return TlsSpec(alloc, this.cert_path, this.key_path);
     }
   }
 
@@ -152,41 +152,32 @@ public module sun_serve {
     var alloc: HeapAllocator;
 
     // Start from defaults with no listeners.
-    init(allocator: const ref HeapAllocator) std.AllocationResult<void> {
+    init(allocator: const ref HeapAllocator) throws {
       this.alloc = allocator.copy();
-      this.listen = try Vec<ListenSpec>(allocator, 4);
-      this.tls = try TlsSpec(allocator);
+      this.listen = Vec<ListenSpec>(allocator, 4);
+      this.tls = TlsSpec(allocator);
     }
 
     // Add a plain HTTP listener.
-    public method add_listen(
-      addr: const ref std.net.Ipv4Addr,
-      port: i32
-    ) std.AllocationResult<void> {
-      try this.listen.push(ListenSpec(addr.clone(), port, false));
+    public method add_listen(addr: const ref std.net.Ipv4Addr, port: i32) void throws {
+      this.listen.push(ListenSpec(addr.clone(), port, false));
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Add an HTTPS listener. set_tls() must also be called.
-    public method add_tls_listen(
-      addr: const ref std.net.Ipv4Addr,
-      port: i32
-    ) std.AllocationResult<void> {
-      try this.listen.push(ListenSpec(addr.clone(), port, true));
+    public method add_tls_listen(addr: const ref std.net.Ipv4Addr, port: i32) void throws {
+      this.listen.push(ListenSpec(addr.clone(), port, true));
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Provide the certificate chain and key for TLS listeners.
-    public method set_tls(
-      cert_path: const ref String,
-      key_path: const ref String
-    ) std.AllocationResult<void> {
-      this.tls = try TlsSpec(this.alloc, cert_path, key_path);
+    public method set_tls(cert_path: const ref String, key_path: const ref String) void throws {
+      this.tls = TlsSpec(this.alloc, cert_path, key_path);
       this.has_tls = true;
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Report whether any listener speaks TLS.
@@ -200,12 +191,12 @@ public module sun_serve {
     }
 
     // An independent copy for a worker.
-    public const method clone() std.AllocationResult<Config> {
-      var copy = try Config(this.alloc);
+    public const method clone() Config throws {
+      var copy = Config(this.alloc);
       for (var spec: ref ListenSpec in this.listen) {
-        try copy.listen.push(try spec.clone());
+        copy.listen.push(spec.clone());
       }
-      copy.tls = try this.tls.clone(this.alloc);
+      copy.tls = this.tls.clone(this.alloc);
       copy.has_tls = this.has_tls;
       copy.backlog = this.backlog;
       copy.limits = this.limits.clone();
@@ -215,7 +206,7 @@ public module sun_serve {
       copy.server_header = this.server_header;
       copy.http2 = this.http2;
       copy.websocket_compression = this.websocket_compression;
-      return std.AllocationResult.Ok(copy);
+      return copy;
     }
   }
 }

@@ -48,16 +48,10 @@ public module sun_serve {
      * Create, configure, bind, and start listening on addr:port. Port zero
      * lets the kernel choose; read the choice back with local_port().
      */
-    public method bind(
-      addr: const ref std.net.Ipv4Addr,
-      port: i32,
-      backlog: i32
-    ) ServerResult<void> {
+    public method bind(addr: const ref std.net.Ipv4Addr, port: i32, backlog: i32) void throws {
       var sock: i32 = unsafe __socket(std.net.AF_INET, std.net.SOCK_STREAM, 0);
       if (sock < 0) {
-        return ServerResult.Error(
-          Error(last_errno(), "failed to create socket")
-        );
+        throw Error(last_errno(), "failed to create socket");
       }
       this.fd = sock;
       var one: i32 = 1;
@@ -66,21 +60,21 @@ public module sun_serve {
       if (unsafe __bind_ipv4(this.fd, addr.to_network_i32(), port) < 0) {
         var bind_err: i32 = last_errno();
         this.close();
-        return ServerResult.Error(Error(bind_err, "failed to bind socket"));
+        throw Error(bind_err, "failed to bind socket");
       }
       if (unsafe __listen(this.fd, backlog) < 0) {
         var listen_err: i32 = last_errno();
         this.close();
-        return ServerResult.Error(Error(listen_err, "failed to listen"));
+        throw Error(listen_err, "failed to listen");
       }
-      try set_nonblocking(this.fd);
-      return ServerResult.Ok;
+      set_nonblocking(this.fd);
+      return;
     }
 
     /*
      * The port actually bound.
      */
-    public method local_port() ServerResult<i32> {
+    public method local_port() i32 throws {
       var ip: i32 = 0;
       var port: i32 = 0;
       var rc: i32 = unsafe __getsockname_ipv4(
@@ -89,11 +83,9 @@ public module sun_serve {
         _address_of<i32>(port)
       );
       if (rc < 0) {
-        return ServerResult.Error(
-          Error(last_errno(), "failed to read socket address")
-        );
+        throw Error(last_errno(), "failed to read socket address");
       }
-      return ServerResult.Ok(port);
+      return port;
     }
 
     /*

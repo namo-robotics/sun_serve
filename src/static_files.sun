@@ -28,20 +28,20 @@ public module sun_serve {
     public var add_charset: bool = true;
 
     // Defaults: index.html, no Cache-Control, charset on text.
-    init(alloc: const ref HeapAllocator) std.AllocationResult<void> {
-      this.index_name = try String(alloc, "index.html");
-      this.cache_control = try String(alloc, "");
+    init(alloc: const ref HeapAllocator) throws {
+      this.index_name = String(alloc, "index.html");
+      this.cache_control = String(alloc, "");
     }
 
     // An independent copy.
-    public const method clone(alloc: const ref HeapAllocator) std.AllocationResult<StaticOptions> {
-      var copy = try StaticOptions(alloc);
+    public const method clone(alloc: const ref HeapAllocator) StaticOptions throws {
+      var copy = StaticOptions(alloc);
       copy.index_name.clear();
-      try copy.index_name.append(this.index_name);
+      copy.index_name.append(this.index_name);
       copy.cache_control.clear();
-      try copy.cache_control.append(this.cache_control);
+      copy.cache_control.append(this.cache_control);
       copy.add_charset = this.add_charset;
-      return std.AllocationResult.Ok(copy);
+      return copy;
     }
   }
 
@@ -54,16 +54,16 @@ public module sun_serve {
   public function normalize_path(
     alloc: const ref HeapAllocator,
     path: const ref String
-  ) std.AllocationResult<Option<String>> {
-    var kept = try Vec<String>(alloc, 8);
-    var segments: Vec<String> = try path.split(alloc, b'/');
+  ) Option<String> throws {
+    var kept = Vec<String>(alloc, 8);
+    var segments: Vec<String> = path.split(alloc, b'/');
     for (var segment: ref String in segments) {
       if (segment.is_empty() or segment.equals_literal(".")) {
         continue;
       }
       if (segment.equals_literal("..")) {
         if (kept.size() == 0) {
-          return std.AllocationResult.Ok(Option.None);
+          return Option.None;
         }
         kept.pop();
         continue;
@@ -71,20 +71,20 @@ public module sun_serve {
       for (var k: i64 = 0; k < segment.length(); k = k + 1) {
         var c: u8 = string_byte(segment, k);
         if (c < 32 or c == 127) {
-          return std.AllocationResult.Ok(Option.None);
+          return Option.None;
         }
       }
-      try kept.push(try segment.clone(alloc));
+      kept.push(segment.clone(alloc));
     }
-    var out = try String(alloc, "");
+    var out = String(alloc, "");
     for (var segment: ref String in kept) {
-      try out.append_char(b'/');
-      try out.append(segment);
+      out.append_char(b'/');
+      out.append(segment);
     }
     if (out.is_empty()) {
-      try out.append_char(b'/');
+      out.append_char(b'/');
     }
-    return std.AllocationResult.Ok(Option.Some(out));
+    return Option.Some(out);
   }
 
   // Serves normalized paths from a configured directory tree.
@@ -98,64 +98,59 @@ public module sun_serve {
     var last_modified: String;
 
     // Serve files under root. Returns an error if root is not a directory.
-    init(
-      allocator: const ref HeapAllocator,
-      root: const ref String,
-      opts: StaticOptions
-    ) ServerResult<void> {
+    init(allocator: const ref HeapAllocator, root: const ref String, opts: StaticOptions) throws {
       this.alloc = allocator.copy();
-      this.root = try root.clone(allocator);
+      this.root = root.clone(allocator);
       while (this.root.length() > 1 and this.root.ends_with("/")) {
         this.root.truncate(this.root.length() - 1);
       }
-      if (not try is_dir(this.root)) {
-        var msg = try String(allocator, "not a directory: ");
-        try msg.append(this.root);
-        return ServerResult.Error(try Error(-1, msg));
+      if (not is_dir(this.root)) {
+        var msg = String(allocator, "not a directory: ");
+        msg.append(this.root);
+        throw Error(-1, msg);
       }
       this.opts = opts;
-      this.mode_offset = try stat_mode_offset(allocator);
-      this.full_path = try String(allocator, "");
-      this.etag = try String(allocator, "");
-      this.last_modified = try String(allocator, "");
-      return ServerResult.Ok;
+      this.mode_offset = stat_mode_offset(allocator);
+      this.full_path = String(allocator, "");
+      this.etag = String(allocator, "");
+      this.last_modified = String(allocator, "");
+      return;
     }
 
     // Answer GET and HEAD from the tree and reject other methods.
-    public method handle_result(req: const ref Request, resp: ref Response) std.AllocationResult<void> {
+    public method handle_result(req: const ref Request, resp: ref Response) void throws {
       if (not req.method_is("GET") and not req.method_is("HEAD")) {
         resp.set_status(405);
-        try resp.add_header("Allow", "GET, HEAD");
-        try resp.set_content_type("text/plain");
-        try resp.set_body("Method Not Allowed\n");
-        return std.AllocationResult.Ok;
+        resp.add_header("Allow", "GET, HEAD");
+        resp.set_content_type("text/plain");
+        resp.set_body("Method Not Allowed\n");
+        return;
       }
-      var rel: String = match try normalize_path(this.alloc, req.path()) {
+      var rel: String = match normalize_path(this.alloc, req.path()) {
         Option.Some(p) => p,
-        Option.None => try String(this.alloc, "")
+        Option.None => String(this.alloc, "")
       };
       if (rel.is_empty()) {
-        try this.not_found(resp);
-        return std.AllocationResult.Ok;
+        this.not_found(resp);
+        return;
       }
       this.full_path.clear();
-      try this.full_path.append(this.root);
+      this.full_path.append(this.root);
       if (not rel.equals_literal("/")) {
-        try this.full_path.append(rel);
+        this.full_path.append(rel);
       }
       var f = File();
-      match f.open(this.full_path, FileMode.Read) {
-        SystemResult.Ok => {},
-        (e: const ref IError) => {
-          try this.not_found(resp);
-          return std.AllocationResult.Ok;
-        }
-      };
-      var metadata = try read_file_metadata(this.alloc, f.get_fd(), this.mode_offset);
+      try {
+        f.open(this.full_path, FileMode.Read);
+      } catch {
+        this.not_found(resp);
+        return;
+      }
+      var metadata = read_file_metadata(this.alloc, f.get_fd(), this.mode_offset);
       if (not metadata.valid) {
         f.close();
-        try this.not_found(resp);
-        return std.AllocationResult.Ok;
+        this.not_found(resp);
+        return;
       }
       var mode: u32 = metadata.mode;
       if ((mode & S_IFMT) == S_IFDIR) {
@@ -163,68 +158,68 @@ public module sun_serve {
         var path: const ref String = req.path();
         if (not path.ends_with("/")) {
           // Redirect so relative links inside the index resolve correctly.
-          var location: String = try path.clone(this.alloc);
-          try location.append_char(b'/');
+          var location: String = path.clone(this.alloc);
+          location.append_char(b'/');
           if (req.has_query()) {
-            try location.append_char(b'?');
-            var q: String = try req.query(this.alloc);
-            try location.append(q);
+            location.append_char(b'?');
+            var q: String = req.query(this.alloc);
+            location.append(q);
           }
-          try resp.redirect_string(location, 301);
-          return std.AllocationResult.Ok;
+          resp.redirect_string(location, 301);
+          return;
         }
-        try this.full_path.append_char(b'/');
-        try this.full_path.append(this.opts.index_name);
+        this.full_path.append_char(b'/');
+        this.full_path.append(this.opts.index_name);
         var index = File();
-        match index.open(this.full_path, FileMode.Read) {
-          SystemResult.Ok => {},
-          (e: const ref IError) => {
-            resp.set_status(403);
-            try resp.set_content_type("text/plain");
-            try resp.set_body("Forbidden\n");
-            return std.AllocationResult.Ok;
-          }
-        };
-        metadata = try read_file_metadata(this.alloc, index.get_fd(), this.mode_offset);
+        try {
+          index.open(this.full_path, FileMode.Read);
+        } catch {
+          resp.set_status(403);
+          resp.set_content_type("text/plain");
+          resp.set_body("Forbidden\n");
+          return;
+        }
+        metadata = read_file_metadata(this.alloc, index.get_fd(), this.mode_offset);
         if (not metadata.valid) {
           index.close();
-          try this.not_found(resp);
-          return std.AllocationResult.Ok;
+          this.not_found(resp);
+          return;
         }
         var index_mode: u32 = metadata.mode;
         if ((index_mode & S_IFMT) != S_IFREG) {
           index.close();
-          try this.not_found(resp);
-          return std.AllocationResult.Ok;
+          this.not_found(resp);
+          return;
         }
-        try this.serve_file(req, resp, index, metadata.size, metadata.mtime);
-        return std.AllocationResult.Ok;
+        this.serve_file(req, resp, index, metadata.size, metadata.mtime);
+        return;
       }
       if ((mode & S_IFMT) != S_IFREG) {
         f.close();
-        try this.not_found(resp);
-        return std.AllocationResult.Ok;
+        this.not_found(resp);
+        return;
       }
-      try this.serve_file(req, resp, f, metadata.size, metadata.mtime);
+      this.serve_file(req, resp, f, metadata.size, metadata.mtime);
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     /** Runs the callback and terminates if its response storage cannot be allocated. */
     public method handle(req: const ref Request, resp: ref Response) void {
-      match this.handle_result(req, resp) {
-        std.AllocationResult.Ok => {},
-        _ => { _panic("allocation failed in server callback"); }
-      };
+      try {
+        this.handle_result(req, resp);
+      } catch {
+        _panic("allocation failed in server callback");
+      }
     }
 
     // A plain-text not-found response.
-    method not_found(resp: ref Response) std.AllocationResult<void> {
+    method not_found(resp: ref Response) void throws {
       resp.set_status(404);
-      try resp.set_content_type("text/plain");
-      try resp.set_body("Not Found\n");
+      resp.set_content_type("text/plain");
+      resp.set_body("Not Found\n");
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Send an open regular file with its previously-read metadata.
@@ -234,50 +229,50 @@ public module sun_serve {
       f: File,
       size: i64,
       mtime: i64
-    ) std.AllocationResult<void> {
+    ) void throws {
       this.etag.clear();
-      try this.etag.append_char(b'"');
-      try this.etag.append_hex(mtime);
-      try this.etag.append_char(b'-');
-      try this.etag.append_hex(size);
-      try this.etag.append_char(b'"');
+      this.etag.append_char(b'"');
+      this.etag.append_hex(mtime);
+      this.etag.append_char(b'-');
+      this.etag.append_hex(size);
+      this.etag.append_char(b'"');
       this.last_modified.clear();
-      try append_http_date(this.last_modified, mtime);
+      append_http_date(this.last_modified, mtime);
 
-      var fresh: bool = match try req.header("if-none-match", this.alloc) {
+      var fresh: bool = match req.header("if-none-match", this.alloc) {
         Option.Some(inm) => inm.equals_literal("*") or inm.contains(this.etag),
-        Option.None => match try req.header("if-modified-since", this.alloc) {
+        Option.None => match req.header("if-modified-since", this.alloc) {
           Option.Some(ims) => ims.equals(this.last_modified),
           Option.None => false
         }
       };
-      try resp.add_header_string("ETag", this.etag);
-      try resp.add_header_string("Last-Modified", this.last_modified);
+      resp.add_header_string("ETag", this.etag);
+      resp.add_header_string("Last-Modified", this.last_modified);
       if (this.opts.cache_control.length() > 0) {
-        try resp.add_header_string("Cache-Control", this.opts.cache_control);
+        resp.add_header_string("Cache-Control", this.opts.cache_control);
       }
       if (fresh) {
         resp.set_status(304);
-        return std.AllocationResult.Ok;
+        return;
       }
-      var mime: static_ptr<u8> = try mime_for_path(this.full_path);
+      var mime: static_ptr<u8> = mime_for_path(this.full_path);
       if (this.opts.add_charset and mime_is_text(mime)) {
-        var ct = try String(this.alloc, mime);
-        try ct.append("; charset=utf-8");
-        try resp.set_content_type_string(ct);
+        var ct = String(this.alloc, mime);
+        ct.append("; charset=utf-8");
+        resp.set_content_type_string(ct);
       } else {
-        try resp.set_content_type(mime);
+        resp.set_content_type(mime);
       }
-      try resp.add_header("Accept-Ranges", "bytes");
+      resp.add_header("Accept-Ranges", "bytes");
       if (size <= SMALL_FILE_MAX) {
         var body: ref ByteBuffer = resp.body_buffer();
         body.clear();
-        try body.read_file(f, size);
-        return std.AllocationResult.Ok;
+        body.read_file(f, size);
+        return;
       }
       resp.send_file(f, size);
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Reject upgrades because this handler only serves files.
@@ -307,11 +302,11 @@ public module sun_serve {
     root: const ref String,
     opts: const ref StaticOptions,
     count: i32
-  ) ServerResult<Vec<StaticFiles>> {
-    var out = try Vec<StaticFiles>(alloc, _convert<i64>(count));
+  ) Vec<StaticFiles> throws {
+    var out = Vec<StaticFiles>(alloc, _convert<i64>(count));
     for (var i: i32 = 0; i < count; i = i + 1) {
-      try out.push(try StaticFiles(alloc, root, try opts.clone(alloc)));
+      out.push(StaticFiles(alloc, root, opts.clone(alloc)));
     }
-    return ServerResult.Ok(out);
+    return out;
   }
 }

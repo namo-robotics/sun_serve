@@ -91,11 +91,11 @@ public module sun_serve {
     }
 
     // The negotiated ALPN protocol name, empty for plain sockets or no choice.
-    method alpn(alloc: const ref HeapAllocator) std.AllocationResult<String> {
+    method alpn(alloc: const ref HeapAllocator) String throws {
       if (this.tls.is_active()) {
-        return std.AllocationResult.Ok(try this.tls.alpn(alloc));
+        return this.tls.alpn(alloc);
       }
-      return std.AllocationResult.Ok(try String(alloc, ""));
+      return String(alloc, "");
     }
 
     // Shut the session down and close the socket.

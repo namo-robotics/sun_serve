@@ -15,17 +15,17 @@ public module sun_serve {
     using sun_serve.tests;
 
     // The handler every test server runs.
-    function test_handler(req: const ref Request, resp: ref Response) std.AllocationResult<void> {
+    function test_handler(req: const ref Request, resp: ref Response) void throws {
       var alloc = make_heap_allocator();
       if (req.path_is("/")) {
-        try resp.set_content_type("text/plain");
-        try resp.set_body("hello");
+        resp.set_content_type("text/plain");
+        resp.set_body("hello");
       } else if (req.path_is("/echo")) {
-        try resp.set_content_type("application/octet-stream");
-        try resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
+        resp.set_content_type("application/octet-stream");
+        resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
       } else if (req.path_is("/big")) {
-        try resp.set_content_type("text/plain");
-        var line = try String(
+        resp.set_content_type("text/plain");
+        var line = String(
           alloc,
           "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcde\n"
         );
@@ -34,37 +34,37 @@ public module sun_serve {
           resp.append_body_string(line);
         }
       } else if (req.path_is("/chunks")) {
-        try resp.set_content_type("text/plain");
-        try resp.write_chunk_literal("first ");
-        try resp.write_chunk_literal("second");
-        try resp.end_chunks();
+        resp.set_content_type("text/plain");
+        resp.write_chunk_literal("first ");
+        resp.write_chunk_literal("second");
+        resp.end_chunks();
       } else if (req.path_is("/query")) {
-        try resp.set_content_type("text/plain");
-        var none_name = try String(alloc, "none");
-        var v: String = match try req.query_param("name", alloc) {
+        resp.set_content_type("text/plain");
+        var none_name = String(alloc, "none");
+        var v: String = match req.query_param("name", alloc) {
           Option.Some(s) => s,
           Option.None => none_name
         };
-        try resp.set_body_string(v);
+        resp.set_body_string(v);
       } else if (req.path_is("/close")) {
-        try resp.set_body("bye");
+        resp.set_body("bye");
         resp.close_connection();
       } else if (req.path_is("/headers")) {
-        try resp.set_content_type("text/plain");
-        var none_ua = try String(alloc, "none");
-        var ua: String = match try req.header("user-agent", alloc) {
+        resp.set_content_type("text/plain");
+        var none_ua = String(alloc, "none");
+        var ua: String = match req.header("user-agent", alloc) {
           Option.Some(s) => s,
           Option.None => none_ua
         };
-        try resp.set_body_string(ua);
-        try resp.add_header("X-Custom", "yes");
+        resp.set_body_string(ua);
+        resp.add_header("X-Custom", "yes");
       } else {
         resp.set_status(404);
-        try resp.set_content_type("text/plain");
-        try resp.set_body("nope");
+        resp.set_content_type("text/plain");
+        resp.set_body("nope");
       }
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // A running server on a kernel-picked loopback port.
@@ -74,22 +74,22 @@ public module sun_serve {
       // The loopback port assigned to the server.
       public var port: i32;
 
-      init(alloc: ref HeapAllocator, workers: i32, keep_alive_ms: i64) ServerResult<void> {
-        var cfg = try Config(alloc);
-        try cfg.add_listen(std.net.ipv4_loopback(), 0);
+      init(alloc: ref HeapAllocator, workers: i32, keep_alive_ms: i64) throws {
+        var cfg = Config(alloc);
+        cfg.add_listen(std.net.ipv4_loopback(), 0);
         cfg.timeouts.keep_alive_ms = keep_alive_ms;
         cfg.timeouts.drain_ms = 500;
         cfg.timeouts.tick_ms = 50;
         cfg.access_log = false;
         cfg.log_level = LogLevel.Error;
-        this.server = try Server<FnHandler>(
+        this.server = Server<FnHandler>(
           alloc,
           cfg,
-          try fn_handlers(alloc, test_handler, workers)
+          fn_handlers(alloc, test_handler, workers)
         );
-        try this.server.start();
+        this.server.start();
         this.port = this.server.port(0);
-        return ServerResult.Ok;
+        return;
       }
     }
 
@@ -100,302 +100,302 @@ public module sun_serve {
       kind: H2FrameKind,
       flags: u8,
       stream: u32
-    ) std.AllocationResult<void> {
-      var header = try ByteBuffer(HeapAllocator(), H2_FRAME_HEADER_LEN);
-      try h2_frame(header, len, kind, flags, stream);
-      try out.append(try header.to_string(HeapAllocator()));
+    ) void throws {
+      var header = ByteBuffer(HeapAllocator(), H2_FRAME_HEADER_LEN);
+      h2_frame(header, len, kind, flags, stream);
+      out.append(header.to_string(HeapAllocator()));
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
-    test_function http2_prior_knowledge_and_continuation() sun_serve.ServerTestResult {
+    test_function http2_prior_knowledge_and_continuation() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      var wire = try String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-      try append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
-      try append_h2_test_frame(wire, 3, H2FrameKind.Headers, H2_END_STREAM, 1);
-      try wire.append("\x82\x86\x84");  // indexed :method GET, :scheme http, :path /
-      try append_h2_test_frame(wire, 3, H2FrameKind.Continuation, H2_END_HEADERS, 1);
-      try wire.append("\x01\x01a");  // literal :authority "a"
-      try c.send_string(wire);
-      var reply: String = try c.read_until("hello");
-      try std.test.assert(reply.contains("hello"), "HTTP/2 response body");
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
+      append_h2_test_frame(wire, 3, H2FrameKind.Headers, H2_END_STREAM, 1);
+      wire.append("\x82\x86\x84");  // indexed :method GET, :scheme http, :path /
+      append_h2_test_frame(wire, 3, H2FrameKind.Continuation, H2_END_HEADERS, 1);
+      wire.append("\x01\x01a");  // literal :authority "a"
+      c.send_string(wire);
+      var reply: String = c.read_until("hello");
+      std.test.assert(reply.contains("hello"), "HTTP/2 response body");
       c.close();
     }
 
-    test_function http2_skips_unknown_frames_before_request() sun_serve.ServerTestResult {
+    test_function http2_skips_unknown_frames_before_request() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      var wire = try String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-      try append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
       /* Unknown frames include both an empty frame and one with a payload. */
-      try wire.append("\x00\x00\x00\xff\x00\x00\x00\x00\x00");
-      try wire.append("\x00\x00\x03\xfe\x00\x00\x00\x00\x00abc");
-      try append_h2_test_frame(wire, 6, H2FrameKind.Headers, H2_END_STREAM | H2_END_HEADERS, 1);
-      try wire.append("\x82\x86\x84\x01\x01a");
-      try c.send_string(wire);
-      var reply: String = try c.read_until("hello");
-      try std.test.assert(reply.contains("hello"), "request after unknown frames is served");
+      wire.append("\x00\x00\x00\xff\x00\x00\x00\x00\x00");
+      wire.append("\x00\x00\x03\xfe\x00\x00\x00\x00\x00abc");
+      append_h2_test_frame(wire, 6, H2FrameKind.Headers, H2_END_STREAM | H2_END_HEADERS, 1);
+      wire.append("\x82\x86\x84\x01\x01a");
+      c.send_string(wire);
+      var reply: String = c.read_until("hello");
+      std.test.assert(reply.contains("hello"), "request after unknown frames is served");
       c.close();
     }
 
-    test_function http2_interleaves_request_bodies() sun_serve.ServerTestResult {
+    test_function http2_interleaves_request_bodies() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      var wire = try String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
-      try append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      var wire = String(alloc, "PRI * HTTP/2.0\r\n\r\nSM\r\n\r\n");
+      append_h2_test_frame(wire, 0, H2FrameKind.Settings, 0, 0);
       for (var stream: u32 = 1; stream <= 3; stream = stream + 2) {
-        try append_h2_test_frame(wire, 12, H2FrameKind.Headers, H2_END_HEADERS, stream);
-        try wire.append("\x83\x86");  // indexed :method POST, :scheme http
-        try wire.append("\x04\x05/echo");  // literal :path "/echo"
-        try wire.append("\x01\x01a");  // literal :authority "a"
+        append_h2_test_frame(wire, 12, H2FrameKind.Headers, H2_END_HEADERS, stream);
+        wire.append("\x83\x86");  // indexed :method POST, :scheme http
+        wire.append("\x04\x05/echo");  // literal :path "/echo"
+        wire.append("\x01\x01a");  // literal :authority "a"
       }
-      try append_h2_test_frame(wire, 2, H2FrameKind.Data, 0, 1);
-      try wire.append("ab");
-      try append_h2_test_frame(wire, 2, H2FrameKind.Data, 0, 3);
-      try wire.append("xy");
-      try append_h2_test_frame(wire, 2, H2FrameKind.Data, H2_END_STREAM, 1);
-      try wire.append("cd");
-      try append_h2_test_frame(wire, 1, H2FrameKind.Data, H2_END_STREAM, 3);
-      try wire.append("z");
-      try c.send_string(wire);
-      var reply: String = try c.read_until("xyz");
-      try std.test.assert(reply.contains("abcd"), "first interleaved response");
-      try std.test.assert(reply.contains("xyz"), "second interleaved response");
+      append_h2_test_frame(wire, 2, H2FrameKind.Data, 0, 1);
+      wire.append("ab");
+      append_h2_test_frame(wire, 2, H2FrameKind.Data, 0, 3);
+      wire.append("xy");
+      append_h2_test_frame(wire, 2, H2FrameKind.Data, H2_END_STREAM, 1);
+      wire.append("cd");
+      append_h2_test_frame(wire, 1, H2FrameKind.Data, H2_END_STREAM, 3);
+      wire.append("z");
+      c.send_string(wire);
+      var reply: String = c.read_until("xyz");
+      std.test.assert(reply.contains("abcd"), "first interleaved response");
+      std.test.assert(reply.contains("xyz"), "second interleaved response");
       c.close();
     }
 
-    test_function single_get() sun_serve.ServerTestResult {
+    test_function single_get() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 2, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r.status, 200);
-      try std.test.assert(r.body.equals_literal("hello"), "body");
-      try std.test.assert(try r.has_header("content-length: 5"), "length header");
-      try std.test.assert(try r.has_header("content-type: text/plain"), "type header");
-      try std.test.assert(try r.has_header("server: sun_serve"), "server header");
-      try std.test.assert(try r.has_header("connection: keep-alive"), "keep-alive announced");
+      var ts = TestServer(alloc, 2, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert(r.body.equals_literal("hello"), "body");
+      std.test.assert(r.has_header("content-length: 5"), "length header");
+      std.test.assert(r.has_header("content-type: text/plain"), "type header");
+      std.test.assert(r.has_header("server: sun_serve"), "server header");
+      std.test.assert(r.has_header("connection: keep-alive"), "keep-alive announced");
       c.close();
     }
 
-    test_function keep_alive_serves_several_requests() sun_serve.ServerTestResult {
+    test_function keep_alive_serves_several_requests() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
       for (var i: i32 = 0; i < 5; i = i + 1) {
-        try c.send("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
-        var r: ClientResponse = try c.read_response();
-        try std.test.assert_eq(r.status, 200);
-        try std.test.assert(r.body.equals_literal("hello"), "body");
+        c.send("GET / HTTP/1.1\r\nHost: localhost\r\n\r\n");
+        var r: ClientResponse = c.read_response();
+        std.test.assert_eq(r.status, 200);
+        std.test.assert(r.body.equals_literal("hello"), "body");
       }
       c.close();
     }
 
-    test_function pipelined_requests_answered_in_order() sun_serve.ServerTestResult {
+    test_function pipelined_requests_answered_in_order() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send(
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send(
         "GET / HTTP/1.1\r\nHost: a\r\n\r\nGET /missing HTTP/1.1\r\nHost: a\r\n\r\nGET /query?name=pipe HTTP/1.1\r\nHost: a\r\n\r\n"
       );
-      var r1: ClientResponse = try c.read_response();
-      var r2: ClientResponse = try c.read_response();
-      var r3: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r1.status, 200);
-      try std.test.assert_eq(r2.status, 404);
-      try std.test.assert_eq(r3.status, 200);
-      try std.test.assert(r3.body.equals_literal("pipe"), "third response body");
+      var r1: ClientResponse = c.read_response();
+      var r2: ClientResponse = c.read_response();
+      var r3: ClientResponse = c.read_response();
+      std.test.assert_eq(r1.status, 200);
+      std.test.assert_eq(r2.status, 404);
+      std.test.assert_eq(r3.status, 200);
+      std.test.assert(r3.body.equals_literal("pipe"), "third response body");
       c.close();
     }
 
-    test_function post_with_content_length_is_echoed() sun_serve.ServerTestResult {
+    test_function post_with_content_length_is_echoed() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 2, 5000);
-      var c = try RawClient(alloc, ts.port);
-      var body = try String(alloc, "");
+      var ts = TestServer(alloc, 2, 5000);
+      var c = RawClient(alloc, ts.port);
+      var body = String(alloc, "");
       for (var i: i64 = 0; i < 524288; i = i + 1) {
-        try body.append_char(b'a' + _convert<u8>(i % 26));
+        body.append_char(b'a' + _convert<u8>(i % 26));
       }
-      var req = try String(alloc, "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: ");
+      var req = String(alloc, "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: ");
 
-      try req.append(body.length());
-      try req.append("\r\n\r\n");
-      try req.append(body);
-      try c.send_string(req);
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r.status, 200);
-      try std.test.assert_eq(r.body.length(), body.length());
-      try std.test.assert(r.body.equals(body), "echoed body matches");
+      req.append(body.length());
+      req.append("\r\n\r\n");
+      req.append(body);
+      c.send_string(req);
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert_eq(r.body.length(), body.length());
+      std.test.assert(r.body.equals(body), "echoed body matches");
       c.close();
     }
 
-    test_function chunked_request_is_decoded() sun_serve.ServerTestResult {
+    test_function chunked_request_is_decoded() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send(
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send(
         "POST /echo HTTP/1.1\r\nHost: a\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=1\r\n world\r\n0\r\nTrailer: x\r\n\r\n"
       );
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r.status, 200);
-      try std.test.assert(r.body.equals_literal("hello world"), "decoded chunks");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert(r.body.equals_literal("hello world"), "decoded chunks");
       // The connection is still usable afterwards.
-      try c.send("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
-      var r2: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r2.status, 200);
+      c.send("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r2: ClientResponse = c.read_response();
+      std.test.assert_eq(r2.status, 200);
       c.close();
     }
 
-    test_function chunked_response_is_framed() sun_serve.ServerTestResult {
+    test_function chunked_response_is_framed() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send("GET /chunks HTTP/1.1\r\nHost: a\r\n\r\n");
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r.status, 200);
-      try std.test.assert(try r.has_header("transfer-encoding: chunked"), "chunked header");
-      try std.test.assert(r.body.equals_literal("first second"), "chunks joined");
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send("GET /chunks HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert(r.has_header("transfer-encoding: chunked"), "chunked header");
+      std.test.assert(r.body.equals_literal("first second"), "chunks joined");
       c.close();
     }
 
-    test_function large_response_body() sun_serve.ServerTestResult {
+    test_function large_response_body() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send("GET /big HTTP/1.1\r\nHost: a\r\n\r\n");
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r.status, 200);
-      try std.test.assert_eq(r.body.length(), 1048576);
-      try std.test.assert(r.body.starts_with("0123456789abcdef"), "content");
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send("GET /big HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert_eq(r.body.length(), 1048576);
+      std.test.assert(r.body.starts_with("0123456789abcdef"), "content");
       c.close();
     }
 
-    test_function error_statuses_close_the_connection() sun_serve.ServerTestResult {
+    test_function error_statuses_close_the_connection() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c1 = try RawClient(alloc, ts.port);
-      try c1.send("GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 999999999\r\n\r\n");
-      var r1: ClientResponse = try c1.read_response();
-      try std.test.assert_eq(r1.status, 413);
-      try std.test.assert(try r1.has_header("connection: close"), "413 closes");
-      try std.test.assert(c1.peer_closed(), "socket closed after 413");
+      var ts = TestServer(alloc, 1, 5000);
+      var c1 = RawClient(alloc, ts.port);
+      c1.send("GET / HTTP/1.1\r\nHost: a\r\nContent-Length: 999999999\r\n\r\n");
+      var r1: ClientResponse = c1.read_response();
+      std.test.assert_eq(r1.status, 413);
+      std.test.assert(r1.has_header("connection: close"), "413 closes");
+      std.test.assert(c1.peer_closed(), "socket closed after 413");
 
-      var c2 = try RawClient(alloc, ts.port);
-      try c2.send("BAD REQUEST\r\n\r\n");
-      var r2: ClientResponse = try c2.read_response();
-      try std.test.assert_eq(r2.status, 400);
+      var c2 = RawClient(alloc, ts.port);
+      c2.send("BAD REQUEST\r\n\r\n");
+      var r2: ClientResponse = c2.read_response();
+      std.test.assert_eq(r2.status, 400);
 
-      var c3 = try RawClient(alloc, ts.port);
-      var big = try String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nX-Big: ");
+      var c3 = RawClient(alloc, ts.port);
+      var big = String(alloc, "GET / HTTP/1.1\r\nHost: a\r\nX-Big: ");
 
       for (var i: i64 = 0; i < 20000; i = i + 1) {
-        try big.append_char(b'z');
+        big.append_char(b'z');
       }
-      try big.append("\r\n\r\n");
-      try c3.send_string(big);
-      var r3: ClientResponse = try c3.read_response();
-      try std.test.assert_eq(r3.status, 431);
+      big.append("\r\n\r\n");
+      c3.send_string(big);
+      var r3: ClientResponse = c3.read_response();
+      std.test.assert_eq(r3.status, 431);
 
-      var c4 = try RawClient(alloc, ts.port);
-      try c4.send("GET / HTTP/3.0\r\nHost: a\r\n\r\n");
-      var r4: ClientResponse = try c4.read_response();
-      try std.test.assert_eq(r4.status, 505);
+      var c4 = RawClient(alloc, ts.port);
+      c4.send("GET / HTTP/3.0\r\nHost: a\r\n\r\n");
+      var r4: ClientResponse = c4.read_response();
+      std.test.assert_eq(r4.status, 505);
     }
 
-    test_function head_omits_body_but_declares_length() sun_serve.ServerTestResult {
+    test_function head_omits_body_but_declares_length() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send("HEAD / HTTP/1.1\r\nHost: a\r\n\r\nGET / HTTP/1.1\r\nHost: a\r\n\r\n");
-      var r: ClientResponse = try c.read_head_response();
-      try std.test.assert_eq(r.status, 200);
-      try std.test.assert(try r.has_header("content-length: 5"), "declares length");
-      var g: ClientResponse = try c.read_response();
-      try std.test.assert(g.body.equals_literal("hello"), "GET after HEAD is framed correctly");
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send("HEAD / HTTP/1.1\r\nHost: a\r\n\r\nGET / HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r: ClientResponse = c.read_head_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert(r.has_header("content-length: 5"), "declares length");
+      var g: ClientResponse = c.read_response();
+      std.test.assert(g.body.equals_literal("hello"), "GET after HEAD is framed correctly");
       c.close();
     }
 
-    test_function connection_close_is_honored() sun_serve.ServerTestResult {
+    test_function connection_close_is_honored() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send("GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r.status, 200);
-      try std.test.assert(try r.has_header("connection: close"), "close echoed");
-      try std.test.assert(c.peer_closed(), "server closed");
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send("GET / HTTP/1.1\r\nHost: a\r\nConnection: close\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert(r.has_header("connection: close"), "close echoed");
+      std.test.assert(c.peer_closed(), "server closed");
 
-      var c2 = try RawClient(alloc, ts.port);
-      try c2.send("GET /close HTTP/1.1\r\nHost: a\r\n\r\n");
-      var r2: ClientResponse = try c2.read_response();
-      try std.test.assert(r2.body.equals_literal("bye"), "handler body");
-      try std.test.assert(c2.peer_closed(), "handler-requested close");
+      var c2 = RawClient(alloc, ts.port);
+      c2.send("GET /close HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r2: ClientResponse = c2.read_response();
+      std.test.assert(r2.body.equals_literal("bye"), "handler body");
+      std.test.assert(c2.peer_closed(), "handler-requested close");
 
-      var c3 = try RawClient(alloc, ts.port);
-      try c3.send("GET / HTTP/1.0\r\n\r\n");
-      var r3: ClientResponse = try c3.read_response();
-      try std.test.assert_eq(r3.status, 200);
-      try std.test.assert(c3.peer_closed(), "1.0 closes by default");
+      var c3 = RawClient(alloc, ts.port);
+      c3.send("GET / HTTP/1.0\r\n\r\n");
+      var r3: ClientResponse = c3.read_response();
+      std.test.assert_eq(r3.status, 200);
+      std.test.assert(c3.peer_closed(), "1.0 closes by default");
     }
 
-    test_function expect_continue_gets_interim_response() sun_serve.ServerTestResult {
+    test_function expect_continue_gets_interim_response() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send(
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send(
         "POST /echo HTTP/1.1\r\nHost: a\r\nContent-Length: 4\r\nExpect: 100-continue\r\n\r\n"
       );
       sleep(create_duration_millis(50));
-      try c.send("data");
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r.status, 200);
-      try std.test.assert(r.body.equals_literal("data"), "body after continue");
+      c.send("data");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
+      std.test.assert(r.body.equals_literal("data"), "body after continue");
       c.close();
     }
 
-    test_function headers_reach_the_handler() sun_serve.ServerTestResult {
+    test_function headers_reach_the_handler() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send("GET /headers HTTP/1.1\r\nHost: a\r\nUser-Agent: sun-test/1\r\n\r\n");
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert(r.body.equals_literal("sun-test/1"), "header value");
-      try std.test.assert(try r.has_header("x-custom: yes"), "custom response header");
+      var ts = TestServer(alloc, 1, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send("GET /headers HTTP/1.1\r\nHost: a\r\nUser-Agent: sun-test/1\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert(r.body.equals_literal("sun-test/1"), "header value");
+      std.test.assert(r.has_header("x-custom: yes"), "custom response header");
       c.close();
     }
 
-    test_function idle_keep_alive_times_out() sun_serve.ServerTestResult {
+    test_function idle_keep_alive_times_out() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 1, 200);
-      var c = try RawClient(alloc, ts.port);
-      try c.send("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r.status, 200);
+      var ts = TestServer(alloc, 1, 200);
+      var c = RawClient(alloc, ts.port);
+      c.send("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
       sleep(create_duration_millis(600));
-      try std.test.assert(c.peer_closed(), "idle connection closed by the server");
+      std.test.assert(c.peer_closed(), "idle connection closed by the server");
     }
 
-    test_function stop_drains_and_joins() sun_serve.ServerTestResult {
+    test_function stop_drains_and_joins() {
       var alloc = make_heap_allocator();
-      var ts = try TestServer(alloc, 2, 5000);
-      var c = try RawClient(alloc, ts.port);
-      try c.send("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
-      var r: ClientResponse = try c.read_response();
-      try std.test.assert_eq(r.status, 200);
+      var ts = TestServer(alloc, 2, 5000);
+      var c = RawClient(alloc, ts.port);
+      c.send("GET / HTTP/1.1\r\nHost: a\r\n\r\n");
+      var r: ClientResponse = c.read_response();
+      std.test.assert_eq(r.status, 200);
       var t0 = now();
       ts.server.stop();
       var failures: i32 = ts.server.join();
-      try std.test.assert_eq(failures, 0);
-      try std.test.assert(
+      std.test.assert_eq(failures, 0);
+      std.test.assert(
         t0.elapsed().as_millis() < 3000,
         "join returned within the drain window"
       );
-      try std.test.assert(c.peer_closed(), "idle connection dropped at shutdown");
+      std.test.assert(c.peer_closed(), "idle connection dropped at shutdown");
     }
   }
 }

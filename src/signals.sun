@@ -23,7 +23,7 @@ public module sun_serve {
   /*
    * Route SIGINT and SIGTERM to the shutdown flag and ignore SIGPIPE.
    */
-  public function install_signal_handlers() ServerResult<void> {
+  public function install_signal_handlers() void throws {
     ignore_sigpipe();
     var act: SigAction = {
       handler: on_shutdown_signal,
@@ -53,20 +53,16 @@ public module sun_serve {
       _bitcast<raw_ptr<u8>>(_address_of<SigAction>(act)),
       null
     ) != 0) {
-      return ServerResult.Error(
-        Error(last_errno(), "failed to install SIGINT handler")
-      );
+      throw Error(last_errno(), "failed to install SIGINT handler");
     }
     if (unsafe sys_sigaction(
       std.process.SIGTERM,
       _bitcast<raw_ptr<u8>>(_address_of<SigAction>(act)),
       null
     ) != 0) {
-      return ServerResult.Error(
-        Error(last_errno(), "failed to install SIGTERM handler")
-      );
+      throw Error(last_errno(), "failed to install SIGTERM handler");
     }
-    return ServerResult.Ok;
+    return;
   }
 
   // Report whether a shutdown signal has arrived or request_shutdown() ran.

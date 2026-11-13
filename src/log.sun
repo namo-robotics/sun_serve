@@ -59,10 +59,10 @@ public module sun_serve {
       level: LogLevel,
       worker: i32,
       access_enabled: bool
-    ) std.AllocationResult<void> {
+    ) throws {
       this.level = _convert<i32>(level);
       this.worker = worker;
-      this.line = try ByteBuffer(alloc, 512);
+      this.line = ByteBuffer(alloc, 512);
       this.access_enabled = access_enabled;
     }
 
@@ -77,104 +77,101 @@ public module sun_serve {
     }
 
     // Start a diagnostic line with its level tag and worker id.
-    method begin(tag: static_ptr<u8>) std.AllocationResult<void> {
+    method begin(tag: static_ptr<u8>) void throws {
       this.line.clear();
-      try this.line.append_literal(tag);
-      try this.line.append_literal(" w");
-      try this.line.append_i64(_convert<i64>(this.worker));
-      try this.line.append_literal(" ");
+      this.line.append_literal(tag);
+      this.line.append_literal(" w");
+      this.line.append_i64(_convert<i64>(this.worker));
+      this.line.append_literal(" ");
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Finish the current line and write it to fd.
-    method flush(fd: i32) std.AllocationResult<void> {
-      try this.line.append_byte(b'\n');
+    method flush(fd: i32) void throws {
+      this.line.append_byte(b'\n');
       write_all(fd, this.line.readable_ptr(), this.line.readable_len());
       this.line.clear();
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Write one diagnostic line made of a message and an optional detail.
-    method emit(level: LogLevel, message: static_ptr<u8>, detail: const ref String) std.AllocationResult<void> {
+    method emit(level: LogLevel, message: static_ptr<u8>, detail: const ref String) void throws {
       if (not this.enabled(level)) {
-        return std.AllocationResult.Ok;
+        return;
       }
-      try this.begin(level_tag(level));
-      try this.line.append_literal(message);
+      this.begin(level_tag(level));
+      this.line.append_literal(message);
       if (detail.length() > 0) {
-        try this.line.append_literal(": ");
-        try this.line.append_string(detail);
+        this.line.append_literal(": ");
+        this.line.append_string(detail);
       }
-      try this.flush(std.io.STDERR_FD);
-    
-      return std.AllocationResult.Ok;
-}
+      this.flush(std.io.STDERR_FD);
+
+      return;
+    }
 
     // Log an error with a detail string.
-    public method error(message: static_ptr<u8>, detail: const ref String) std.AllocationResult<void> {
-      try this.emit(LogLevel.Error, message, detail);
-    
-      return std.AllocationResult.Ok;
-}
+    public method error(message: static_ptr<u8>, detail: const ref String) void throws {
+      this.emit(LogLevel.Error, message, detail);
+
+      return;
+    }
 
     // Log a warning with a detail string.
-    public method warn(message: static_ptr<u8>, detail: const ref String) std.AllocationResult<void> {
-      try this.emit(LogLevel.Warn, message, detail);
-    
-      return std.AllocationResult.Ok;
-}
+    public method warn(message: static_ptr<u8>, detail: const ref String) void throws {
+      this.emit(LogLevel.Warn, message, detail);
+
+      return;
+    }
 
     // Log an informational message with a detail string.
-    public method info(message: static_ptr<u8>, detail: const ref String) std.AllocationResult<void> {
-      try this.emit(LogLevel.Info, message, detail);
-    
-      return std.AllocationResult.Ok;
-}
+    public method info(message: static_ptr<u8>, detail: const ref String) void throws {
+      this.emit(LogLevel.Info, message, detail);
+
+      return;
+    }
 
     // Log a debug message with a detail string.
-    public method debug(message: static_ptr<u8>, detail: const ref String) std.AllocationResult<void> {
-      try this.emit(LogLevel.Debug, message, detail);
-    
-      return std.AllocationResult.Ok;
-}
+    public method debug(message: static_ptr<u8>, detail: const ref String) void throws {
+      this.emit(LogLevel.Debug, message, detail);
+
+      return;
+    }
 
     // Log a literal message at the given level with no detail.
-    public method log(level: LogLevel, message: static_ptr<u8>) std.AllocationResult<void> {
-      try this.emit(level, message, try String(""));
+    public method log(level: LogLevel, message: static_ptr<u8>) void throws {
+      this.emit(level, message, String(""));
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     /*
      * Log the message text of a caught error.
      */
-    public method error_caught(
-      message: static_ptr<u8>,
-      e: const ref IError
-    ) std.AllocationResult<void> {
-      try this.error(message, try e.message());
+    public method error_caught(message: static_ptr<u8>, e: const ref IError) void throws {
+      this.error(message, e.message());
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     /*
      * Write an access log line to stdout. The caller formats the request
      * part; this adds the worker id and a newline.
      */
-    public method access(entry: const ref ByteBuffer) std.AllocationResult<void> {
+    public method access(entry: const ref ByteBuffer) void throws {
       if (not this.access_enabled) {
-        return std.AllocationResult.Ok;
+        return;
       }
       this.line.clear();
-      try this.line.append_literal("w");
-      try this.line.append_i64(_convert<i64>(this.worker));
-      try this.line.append_literal(" ");
-      try this.line.append_bytes(entry.readable_ptr(), entry.readable_len());
-      try this.flush(std.io.STDOUT_FD);
+      this.line.append_literal("w");
+      this.line.append_i64(_convert<i64>(this.worker));
+      this.line.append_literal(" ");
+      this.line.append_bytes(entry.readable_ptr(), entry.readable_len());
+      this.flush(std.io.STDOUT_FD);
 
-      return std.AllocationResult.Ok;
+      return;
     }
   }
 }

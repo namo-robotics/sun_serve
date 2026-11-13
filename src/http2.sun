@@ -52,12 +52,10 @@ public module sun_serve {
     public var value: String;
 
     // Copy this header into another allocator.
-    public const method clone(alloc: const ref HeapAllocator) std.AllocationResult<H2Header> {
-      return std.AllocationResult.Ok(
-        H2Header(
-          try this.name.clone(alloc),
-          try this.value.clone(alloc)
-        )
+    public const method clone(alloc: const ref HeapAllocator) H2Header throws {
+      return H2Header(
+        this.name.clone(alloc),
+        this.value.clone(alloc)
       );
     }
 
@@ -77,23 +75,23 @@ public module sun_serve {
     var alloc: HeapAllocator;
 
     // Build an unused stream slot.
-    init(allocator: const ref HeapAllocator) std.AllocationResult<void> {
+    init(allocator: const ref HeapAllocator) throws {
       this.alloc = allocator.copy();
-      this.headers = try Vec<H2Header>(allocator, 16);
-      this.body = try ByteBuffer(allocator, 256);
+      this.headers = Vec<H2Header>(allocator, 16);
+      this.body = ByteBuffer(allocator, 256);
     }
 
     // Populate a slot from a decoded header block.
-    method begin(id: u32, source: const ref Vec<H2Header>) std.AllocationResult<void> {
+    method begin(id: u32, source: const ref Vec<H2Header>) void throws {
       this.active = true;
       this.id = id;
       this.headers.clear();
       this.body.clear();
       for (var i: i64 = 0; i < source.size(); i = i + 1) {
-        try this.headers.push(try source[i].clone(this.alloc));
+        this.headers.push(source[i].clone(this.alloc));
       }
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Release buffered state for reuse.
@@ -113,8 +111,8 @@ public module sun_serve {
     var data: ByteBuffer;
 
     // Build an unused response slot.
-    init(allocator: const ref HeapAllocator) std.AllocationResult<void> {
-      this.data = try ByteBuffer(allocator, 256);
+    init(allocator: const ref HeapAllocator) throws {
+      this.data = ByteBuffer(allocator, 256);
     }
 
     // Start buffering response data for a stream.
@@ -142,9 +140,9 @@ public module sun_serve {
     var alloc: HeapAllocator;
 
     // Start with the RFC default dynamic-table limit.
-    init(alloc: const ref HeapAllocator) std.AllocationResult<void> {
+    init(alloc: const ref HeapAllocator) throws {
       this.alloc = alloc.copy();
-      this.entries = try Vec<H2Header>(alloc, 16);
+      this.entries = Vec<H2Header>(alloc, 16);
     }
 
     // Empty the dynamic table for a new connection.
@@ -155,7 +153,7 @@ public module sun_serve {
     }
 
     // Apply a peer table-size update within the configured maximum.
-    method resize(size: i64) bool {
+    method resize(size: i64) bool throws {
       if (size < 0 or size > HPACK_DEFAULT_TABLE_SIZE) {
         return false;
       }
@@ -165,52 +163,55 @@ public module sun_serve {
     }
 
     // Resolve a dynamic index into owned strings.
-    method lookup(index: i64, name: ref String, value: ref String) std.AllocationResult<bool> {
+    method lookup(index: i64, name: ref String, value: ref String) bool throws {
       var at: i64 = this.entries.size() - 1 - (index - HPACK_STATIC_ENTRIES - 1);
       if (at < 0 or at >= this.entries.size()) {
-        return std.AllocationResult.Ok(false);
+        return false;
       }
       var field: ref H2Header = this.entries[at];
-      try name.append(field.name);
-      try value.append(field.value);
-      return std.AllocationResult.Ok(true);
+      name.append(field.name);
+      value.append(field.value);
+      return true;
     }
 
     // Add an entry after older entries; lookup indexes from the end.
-    method add(name: const ref String, value: const ref String) std.AllocationResult<void> {
+    method add(name: const ref String, value: const ref String) void throws {
       var size: i64 = name.length() + value.length() + HPACK_ENTRY_OVERHEAD;
       if (size > this.maximum) {
         this.entries.clear();
         this.bytes = 0;
-        return std.AllocationResult.Ok;
+        return;
       }
-      try this.entries.push(
+      this.entries.push(
         H2Header(
-          try name.clone(this.alloc),
-          try value.clone(this.alloc)
+          name.clone(this.alloc),
+          value.clone(this.alloc)
         )
       );
 
       this.bytes = this.bytes + size;
       this.evict();
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Remove oldest entries until the table fits.
-    method evict() void {
+    method evict() void throws {
       while (this.bytes > this.maximum and this.entries.size() > 0) {
-        match this.entries.remove(0) {
-          AccessResult.Ok(value) => {
-            var oldest: H2Header = value;
-            this.bytes = this.bytes - oldest.name.length() - oldest.value.length() -
-              HPACK_ENTRY_OVERHEAD;
-          },
-          (e: const ref IError) => {
-            // Unreachable: the table was just checked to be non-empty.
-            return;
+        var operation_completed_1 = false;
+        try {
+          var value = this.entries.remove(0);
+          operation_completed_1 = true;
+          var oldest: H2Header = value;
+          this.bytes = this.bytes - oldest.name.length() - oldest.value.length() -
+            HPACK_ENTRY_OVERHEAD;
+        } catch {
+          if (operation_completed_1) {
+            throw;
           }
-        };
+          // Unreachable: the table was just checked to be non-empty.
+          return;
+        }
       }
     }
   }
@@ -241,12 +242,12 @@ public module sun_serve {
     var upgrading: bool = false;  // an h2c upgrade response is being written
 
     // Allocate the tables; reset() prepares them for a connection.
-    init(alloc: const ref HeapAllocator) std.AllocationResult<void> {
-      this.headers = try Vec<H2Header>(alloc, 16);
-      this.hpack = try HpackDecoder(alloc);
-      this.header_block = try ByteBuffer(alloc, 512);
-      this.streams = try Vec<H2RequestStream>(alloc, 16);
-      this.responses = try Vec<H2ResponseStream>(alloc, 16);
+    init(alloc: const ref HeapAllocator) throws {
+      this.headers = Vec<H2Header>(alloc, 16);
+      this.hpack = HpackDecoder(alloc);
+      this.header_block = ByteBuffer(alloc, 512);
+      this.streams = Vec<H2RequestStream>(alloc, 16);
+      this.responses = Vec<H2ResponseStream>(alloc, 16);
     }
 
     // Return to the initial protocol state, keeping the allocations.
@@ -285,9 +286,9 @@ public module sun_serve {
     var end_pending: bool = false;  // END_STREAM must follow the queued frames
 
     // Allocate the frame buffers.
-    init(alloc: const ref HeapAllocator) std.AllocationResult<void> {
-      this.inbound = try ByteBuffer(alloc, 256);
-      this.outbound = try ByteBuffer(alloc, 256);
+    init(alloc: const ref HeapAllocator) throws {
+      this.inbound = ByteBuffer(alloc, 256);
+      this.outbound = ByteBuffer(alloc, 256);
     }
 
     // Forget any tunnel, keeping the allocations.
@@ -307,13 +308,13 @@ public module sun_serve {
   }
 
   // Append an unsigned big-endian HTTP/2 integer.
-  function h2_append_u32(out: ref ByteBuffer, value: u32) std.AllocationResult<void> {
-    try out.append_byte(_convert<u8>((value >> 24) & 0xff));
-    try out.append_byte(_convert<u8>((value >> 16) & 0xff));
-    try out.append_byte(_convert<u8>((value >> 8) & 0xff));
-    try out.append_byte(_convert<u8>(value & 0xff));
+  function h2_append_u32(out: ref ByteBuffer, value: u32) void throws {
+    out.append_byte(_convert<u8>((value >> 24) & 0xff));
+    out.append_byte(_convert<u8>((value >> 16) & 0xff));
+    out.append_byte(_convert<u8>((value >> 8) & 0xff));
+    out.append_byte(_convert<u8>(value & 0xff));
 
-    return std.AllocationResult.Ok;
+    return;
   }
 
   // Validate HTTP/2 request-header syntax and decoded limits.
@@ -386,10 +387,7 @@ public module sun_serve {
   }
 
   // Decode an unpadded base64url HTTP2-Settings header value.
-  function h2_decode_settings_header(
-    value: const ref String,
-    out: ref ByteBuffer
-  ) std.AllocationResult<bool> {
+  function h2_decode_settings_header(value: const ref String, out: ref ByteBuffer) bool throws {
     var bits: u32 = 0;
     var bit_count: i32 = 0;
     for (var i: i64 = 0; i < value.length(); i = i + 1) {
@@ -406,19 +404,19 @@ public module sun_serve {
       } else if (c == b'_') {
         digit = 63;
       } else {
-        return std.AllocationResult.Ok(false);
+        return false;
       }
       bits = (bits << 6) | _convert<u32>(digit);
       bit_count = bit_count + 6;
       if (bit_count >= 8) {
         bit_count = bit_count - 8;
-        try out.append_byte(_convert<u8>((bits >> bit_count) & 255));
+        out.append_byte(_convert<u8>((bits >> bit_count) & 255));
       }
     }
     if (bit_count >= 6 or (bit_count > 0 and (bits & ((1 << bit_count) - 1)) != 0)) {
-      return std.AllocationResult.Ok(false);
+      return false;
     }
-    return std.AllocationResult.Ok(true);
+    return true;
   }
 
   // Append an HTTP/2 frame header.
@@ -428,15 +426,15 @@ public module sun_serve {
     kind: H2FrameKind,
     flags: u8,
     stream: u32
-  ) std.AllocationResult<void> {
-    try out.append_byte(_convert<u8>((len >> 16) & 0xff));
-    try out.append_byte(_convert<u8>((len >> 8) & 0xff));
-    try out.append_byte(_convert<u8>(len & 0xff));
-    try out.append_byte(_convert<u8>(kind));
-    try out.append_byte(flags);
-    try h2_append_u32(out, stream & H2_STREAM_ID_MASK);
+  ) void throws {
+    out.append_byte(_convert<u8>((len >> 16) & 0xff));
+    out.append_byte(_convert<u8>((len >> 8) & 0xff));
+    out.append_byte(_convert<u8>(len & 0xff));
+    out.append_byte(_convert<u8>(kind));
+    out.append_byte(flags);
+    h2_append_u32(out, stream & H2_STREAM_ID_MASK);
 
-    return std.AllocationResult.Ok;
+    return;
   }
 
   // The payload length declared by a frame header at off.
@@ -451,29 +449,25 @@ public module sun_serve {
   }
 
   // Append a settings frame advertising the server limits.
-  function h2_append_settings(out: ref ByteBuffer, max_concurrent_streams: i64) std.AllocationResult<void> {
-    try h2_frame(out, 12, H2FrameKind.Settings, 0, 0);
-    try h2_append_setting(
+  function h2_append_settings(out: ref ByteBuffer, max_concurrent_streams: i64) void throws {
+    h2_frame(out, 12, H2FrameKind.Settings, 0, 0);
+    h2_append_setting(
       out,
       H2_SETTINGS_MAX_CONCURRENT_STREAMS,
       _convert<u32>(max_concurrent_streams)
     );
-    try h2_append_setting(out, H2_SETTINGS_ENABLE_CONNECT_PROTOCOL, 1);
-  
-      return std.AllocationResult.Ok;
-}
+    h2_append_setting(out, H2_SETTINGS_ENABLE_CONNECT_PROTOCOL, 1);
+
+    return;
+  }
 
   // Append one identifier and value pair of a SETTINGS payload.
-  function h2_append_setting(
-    out: ref ByteBuffer,
-    identifier: i32,
-    value: u32
-  ) std.AllocationResult<void> {
-    try out.append_byte(_convert<u8>((identifier >> 8) & 0xff));
-    try out.append_byte(_convert<u8>(identifier & 0xff));
-    try h2_append_u32(out, value);
+  function h2_append_setting(out: ref ByteBuffer, identifier: i32, value: u32) void throws {
+    out.append_byte(_convert<u8>((identifier >> 8) & 0xff));
+    out.append_byte(_convert<u8>(identifier & 0xff));
+    h2_append_u32(out, value);
 
-    return std.AllocationResult.Ok;
+    return;
   }
 
   // Read the identifier of a SETTINGS pair at off.
@@ -1129,8 +1123,8 @@ public module sun_serve {
     data: const ref ByteBuffer,
     off: i64,
     len: i64
-  ) std.AllocationResult<Option<String>> {
-    var out = try String(alloc, "");
+  ) Option<String> throws {
+    var out = String(alloc, "");
     var bits: i32 = 0;
     var acc: u64 = 0;
     for (var i: i64 = 0; i < len; i = i + 1) {
@@ -1151,9 +1145,9 @@ public module sun_serve {
           break;
         }
         if (found == 256) {
-          return std.AllocationResult.Ok(Option.None);
+          return Option.None;
         }
-        try out.append_char(_convert<u8>(found));
+        out.append_char(_convert<u8>(found));
         bits = bits - used;
         if (bits == 0) {
           acc = 0;
@@ -1163,12 +1157,12 @@ public module sun_serve {
       }
     }
     if (bits > 7) {
-      return std.AllocationResult.Ok(Option.None);
+      return Option.None;
     }
     if (bits > 0 and acc != ((_convert<u64>(1) << bits) - 1)) {
-      return std.AllocationResult.Ok(Option.None);
+      return Option.None;
     }
-    return std.AllocationResult.Ok(Option.Some(out));
+    return Option.Some(out);
   }
 
   // Decode an HPACK string and advance pos.
@@ -1177,23 +1171,23 @@ public module sun_serve {
     data: const ref ByteBuffer,
     len: i64,
     pos: ref i64
-  ) std.AllocationResult<Option<String>> {
+  ) Option<String> throws {
     if (pos >= len) {
-      return std.AllocationResult.Ok(Option.None);
+      return Option.None;
     }
     var huffman: bool = (data.byte_at(pos) & 0x80) != 0;
     var n: i64 = hpack_int(data, len, pos, 7);
     if (n < 0 or pos + n > len) {
-      return std.AllocationResult.Ok(Option.None);
+      return Option.None;
     }
     if (huffman) {
-      var decoded = try hpack_huffman_decode(alloc, data, pos, n);
+      var decoded = hpack_huffman_decode(alloc, data, pos, n);
       pos = pos + n;
-      return std.AllocationResult.Ok(decoded);
+      return decoded;
     }
-    var out: String = try data.range_text(alloc, pos, n);
+    var out: String = data.range_text(alloc, pos, n);
     pos = pos + n;
-    return std.AllocationResult.Ok(Option.Some(out));
+    return Option.Some(out);
   }
 
   // Decode one HPACK block. Dynamic references and Huffman strings are rejected.
@@ -1203,14 +1197,14 @@ public module sun_serve {
     len: i64,
     decoder: ref HpackDecoder,
     out: ref Vec<H2Header>
-  ) std.AllocationResult<bool> {
+  ) bool throws {
     var pos: i64 = 0;
     while (pos < len) {
       var first: u8 = data.byte_at(pos);
       if ((first & 0xe0) == 0x20) {
         var size: i64 = hpack_int(data, len, pos, 5);
         if (not decoder.resize(size)) {
-          return std.AllocationResult.Ok(false);
+          return false;
         }
         continue;
       }
@@ -1224,102 +1218,101 @@ public module sun_serve {
       }
       var index: i64 = hpack_int(data, len, pos, prefix);
       if (index < 0) {
-        return std.AllocationResult.Ok(false);
+        return false;
       }
-      var name = try String(alloc, "");
+      var name = String(alloc, "");
       if (index == 0) {
-        var decoded_name: Option<String> = try hpack_string(alloc, data, len, pos);
+        var decoded_name: Option<String> = hpack_string(alloc, data, len, pos);
         match decoded_name {
           Option.Some(v) => {
-            try name.append(v);
+            name.append(v);
           },
           Option.None => {
-            return std.AllocationResult.Ok(false);
+            return false;
           }
         };
       } else if (index <= HPACK_STATIC_ENTRIES) {
-        try name.append(hpack_static_name(index));
+        name.append(hpack_static_name(index));
       }
-      var value = try String(alloc, "");
-      if (index > HPACK_STATIC_ENTRIES and not (try decoder.lookup(index, name, value))) {
-        return std.AllocationResult.Ok(false);
+      var value = String(alloc, "");
+      if (index > HPACK_STATIC_ENTRIES and not (decoder.lookup(index, name, value))) {
+        return false;
       }
       if (indexed) {
         if (index <= HPACK_STATIC_ENTRIES) {
-          try value.append(hpack_static_value(index));
+          value.append(hpack_static_value(index));
         }
       } else {
-        var decoded_value: Option<String> = try hpack_string(alloc, data, len, pos);
+        var decoded_value: Option<String> = hpack_string(alloc, data, len, pos);
         match decoded_value {
           Option.Some(v) => {
-            try value.append(v);
+            value.append(v);
           },
           Option.None => {
-            return std.AllocationResult.Ok(false);
+            return false;
           }
         };
       }
       if (incremental) {
-        try decoder.add(name, value);
+        decoder.add(name, value);
       }
-      try out.push(H2Header(name, value));
+      out.push(H2Header(name, value));
     }
-    return std.AllocationResult.Ok(true);
+    return true;
   }
 
   // Encode an HPACK integer with the first-byte prefix already prepared.
-  function hpack_append_int(
-    out: ref ByteBuffer,
-    value: i64,
-    prefix: i32,
-    first: u8
-  ) std.AllocationResult<void> {
+  function hpack_append_int(out: ref ByteBuffer, value: i64, prefix: i32, first: u8) void throws {
     var mask: i64 = _convert<i64>((1 << prefix) - 1);
     if (value < mask) {
-      try out.append_byte(first | _convert<u8>(value));
-      return std.AllocationResult.Ok;
+      out.append_byte(first | _convert<u8>(value));
+      return;
     }
-    try out.append_byte(first | _convert<u8>(mask));
+    out.append_byte(first | _convert<u8>(mask));
     var left: i64 = value - mask;
     while (left >= 128) {
-      try out.append_byte(_convert<u8>(left % 128) | 0x80);
+      out.append_byte(_convert<u8>(left % 128) | 0x80);
       left = left / 128;
     }
-    try out.append_byte(_convert<u8>(left));
+    out.append_byte(_convert<u8>(left));
 
-    return std.AllocationResult.Ok;
+    return;
   }
 
   // Encode a literal HPACK string without Huffman coding.
-  function hpack_append_string(out: ref ByteBuffer, value: const ref String) std.AllocationResult<void> {
-    try hpack_append_int(out, value.length(), 7, 0);
-    try out.append_string(value);
-  
-      return std.AllocationResult.Ok;
-}
+  function hpack_append_string(out: ref ByteBuffer, value: const ref String) void throws {
+    hpack_append_int(out, value.length(), 7, 0);
+    out.append_string(value);
+
+    return;
+  }
 
   // Encode one literal response header without indexing.
-  function hpack_header(out: ref ByteBuffer, name: const ref String, value: const ref String) std.AllocationResult<void> {
-    try hpack_append_int(out, 0, 4, 0);
-    try hpack_append_string(out, name);
-    try hpack_append_string(out, value);
-  
-      return std.AllocationResult.Ok;
-}
+  function hpack_header(
+    out: ref ByteBuffer,
+    name: const ref String,
+    value: const ref String
+  ) void throws {
+    hpack_append_int(out, 0, 4, 0);
+    hpack_append_string(out, name);
+    hpack_append_string(out, value);
+
+    return;
+  }
 
   // Encode one literal response header given as literals.
   function hpack_header_literal(
     out: ref ByteBuffer,
     name: static_ptr<u8>,
     value: static_ptr<u8>
-  ) std.AllocationResult<void> {
-    try hpack_header(
+  ) void throws {
+    hpack_header(
       out,
-      try String(name),
-      try String(value)
+      String(name),
+      String(value)
     );
 
-    return std.AllocationResult.Ok;
+    return;
   }
 
   // Encode a response status using the static table when possible.
@@ -1327,7 +1320,7 @@ public module sun_serve {
     out: ref ByteBuffer,
     status: i32,
     alloc: const ref HeapAllocator
-  ) std.AllocationResult<void> {
+  ) void throws {
     var index: i64 = match status {
       200 => 8,
       204 => 9,
@@ -1339,14 +1332,14 @@ public module sun_serve {
       _ => 0
     };
     if (index > 0) {
-      try hpack_append_int(out, index, 7, 0x80);
-      return std.AllocationResult.Ok;
+      hpack_append_int(out, index, 7, 0x80);
+      return;
     }
-    try hpack_append_int(out, 8, 4, 0);
-    var text = try String(alloc, "");
-    try text.append(status);
-    try hpack_append_string(out, text);
+    hpack_append_int(out, 8, 4, 0);
+    var text = String(alloc, "");
+    text.append(status);
+    hpack_append_string(out, text);
 
-    return std.AllocationResult.Ok;
+    return;
   }
 }

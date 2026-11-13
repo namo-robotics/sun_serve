@@ -45,72 +45,73 @@ module hello_handler {
     }
 
     // Route the request by path.
-    public method handle_result(req: const ref Request, resp: ref Response) AllocationResult<void> {
+    public method handle_result(req: const ref Request, resp: ref Response) void throws {
       this.served = this.served + 1;
       if (req.path_is("/hi")) {
-        try this.greet(req, resp);
+        this.greet(req, resp);
       } else if (req.path_is("/echo")) {
-        try this.echo(req, resp);
+        this.echo(req, resp);
       } else if (req.path_is("/stats")) {
-        try this.stats(resp);
+        this.stats(resp);
       } else {
         resp.set_status(404);
-        try resp.set_content_type("text/plain");
-        try resp.set_body("not here\n");
+        resp.set_content_type("text/plain");
+        resp.set_body("not here\n");
       }
 
-      return AllocationResult.Ok;
+      return;
     }
 
     /** Runs the callback and terminates if its response storage cannot be allocated. */
     public method handle(req: const ref Request, resp: ref Response) void {
-      match this.handle_result(req, resp) {
-        AllocationResult.Ok => {},
-        _ => { _panic("allocation failed in server callback"); }
-      };
+      try {
+        this.handle_result(req, resp);
+      } catch {
+        _panic("allocation failed in server callback");
+      }
     }
 
     // GET /hi?name=NAME greets NAME, or "world" without a name.
-    method greet(req: const ref Request, resp: ref Response) AllocationResult<void> {
-      var fallback = try String(this.alloc, "world");
-      var name: String = match try req.query_param("name", this.alloc) {
+    method greet(req: const ref Request, resp: ref Response) void throws {
+      var fallback = String(this.alloc, "world");
+      var name: String = match req.query_param("name", this.alloc) {
         Option.Some(n) => n,
         Option.None => fallback
       };
-      var body = try String(this.alloc, "hello, ");
-      try body.append(name);
-      try body.append("\n");
-      try resp.set_content_type("text/plain");
-      try resp.set_body_string(body);
+      var body = String(this.alloc, "hello, ");
+      body.append(name);
+      body.append("\n");
+      resp.set_content_type("text/plain");
+      resp.set_body_string(body);
 
-      return AllocationResult.Ok;
+      return;
     }
 
     // POST /echo sends the request body straight back.
-    method echo(req: const ref Request, resp: ref Response) AllocationResult<void> {
+    method echo(req: const ref Request, resp: ref Response) void throws {
       if (not req.method_is("POST")) {
         resp.set_status(405);
-        try resp.add_header("Allow", "POST");
-        try resp.set_content_type("text/plain");
-        try resp.set_body("POST a body to /echo\n");
-        return AllocationResult.Ok;
+        resp.add_header("Allow", "POST");
+        resp.set_content_type("text/plain");
+        resp.set_body("POST a body to /echo\n");
+        return;
       }
-      try resp.set_content_type("application/octet-stream");
-      try resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
+      resp.set_content_type("application/octet-stream");
+      resp.set_body_buffer(req.body_buffer(), 0, req.body_len());
 
-      return AllocationResult.Ok;
+      return;
     }
 
     // GET /stats reports how many requests this worker has handled.
-    method stats(resp: ref Response) AllocationResult<void> {
-      var body = try String(this.alloc, "requests handled by this worker: ");
+    method stats(resp: ref Response) void throws {
+      var body = String(this.alloc, "requests handled by this worker: ");
 
-      try body.append(this.served);
-      try body.append("\n");
-      try resp.set_content_type("text/plain");
-      try resp.set_body_string(body);
+      body.append(this.served);
+      body.append("\n");
+      resp.set_content_type("text/plain");
+      resp.set_body_string(body);
 
-      return AllocationResult.Ok;
+      return;
     }
 
     // Accept WebSocket echo sessions on /ws.
@@ -127,26 +128,27 @@ module hello_handler {
     public method websocket_message_result(
       socket: const ref WebSocketHandle,
       message: const ref WebSocketMessage
-    ) std.AllocationResult<void> {
+    ) void throws {
       if (message.kind == WebSocketMessageKind.Text) {
-        var text = try message.text(this.alloc);
-        try socket.send_text(text);
+        var text = message.text(this.alloc);
+        socket.send_text(text);
       } else {
-        try socket.send_binary(message.data(), 0, message.length());
+        socket.send_binary(message.data(), 0, message.length());
       }
-    
-      return std.AllocationResult.Ok;
-}
+
+      return;
+    }
 
     /** Runs the callback and terminates if its response storage cannot be allocated. */
     public method websocket_message(
       socket: const ref WebSocketHandle,
       message: const ref WebSocketMessage
     ) void {
-      match this.websocket_message_result(socket, message) {
-        std.AllocationResult.Ok => {},
-        _ => { _panic("allocation failed in server callback"); }
-      };
+      try {
+        this.websocket_message_result(socket, message);
+      } catch {
+        _panic("allocation failed in server callback");
+      }
     }
 
     // Echo sessions keep no close state.
@@ -162,40 +164,80 @@ module hello_handler {
   public function hello_handlers(
     alloc: const ref HeapAllocator,
     count: i32
-  ) AllocationResult<Vec<HelloHandler>> {
-    var out = try Vec<HelloHandler>(alloc, _convert<i64>(count));
+  ) Vec<HelloHandler> throws {
+    var out = Vec<HelloHandler>(alloc, _convert<i64>(count));
     for (var i: i32 = 0; i < count; i = i + 1) {
-      try out.push(HelloHandler(alloc));
+      out.push(HelloHandler(alloc));
     }
-    return AllocationResult.Ok(out);
+    return out;
   }
 }
 
 /* Serve on every interface until SIGINT or SIGTERM. */
-function serve() ServerResult<i32> {
+function serve() i32 throws {
   var alloc = make_heap_allocator();
-  var cfg = try Config(alloc);
-  try cfg.add_listen(std.net.ipv4_any(), 8080);
-  try install_signal_handlers();
-  var server = try Server<hello_handler.HelloHandler>(
+  var cfg = Config(alloc);
+  cfg.add_listen(std.net.ipv4_any(), 8080);
+  install_signal_handlers();
+  var server = Server<hello_handler.HelloHandler>(
     alloc,
     cfg,
-    try hello_handler.hello_handlers(alloc, online_cpus())
+    hello_handler.hello_handlers(alloc, online_cpus())
   );
   return server.run();
 }
 
 /* Report startup failures and return the server exit status. */
-function main() AllocationResult<i32> {
-  return AllocationResult.Ok(
-    match serve() {
-      ServerResult.Ok(status) => status,
-      (e: const ref IError) => {
-        std.io.eprintln(try e.message());
-        return AllocationResult.Ok(1);
-      }
-    }
-  );
+function main() i32 throws {
+  try {
+    var status = serve();
+    return status;
+  } catch (e: std.Error) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.AllocationError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.InvalidArgumentError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.OverflowError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.IndexOutOfBoundsError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.NotFoundError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.EmptyError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.IOError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.ConversionError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.DivisionByZeroError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.ArithmeticError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.json.JsonError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.xml.XmlError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: std.ProtoDecodeError) {
+    std.io.eprintln(e.message());
+    return 1;
+  } catch (e: sun_serve.TlsError) {
+    std.io.eprintln(e.message());
+    return 1;
+  }
 }
 
 manifest {

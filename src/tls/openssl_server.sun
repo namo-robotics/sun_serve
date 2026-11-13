@@ -126,18 +126,18 @@ public module sun_serve {
   function take_openssl_error(
     alloc: const ref HeapAllocator,
     context: static_ptr<u8>
-  ) std.AllocationResult<String> {
-    var out = try String(alloc, context);
+  ) String throws {
+    var out = String(alloc, context);
     var code: u64 = unsafe ssl_err_get_error();
     if (code == 0) {
-      return std.AllocationResult.Ok(out);
+      return out;
     }
-    var buf = try ContiguousBuffer<u8>(alloc, 256);
+    var buf = ContiguousBuffer<u8>(alloc, 256);
     buf.fill(0);
     unsafe ssl_err_error_string_n(code, buf.raw_data(), buf.size());
-    try out.append(": ");
-    var text: String = try from_c_str(alloc, buf.raw_data());
-    try out.append(text);
-    return std.AllocationResult.Ok(out);
+    out.append(": ");
+    var text: String = from_c_str(alloc, buf.raw_data());
+    out.append(text);
+    return out;
   }
 }

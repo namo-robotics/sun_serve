@@ -4,7 +4,7 @@ Each item links to its issue on `namo-robotics/sun`.
 Repro snippets are complete programs unless noted. Open issues and remaining
 limitations were checked with `sun 0.dev (a69c9fb35814)`
 (2026-09-25). The result-enum migration was verified with `fe773e38a88b`; the earlier
-request for fallible interface methods is superseded by returned results.
+request for fallible interface methods is supported by `throws` declarations and exceptions.
 The remaining items below retain their earlier verification date.
 
 ---

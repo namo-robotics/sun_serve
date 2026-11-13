@@ -76,23 +76,21 @@ public module sun_serve {
     var accept_paused_until: i64 = 0;
 
     // Set up the loop's resources. Listeners are registered in run().
-    init(args: WorkerArgs<H>) ServerResult<void> {
+    init(args: WorkerArgs<H>) throws {
       var alloc = make_heap_allocator();
       this.alloc = alloc.copy();
-      this.log = try Logger(alloc, args.config.log_level, args.id, args.config.access_log);
-      this.date = try DateCache(alloc);
-      var layout: EpollLayout = try probe_epoll_layout(alloc);
-      this.epoll = try Epoll(alloc, layout, 256);
+      this.log = Logger(alloc, args.config.log_level, args.id, args.config.access_log);
+      this.date = DateCache(alloc);
+      var layout: EpollLayout = probe_epoll_layout(alloc);
+      this.epoll = Epoll(alloc, layout, 256);
       this.wake_fd = create_event_counter();
       if (this.wake_fd < 0) {
-        return ServerResult.Error(
-          Error(last_errno(), "eventfd failed")
-        );
+        throw Error(last_errno(), "eventfd failed");
       }
-      this.conns = try Vec<Connection>(alloc, 64);
-      this.free = try Vec<i64>(alloc, 64);
+      this.conns = Vec<Connection>(alloc, 64);
+      this.free = Vec<i64>(alloc, 64);
       this.args = args;
-      return ServerResult.Ok;
+      return;
     }
 
     // Close the worker wake descriptor.
@@ -110,64 +108,186 @@ public module sun_serve {
      * Serve until the stop flag is raised and the connections have drained.
      * Returns the process exit status the worker would like.
      */
-    public method run() std.AllocationResult<i32> {
-      match this.epoll.add(this.wake_fd, EPOLLIN, WORKER_WAKE_TOKEN) {
-        ServerResult.Ok => {},
-        (e: const ref IError) => {
-          try this.log.error_caught("failed to watch worker wake descriptor", e);
-          return std.AllocationResult.Ok(1);
-        }
-      };
+    public method run() i32 throws {
+      try {
+        this.epoll.add(this.wake_fd, EPOLLIN, WORKER_WAKE_TOKEN);
+      } catch (e: std.Error) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.AllocationError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.InvalidArgumentError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.OverflowError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.IndexOutOfBoundsError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.NotFoundError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.EmptyError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.IOError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.ConversionError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.DivisionByZeroError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.ArithmeticError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.json.JsonError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.xml.XmlError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: std.ProtoDecodeError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      } catch (e: sun_serve.TlsError) {
+        this.log.error_caught("failed to watch worker wake descriptor", e);
+        return 1;
+      }
       for (var i: i64 = 0; i < this.args.listeners.size(); i = i + 1) {
-        match this.epoll.add(
-          this.args.listeners[i].get_fd(),
-          EPOLLIN,
-          LISTENER_TOKEN_BASE + _convert<u64>(i)
-        ) {
-          ServerResult.Ok => {},
-          (e: const ref IError) => {
-            try this.log.error_caught("failed to watch listener", e);
-            return std.AllocationResult.Ok(1);
-          }
-        };
+        try {
+          this.epoll.add(
+            this.args.listeners[i].get_fd(),
+            EPOLLIN,
+            LISTENER_TOKEN_BASE + _convert<u64>(i)
+          );
+        } catch (e: std.Error) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.AllocationError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.InvalidArgumentError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.OverflowError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.IndexOutOfBoundsError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.NotFoundError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.EmptyError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.IOError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.ConversionError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.DivisionByZeroError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.ArithmeticError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.json.JsonError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.xml.XmlError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: std.ProtoDecodeError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        } catch (e: sun_serve.TlsError) {
+          this.log.error_caught("failed to watch listener", e);
+          return 1;
+        }
       }
       var tick: i32 = _convert<i32>(this.args.config.timeouts.tick_ms);
       while (true) {
         var n: i64 = 0;
-        match this.epoll.wait(tick) {
-          ServerResult.Ok(value) => {
-            n = value;
-          },
-          (e: const ref IError) => {
-            try this.log.error_caught("epoll_wait failed", e);
-            return std.AllocationResult.Ok(1);
-          }
-        };
-        try this.date.refresh();
+        try {
+          var value = this.epoll.wait(tick);
+          n = value;
+        } catch (e: std.Error) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.AllocationError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.InvalidArgumentError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.OverflowError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.IndexOutOfBoundsError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.NotFoundError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.EmptyError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.IOError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.ConversionError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.DivisionByZeroError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.ArithmeticError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.json.JsonError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.xml.XmlError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: std.ProtoDecodeError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        } catch (e: sun_serve.TlsError) {
+          this.log.error_caught("epoll_wait failed", e);
+          return 1;
+        }
+        this.date.refresh();
         var now_ms: i64 = this.now_ms();
         for (var i: i64 = 0; i < n; i = i + 1) {
           var token: u64 = this.epoll.event_token(i);
           var mask: u32 = this.epoll.event_mask(i);
           if (token == WORKER_WAKE_TOKEN) {
             this.drain_wake();
-            try this.drive_websockets(now_ms);
+            this.drive_websockets(now_ms);
           } else if (token >= LISTENER_TOKEN_BASE) {
-            try this.accept_ready(_convert<i64>(token - LISTENER_TOKEN_BASE), now_ms);
+            this.accept_ready(_convert<i64>(token - LISTENER_TOKEN_BASE), now_ms);
           } else {
-            try this.connection_ready(_convert<i64>(token), mask, now_ms);
+            this.connection_ready(_convert<i64>(token), mask, now_ms);
           }
         }
-        try this.check_stop(now_ms);
+        this.check_stop(now_ms);
         if (now_ms >= this.next_sweep) {
-          try this.sweep(now_ms);
+          this.sweep(now_ms);
           this.next_sweep = now_ms + this.args.config.timeouts.tick_ms;
         }
         if (this.stopping and (this.live == 0 or now_ms >= this.drain_deadline)) {
-          try this.close_all();
-          return std.AllocationResult.Ok(0);
+          this.close_all();
+          return 0;
         }
       }
-      return std.AllocationResult.Ok(0);
+      return 0;
     }
 
     // Clear accumulated worker wake notifications.
@@ -177,103 +297,156 @@ public module sun_serve {
     }
 
     // Drain asynchronous output for every WebSocket owned by this worker.
-    method drive_websockets(now_ms: i64) std.AllocationResult<void> {
+    method drive_websockets(now_ms: i64) void throws {
       for (var slot: i64 = 0; slot < this.conns.size(); slot = slot + 1) {
         var pending: ref Connection = this.conns[slot];
         if (pending.is_open() and pending.is_websocket()) {
-          try this.connection_ready(slot, 0, now_ms);
+          this.connection_ready(slot, 0, now_ms);
         }
       }
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Accept a batch of pending connections on one listener.
-    method accept_ready(index: i64, now_ms: i64) std.AllocationResult<void> {
+    method accept_ready(index: i64, now_ms: i64) void throws {
       if (this.stopping or now_ms < this.accept_paused_until) {
-        return std.AllocationResult.Ok;
+        return;
       }
       var tls: bool = this.args.listeners[index].tls;
       for (var count: i32 = 0; count < ACCEPT_BATCH; count = count + 1) {
         var fd: i32 = this.args.listeners[index].accept();
         if (fd == 0) {
-          return std.AllocationResult.Ok;
+          return;
         }
         if (fd < 0) {
           var code: i32 = 0 - fd;
           if (code == EMFILE or code == ENFILE) {
-            try this.log.log(LogLevel.Warn, "out of file descriptors; pausing accept");
+            this.log.log(LogLevel.Warn, "out of file descriptors; pausing accept");
             this.accept_paused_until = now_ms + this.args.config.timeouts.tick_ms;
           } else {
-            try this.log.error("accept failed", try `errno ${code}`);
+            this.log.error("accept failed", `errno ${code}`);
           }
-          return std.AllocationResult.Ok;
+          return;
         }
         if (this.live >= this.args.config.limits.max_connections_per_worker) {
           close_fd(fd);
           continue;
         }
         sun_serve.set_tcp_nodelay(fd);
-        var slot: i64 = try this.take_slot();
-        var opened: bool = try this.open_slot(slot, fd, tls, now_ms);
+        var slot: i64 = this.take_slot();
+        var opened: bool = this.open_slot(slot, fd, tls, now_ms);
         if (not opened) {
-          try this.free.push(slot);
+          this.free.push(slot);
           continue;
         }
         this.live = this.live + 1;
         // Data often arrives with the connection; try it right away.
-        try this.connection_ready(slot, EPOLLIN, now_ms);
+        this.connection_ready(slot, EPOLLIN, now_ms);
       }
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     /*
      * Attach an accepted socket to a slot and register it with epoll.
      * Returns false (with the socket closed) when that fails.
      */
-    method open_slot(slot: i64, fd: i32, tls: bool, now_ms: i64) std.AllocationResult<bool> {
+    method open_slot(slot: i64, fd: i32, tls: bool, now_ms: i64) bool throws {
       var conn: ref Connection = this.conns[slot];
       if (not conn.open(fd, tls, this.args.tls, now_ms, this.args.config.timeouts, this.wake_fd)) {
-        try this.log.log(LogLevel.Warn, "could not start TLS session");
+        this.log.log(LogLevel.Warn, "could not start TLS session");
         close_fd(fd);
-        return std.AllocationResult.Ok(false);
+        return false;
       }
-      match this.epoll.add(fd, conn.want(), _convert<u64>(slot)) {
-        ServerResult.Ok => {},
-        (e: const ref IError) => {
-          try this.log.error_caught("failed to watch connection", e);
-          try conn.close();
-          return std.AllocationResult.Ok(false);
-        }
-      };
+      try {
+        this.epoll.add(fd, conn.want(), _convert<u64>(slot));
+      } catch (e: std.Error) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.AllocationError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.InvalidArgumentError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.OverflowError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.IndexOutOfBoundsError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.NotFoundError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.EmptyError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.IOError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.ConversionError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.DivisionByZeroError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.ArithmeticError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.json.JsonError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.xml.XmlError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: std.ProtoDecodeError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      } catch (e: sun_serve.TlsError) {
+        this.log.error_caught("failed to watch connection", e);
+        conn.close();
+        return false;
+      }
       conn.set_registered(conn.want());
-      return std.AllocationResult.Ok(true);
+      return true;
     }
 
     // A free connection slot, growing the table when none is spare.
-    method take_slot() std.AllocationResult<i64> {
-      return std.AllocationResult.Ok(
-        match this.free.pop() {
-          Option.Some(slot) => slot,
-          Option.None => try this.new_slot()
-        }
-      );
+    method take_slot() i64 throws {
+      return match this.free.pop() {
+        Option.Some(slot) => slot,
+        Option.None => this.new_slot()
+      };
     }
 
     // Append a fresh connection to the table.
-    method new_slot() std.AllocationResult<i64> {
-      try this.conns.push(try Connection(this.alloc));
-      return std.AllocationResult.Ok(this.conns.size() - 1);
+    method new_slot() i64 throws {
+      this.conns.push(Connection(this.alloc));
+      return this.conns.size() - 1;
     }
 
     // Drive one connection for a readiness event and update its interest.
-    method connection_ready(slot: i64, mask: u32, now_ms: i64) std.AllocationResult<void> {
+    method connection_ready(slot: i64, mask: u32, now_ms: i64) void throws {
       var conn: ref Connection = this.conns[slot];
       if (not conn.is_open()) {
-        return std.AllocationResult.Ok;
+        return;
       }
-      try conn.on_event(
+      conn.on_event(
         mask,
         this.args.handler,
         this.date,
@@ -283,38 +456,153 @@ public module sun_serve {
         this.stopping
       );
       if (not conn.is_open()) {
-        try this.free.push(slot);
+        this.free.push(slot);
         this.live = this.live - 1;
-        return std.AllocationResult.Ok;
+        return;
       }
       if (conn.want() != conn.registered()) {
-        match this.epoll.modify(conn.get_fd(), conn.want(), _convert<u64>(slot)) {
-          ServerResult.Ok => {
-            conn.set_registered(conn.want());
-          },
-          (e: const ref IError) => {
-            try this.log.error_caught("failed to update connection interest", e);
-            try conn.close();
-            try this.free.push(slot);
-            this.live = this.live - 1;
+        var operation_completed_2 = false;
+        try {
+          this.epoll.modify(conn.get_fd(), conn.want(), _convert<u64>(slot));
+          operation_completed_2 = true;
+          conn.set_registered(conn.want());
+        } catch (e: std.Error) {
+          if (operation_completed_2) {
+            throw;
           }
-        };
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.AllocationError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.InvalidArgumentError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.OverflowError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.IndexOutOfBoundsError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.NotFoundError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.EmptyError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.IOError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.ConversionError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.DivisionByZeroError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.ArithmeticError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.json.JsonError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.xml.XmlError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: std.ProtoDecodeError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        } catch (e: sun_serve.TlsError) {
+          if (operation_completed_2) {
+            throw;
+          }
+          this.log.error_caught("failed to update connection interest", e);
+          conn.close();
+          this.free.push(slot);
+          this.live = this.live - 1;
+        }
       }
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Close a live connection and free its slot.
-    method drop_connection(slot: i64) std.AllocationResult<void> {
+    method drop_connection(slot: i64) void throws {
       var conn: ref Connection = this.conns[slot];
       if (conn.is_open()) {
         this.epoll.remove(conn.get_fd());
-        try conn.close();
-        try this.free.push(slot);
+        conn.close();
+        this.free.push(slot);
         this.live = this.live - 1;
       }
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Report whether the slot holds an open connection past its deadline.
@@ -330,27 +618,27 @@ public module sun_serve {
     }
 
     // Close connections whose current state has taken too long.
-    method sweep(now_ms: i64) std.AllocationResult<void> {
+    method sweep(now_ms: i64) void throws {
       for (var i: i64 = 0; i < this.conns.size(); i = i + 1) {
         if (this.slot_expired(i, now_ms)) {
-          try this.drop_connection(i);
+          this.drop_connection(i);
         }
       }
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     /*
      * Notice a stop request: stop accepting, drop idle connections, and give
      * in-flight requests a grace period.
      */
-    method check_stop(now_ms: i64) std.AllocationResult<void> {
+    method check_stop(now_ms: i64) void throws {
       if (this.stopping) {
-        return std.AllocationResult.Ok;
+        return;
       }
       var stop_flag: i32 = this.args.stop.load();
       if (stop_flag == 0 and not shutdown_requested()) {
-        return std.AllocationResult.Ok;
+        return;
       }
       this.stopping = true;
       this.drain_deadline = now_ms + this.args.config.timeouts.drain_ms;
@@ -360,25 +648,25 @@ public module sun_serve {
       }
       for (var conn: ref Connection in this.conns) {
         if (conn.is_open()) {
-          try conn.begin_shutdown();
+          conn.begin_shutdown();
         }
       }
       for (var i: i64 = 0; i < this.conns.size(); i = i + 1) {
         if (this.slot_idle(i)) {
-          try this.drop_connection(i);
+          this.drop_connection(i);
         }
       }
 
-      return std.AllocationResult.Ok;
+      return;
     }
 
     // Close every connection at the end of the drain period.
-    method close_all() std.AllocationResult<void> {
+    method close_all() void throws {
       for (var i: i64 = 0; i < this.conns.size(); i = i + 1) {
-        try this.drop_connection(i);
+        this.drop_connection(i);
       }
 
-      return std.AllocationResult.Ok;
+      return;
     }
   }
 
@@ -387,25 +675,27 @@ public module sun_serve {
    * on stderr before returning an exit status.
    */
   public function run_worker<H>(args: WorkerArgs<H>) i32 {
-    return match run_worker_result<H>(args) {
-      AllocationResult.Ok(status) => status,
-      _ => { _panic("allocation failed in server worker"); }
-    };
+    try {
+      return run_worker_result<H>(args);
+    } catch (error: Error) {
+      try {
+        std.io.eprintln(error.message());
+      } catch {}
+      return 1;
+    } catch (error: TlsError) {
+      try {
+        std.io.eprintln(error.message());
+      } catch {}
+      return 1;
+    } catch {
+      std.io.eprintln("Server worker failed");
+      return 1;
+    }
   }
 
   /** Runs a worker and reports startup failures before the thread boundary handles allocation errors. */
-  function run_worker_result<H>(args: WorkerArgs<H>) std.AllocationResult<i32> {
-    match Worker<H>(args) {
-      ServerResult.Ok(value) => {
-        var w = value;
-        return std.AllocationResult.Ok(try w.run());
-      },
-      (e: const ref IError) => {
-        std.io.eprintln(
-          try `error: worker failed to start: ${try e.message()}`
-        );
-        return AllocationResult.Ok(1);
-      }
-    };
+  function run_worker_result<H>(args: WorkerArgs<H>) i32 throws {
+    var worker = Worker<H>(args);
+    return worker.run();
   }
 }
