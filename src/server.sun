@@ -12,6 +12,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
   using std.thread;
   using std.time;
 
@@ -23,7 +24,7 @@ public module sun_serve {
     var config: Config;
     var handlers: Vec<H>;
     var threads: Vec<Thread<i32>>;
-    var stop_cell: Unique<i32>;
+    var stop_cell: Unique<i32, HeapAllocator>;
     var ports: Vec<i32>;
     var tls: TlsServerContext = TlsServerContext();
     var started: bool = false;
@@ -38,7 +39,7 @@ public module sun_serve {
       this.alloc = allocator.copy();
       this.handlers = handlers;
       this.threads = Vec<Thread<i32>>(allocator, 8);
-      this.stop_cell = this.alloc.create_unique<i32>(0);
+      this.stop_cell = Unique<i32, HeapAllocator>(0, this.alloc.copy());
       this.ports = Vec<i32>(allocator, 4);
       if (this.handlers.size() == 0) {
         throw Error(-1, "a server needs at least one handler");

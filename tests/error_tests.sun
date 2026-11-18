@@ -13,6 +13,7 @@ public module sun_serve {
   module error_tests {
 
     using std;
+    using std.mem;
 
     /* Answer requests for the server startup tests. */
     function handle(req: const ref Request, resp: ref Response) void throws {

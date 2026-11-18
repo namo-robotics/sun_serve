@@ -11,6 +11,7 @@ public module sun_serve {
   module buffer_tests {
 
     using std;
+    using std.mem;
 
     test_function append_and_read_back() {
       var alloc = make_heap_allocator();

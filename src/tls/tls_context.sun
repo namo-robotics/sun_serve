@@ -12,6 +12,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   /*
    * ALPN protocol lists in wire form: each name prefixed with its length.

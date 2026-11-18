@@ -13,6 +13,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   // Defines the HTTP and WebSocket callbacks implemented by applications.
   public interface IHandler {

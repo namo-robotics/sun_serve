@@ -21,6 +21,7 @@
  */
 
 using std;
+using std.mem;
 using sun_serve;
 
 /*

@@ -14,6 +14,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   enum ConnState { Vacant, Handshaking, ReadingHead, ReadingBody, Writing, WebSocket, Http2, Closed }
 

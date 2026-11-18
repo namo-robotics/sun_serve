@@ -17,6 +17,7 @@ module hello_handler {
   module tests {
 
     using std;
+    using std.mem;
     using sun_serve;
 
     /* Reports assertion failures and errors from test fixtures. */

@@ -11,6 +11,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
   using std.time;
 
   // Append two decimal digits with a leading zero.

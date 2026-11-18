@@ -11,6 +11,7 @@ public module sun_serve {
   module http_tests {
 
     using std;
+    using std.mem;
 
     // Parse a literal as a request head.
     function parse(req: ref Request, text: static_ptr<u8>) ParseStatus throws {

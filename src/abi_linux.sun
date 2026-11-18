@@ -13,6 +13,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   // Where the kernel puts the fields of struct epoll_event on this machine.
   public class EpollLayout {

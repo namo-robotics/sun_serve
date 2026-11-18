@@ -12,6 +12,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   // Owns an epoll instance and decodes its ready events.
   public class Epoll {

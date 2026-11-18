@@ -12,6 +12,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
   using std.time;
 
   /*

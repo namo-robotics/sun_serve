@@ -11,6 +11,7 @@ public module sun_serve {
   module server_http_tests {
 
     using std;
+    using std.mem;
     using std.time;
     using sun_serve.tests;
 

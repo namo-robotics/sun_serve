@@ -11,6 +11,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   // One address to listen on and whether it speaks TLS.
   public class ListenSpec {

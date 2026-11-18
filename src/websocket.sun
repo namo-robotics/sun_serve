@@ -6,6 +6,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   extern "C" function ssl_sha1(data: raw_ptr<u8>, len: i64, out: raw_ptr<u8>) raw_ptr<u8> as "SHA1";
 

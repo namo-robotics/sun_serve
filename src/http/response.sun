@@ -13,6 +13,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
   using std.io;
 
   // How much of a streamed file to read per HTTP/2 DATA batch.

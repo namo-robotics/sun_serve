@@ -11,6 +11,7 @@ module sun_serve_cli {
   module cli_tests {
 
     using std;
+    using std.mem;
     using sun_serve;
 
     // Build an argument vector from literals.

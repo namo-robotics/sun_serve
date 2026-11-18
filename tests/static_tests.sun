@@ -11,6 +11,7 @@ public module sun_serve {
   module static_tests {
 
     using std;
+    using std.mem;
     using std.io;
     using sun_serve.tests;
 

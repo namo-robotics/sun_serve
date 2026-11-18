@@ -12,6 +12,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   /*
    * How much to say. Each level includes the ones before it, so the integer

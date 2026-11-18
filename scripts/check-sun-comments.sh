@@ -23,7 +23,7 @@ while IFS= read -r file; do
         printf "%s:%d: module needs an adjacent block comment\n", FILENAME, NR
         failed = 1
       }
-      if (is_public($0) && previous !~ /^[[:space:]]*(\/\/|\*\/)/) {
+      if (is_public($0) && previous !~ /^[[:space:]]*(\/\/|\*\/|\/\*.*\*\/[[:space:]]*$)/) {
         printf "%s:%d: public declaration needs a preceding comment\n", FILENAME, NR
         failed = 1
       }

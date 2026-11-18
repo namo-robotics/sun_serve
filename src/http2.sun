@@ -6,6 +6,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   // The frame types of RFC 9113, stored as they appear on the wire.
   public enum H2FrameKind u8 { Data = 0, Headers = 1, Priority = 2, RstStream = 3, Settings = 4, PushPromise = 5, Ping = 6, Goaway = 7, WindowUpdate = 8, Continuation = 9 }

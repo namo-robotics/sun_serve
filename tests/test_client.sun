@@ -17,6 +17,7 @@ public module sun_serve {
   module tests {
 
     using std;
+    using std.mem;
 
     // struct timeval for SO_RCVTIMEO.
     class Timeval {

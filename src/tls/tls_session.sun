@@ -12,6 +12,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   // Owns an optional OpenSSL session for one connection.
   public class TlsSession {

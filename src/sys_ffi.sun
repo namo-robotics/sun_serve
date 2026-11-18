@@ -13,6 +13,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   // --- readiness and descriptors -----------------------------------------
 
@@ -114,7 +115,7 @@ public module sun_serve {
     var value: raw_ptr<i32>;
 
     // Borrow stable storage owned by a server.
-    init(cell: ref Unique<i32>) {
+    init(cell: ref Unique<i32, HeapAllocator>) {
       this.value = cell.get_raw();
     }
 
@@ -125,7 +126,7 @@ public module sun_serve {
   }
 
   // Store an atomic value in unique stable storage.
-  function atomic_store(cell: ref Unique<i32>, value: i32) void {
+  function atomic_store(cell: ref Unique<i32, HeapAllocator>, value: i32) void {
     unsafe _atomic_store_i32(cell.get_raw(), value);
   }
 

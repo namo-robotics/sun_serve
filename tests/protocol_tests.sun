@@ -6,6 +6,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   /*
    * Contains HTTP/2, HPACK, and WebSocket tests.
@@ -16,11 +17,15 @@ public module sun_serve {
     using std.thread;
     using sun_serve;
 
-    // Send one message through a handle owned by another thread.
-    function send_from_thread(handle: WebSocketHandle) bool throws {
-      var alloc = make_heap_allocator();
-      var text = String(alloc, "thread");
-      return handle.send_text(text) == WebSocketSendResult.Queued;
+    /** Send from a worker thread, reporting allocation or queue failures to the joining test. */
+    function send_from_thread(handle: WebSocketHandle) bool {
+      try {
+        var alloc = make_heap_allocator();
+        var text = String(alloc, "thread");
+        return handle.send_text(text) == WebSocketSendResult.Queued;
+      } catch {
+        return false;
+      }
     }
 
     test_function websocket_cross_thread_wake_stale_and_overflow() {

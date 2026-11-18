@@ -14,6 +14,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
 
   // Read one byte from a static string inside the low-level buffer boundary.
   function literal_byte(text: static_ptr<u8>, index: i64) u8 {

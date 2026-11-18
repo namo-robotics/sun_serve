@@ -109,6 +109,7 @@ synchronization:
 
 ```sun
 using std;
+using std.mem;
 using sun_serve;
 
 /** Writes a plain-text response. */

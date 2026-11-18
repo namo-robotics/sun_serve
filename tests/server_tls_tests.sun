@@ -18,6 +18,7 @@ public module sun_serve {
   module server_tls_tests {
 
     using std;
+    using std.mem;
     using std.process;
     using std.time;
     using sun_serve.tests;

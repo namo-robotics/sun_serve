@@ -13,6 +13,7 @@
 public module sun_serve {
 
   using std;
+  using std.mem;
   using std.io;
 
   // Files up to this size are read into memory rather than streamed.
